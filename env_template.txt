@@ -1,0 +1,15 @@
+# Google Gemini API Configuration
+GEMINI_API_KEY=AIzaSyBqJOFNGuzXIjLGSSylRZoUi56UvoU9m6M
+
+# Google Gemini Model Name (optional, defaults to gemini-1.5-flash)
+GEMINI_MODEL_NAME=gemini-1.5-flash
+
+# Google Gemini API Base URL (optional, defaults to https://generativelanguage.googleapis.com)
+GEMINI_API_BASE_URL=https://generativelanguage.googleapis.com
+
+# Google Gemini API Version (optional, defaults to v1beta)
+GEMINI_API_VERSION=v1beta
+
+# Google Maps API Configuration
+# Get your API key from: https://console.cloud.google.com/google/maps-apis
+GOOGLE_MAPS_API_KEY=your-google-maps-api-key-here
