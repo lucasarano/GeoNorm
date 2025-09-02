@@ -1,123 +1,177 @@
-# Geocoding Script with Gemini API
+# GeoNorm
 
-A Python script that reads addresses from a CSV file, geocodes them using Google's Gemini API, and outputs the results with confidence scores to a new CSV file.
+A comprehensive geocoding solution with both Python backend scripts and a modern React frontend application.
 
-## Features
+## 🐍 Python Backend Scripts
 
+### Features
+- **Address Normalization**: Cleans and standardizes messy addresses using Gemini API
+- **Address Parsing**: Separates addresses into STATE, CITY, STREET, COUNTRY components
 - **CSV Processing**: Reads customer data from CSV files with flexible address field mapping
-- **Gemini API Integration**: Uses Google's Gemini API for intelligent geocoding
-- **Confidence Scoring**: Provides confidence scores (0.0-1.0) for each geocoding result
+- **Gemini API Integration**: Uses Google's Gemini API for intelligent address processing
+- **Google Maps Integration**: Ready for Google Maps API geocoding
+- **Batch Processing**: Handles large datasets with rate limiting
+- **Confidence Scoring**: Provides confidence scores (0.0-1.0) for each result
 - **Duplicate Prevention**: Skips already processed addresses to avoid redundant API calls
 - **Robust Error Handling**: Handles API failures and malformed responses gracefully
 - **Command Line Interface**: Easy-to-use CLI with configurable options
 
-## Installation
+### Installation
 
 1. Install required dependencies:
 ```bash
 pip install -r requirements.txt
 ```
 
-2. Set up your Gemini API key in the `.env` file:
+2. Set up your API keys in the `.env` file:
 ```
-GEMINI_API_KEY=your-api-key-here
+GEMINI_API_KEY=your-gemini-api-key-here
+GOOGLE_MAPS_API_KEY=your-google-maps-api-key-here
 ```
 
-## Usage
+### Usage
 
-### Basic Usage
+#### Step 1: Normalize Addresses
 ```bash
-python geocoding_script.py
+python address_normalizer.py --input "your_data.csv" --output "normalized_addresses.csv" --delay 3.0
 ```
 
-This will:
-- Read from `input_addresses.csv`
-- Write results to `output_geocoded.csv`
-- Use a 1-second delay between API calls
-
-### Advanced Usage
+#### Step 2: Parse Address Components
 ```bash
-python geocoding_script.py --input my_addresses.csv --output results.csv --delay 2.0 --model gemini-pro
+python address_parser.py --input "normalized_addresses.csv" --output "parsed_addresses.csv" --delay 2.0
 ```
 
-### Command Line Options
-- `--input, -i`: Input CSV file (default: input_addresses.csv)
-- `--output, -o`: Output CSV file (default: output_geocoded.csv)
-- `--delay, -d`: Delay between API calls in seconds (default: 1.0)
-- `--api-key, -k`: Gemini API key (overrides environment variable)
-- `--model, -m`: Gemini model name (default: gemini-pro)
-
-## Input Format
-
-The script expects a CSV file with address information spread across multiple columns. Common field names include:
-
-- `Buyer Address`, `Address`, `Street Address`, `Street`
-- `Buyer City`, `City`
-- `Buyer State`, `State`, `Province`
-- `Buyer ZIP`, `ZIP`, `Postal Code`, `ZIP Code`
-
-Example input row:
-```csv
-Name,Buyer Address,Buyer City,Buyer State,Buyer ZIP
-"Juan Carlos Gimenez","Avda. Lopez Godoy, Ruta 1, km. 20","Capiata","Other","2560"
+#### Step 3: Geocode with Google Maps (Optional)
+```bash
+python google_maps_geocoder.py --input "parsed_addresses.csv" --output "final_results.csv" --delay 0.1
 ```
 
-## Output Format
+### Scripts Overview
 
-The output CSV contains all original columns plus new geocoding columns:
+- **`address_normalizer.py`**: Cleans and standardizes addresses
+- **`address_parser.py`**: Separates addresses into components (STATE, CITY, STREET, COUNTRY)
+- **`geocoding_script.py`**: Original geocoding using Gemini API
+- **`google_maps_geocoder.py`**: Geocoding using Google Maps API
+- **`batch_processor.py`**: Processes large CSV files in chunks
+- **`view_results.py`**: Utility to view results in clean format
 
-- `gemini_latitude`: Latitude coordinate
-- `gemini_longitude`: Longitude coordinate
-- `gemini_zip_code`: Corrected or determined ZIP code
-- `gemini_confidence`: Confidence score (0.0-1.0)
-- `gemini_explanation`: Brief explanation of the result
-- `google_maps_link`: Google Maps link to the coordinates
+## ⚛️ React Frontend Application
 
-Example output row:
-```csv
-Name,Buyer Address,Buyer City,Buyer State,Buyer ZIP,gemini_latitude,gemini_longitude,gemini_zip_code,gemini_confidence,gemini_explanation,google_maps_link
-"Juan Carlos Gimenez","Avda. Lopez Godoy, Ruta 1, km. 20","Capiata","Other","2560",-25.2637,-57.5759,"1804",0.60,"Address is incomplete. Based on 'Capiata' and 'Ruta 1', this is likely a location in Capiatá, Paraguay...","https://www.google.com/maps?q=-25.2637,-57.5759"
+### Features
+- **Clean UI**: Built with React, Tailwind CSS, and shadcn/ui components
+- **Dual API Integration**: Uses both Google Maps Geocoding API and Google Places API
+- **Real-time Results**: Displays JSON responses from both APIs side by side
+- **Modern Design**: Beautiful gradient backgrounds and responsive layout
+
+### APIs Used
+
+#### 1. Google Maps Geocoding API
+- **Purpose**: Convert addresses → coordinates
+- **Strength**: Handles messy/misspelled/multi-language input
+- **Returns**: formatted_address, lat/lng, location_type
+- **Best for**: Textual addresses (even vague ones)
+
+#### 2. Google Places API (Find Place)
+- **Purpose**: Find places by name, landmarks, or business names
+- **Strength**: POIs, landmarks, businesses, informal place names
+- **Returns**: place details, ratings, types
+- **Best for**: "Hospital Central", business names, landmarks
+
+### Setup
+
+1. **Install dependencies**:
+   ```bash
+   npm install
+   ```
+
+2. **Configure API Key**:
+   The `.env` file is already created with your Google Maps API key.
+
+3. **Run the application**:
+   
+   **Option 1: Run both frontend and backend together**:
+   ```bash
+   npm run start:all
+   ```
+   
+   **Option 2: Run separately**:
+   ```bash
+   # Terminal 1 - Backend server
+   npm run server:dev
+   
+   # Terminal 2 - Frontend dev server
+   npm run dev
+   ```
+
+4. **Access the application**:
+   - Frontend: http://localhost:5173
+   - Backend API: http://localhost:3001
+   - Health check: http://localhost:3001/health
+
+### Usage
+
+1. Enter any address, landmark, or place name in the input field
+2. Click "Search Location" 
+3. View the JSON responses from both Google APIs side by side
+4. Compare the results to see the strengths of each API
+
+### Example Inputs
+
+- **Addresses**: "123 Main Street, New York, NY"
+- **Landmarks**: "Hospital Nacional Itaugua Paraguay"
+- **Businesses**: "Shopping Mariscal"
+- **Informal locations**: "near Hospital Central"
+
+## 🏗️ Project Structure
+
+```
+GeoNorm/
+├── 🐍 Python Scripts
+│   ├── address_normalizer.py      # Address normalization
+│   ├── address_parser.py          # Address component parsing
+│   ├── geocoding_script.py        # Gemini geocoding
+│   ├── google_maps_geocoder.py    # Google Maps geocoding
+│   ├── batch_processor.py         # Batch processing
+│   ├── view_results.py            # Results viewer
+│   ├── requirements.txt           # Python dependencies
+│   └── env_template.txt           # Environment template
+├── ⚛️ React Frontend
+│   ├── src/                       # Frontend React app
+│   │   ├── components/            # UI components
+│   │   └── lib/                   # Utility functions
+│   ├── server/                    # Backend Express server
+│   ├── package.json               # Node.js dependencies
+│   └── .env                       # Environment variables
+└── 📊 Data Files
+    ├── base para prueba maps.csv  # Sample data
+    └── test_*.csv                 # Test results
 ```
 
-## How It Works
+## 🛠️ Technologies
 
-1. **Address Combination**: The script combines address fields from multiple columns into a single address string
-2. **Prompt Construction**: Creates detailed prompts for the Gemini API with specific instructions for geocoding
-3. **API Interaction**: Sends prompts to Gemini API and parses JSON responses
-4. **Duplicate Check**: Tracks processed addresses to avoid redundant API calls
-5. **Result Processing**: Validates and processes API responses with error handling
-6. **CSV Output**: Writes results to output CSV with all original data plus geocoding results
+### Python Backend
+- **Python 3.7+**
+- **Google Generative AI** (Gemini API)
+- **Google Maps API**
+- **pandas, csv, requests**
 
-## Error Handling
+### React Frontend
+- **Frontend**: React, TypeScript, Vite, Tailwind CSS, shadcn/ui
+- **Backend**: Node.js, Express, TypeScript
+- **APIs**: Google Maps Geocoding API, Google Places API
 
-The script includes robust error handling for:
-- Missing or invalid API keys
-- Network connectivity issues
-- Malformed API responses
-- JSON parsing errors
-- File I/O errors
-- Missing address information
+## 📋 Workflow
 
-## Rate Limiting
+1. **Data Preparation**: Use Python scripts to normalize and parse addresses from CSV
+2. **Geocoding**: Use either Gemini API or Google Maps API for coordinates
+3. **Web Interface**: Use React app for interactive address lookup and testing
+4. **Results**: Export clean, structured data with coordinates and confidence scores
 
-The script includes a configurable delay between API calls to respect rate limits. Default is 1 second, but you can adjust this with the `--delay` parameter.
+## 🔑 API Keys Required
 
-## Sample Data
+- **Gemini API Key**: For address normalization and parsing
+- **Google Maps API Key**: For geocoding and the React frontend
 
-The repository includes `input_addresses.csv` with sample data including:
-- Complete addresses
-- Incomplete addresses
-- Vague addresses
-- International addresses
-- Well-known addresses (for testing)
-
-## Requirements
-
-- Python 3.7+
-- Google Generative AI library
-- python-dotenv for environment variable management
-- Valid Gemini API key
-
-## License
+## 📄 License
 
 This project is licensed under the MIT License - see the LICENSE file for details.
