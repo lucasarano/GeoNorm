@@ -1,177 +1,153 @@
-# GeoNorm
+# 🗺️ GeoNorm
 
-A comprehensive geocoding solution with both Python backend scripts and a modern React frontend application.
-
-## 🐍 Python Backend Scripts
-
-### Features
-- **Address Normalization**: Cleans and standardizes messy addresses using Gemini API
-- **Address Parsing**: Separates addresses into STATE, CITY, STREET, COUNTRY components
-- **CSV Processing**: Reads customer data from CSV files with flexible address field mapping
-- **Gemini API Integration**: Uses Google's Gemini API for intelligent address processing
-- **Google Maps Integration**: Ready for Google Maps API geocoding
-- **Batch Processing**: Handles large datasets with rate limiting
-- **Confidence Scoring**: Provides confidence scores (0.0-1.0) for each result
-- **Duplicate Prevention**: Skips already processed addresses to avoid redundant API calls
-- **Robust Error Handling**: Handles API failures and malformed responses gracefully
-- **Command Line Interface**: Easy-to-use CLI with configurable options
-
-### Installation
-
-1. Install required dependencies:
-```bash
-pip install -r requirements.txt
-```
-
-2. Set up your API keys in the `.env` file:
-```
-GEMINI_API_KEY=your-gemini-api-key-here
-GOOGLE_MAPS_API_KEY=your-google-maps-api-key-here
-```
-
-### Usage
-
-#### Step 1: Normalize Addresses
-```bash
-python address_normalizer.py --input "your_data.csv" --output "normalized_addresses.csv" --delay 3.0
-```
-
-#### Step 2: Parse Address Components
-```bash
-python address_parser.py --input "normalized_addresses.csv" --output "parsed_addresses.csv" --delay 2.0
-```
-
-#### Step 3: Geocode with Google Maps (Optional)
-```bash
-python google_maps_geocoder.py --input "parsed_addresses.csv" --output "final_results.csv" --delay 0.1
-```
-
-### Scripts Overview
-
-- **`address_normalizer.py`**: Cleans and standardizes addresses
-- **`address_parser.py`**: Separates addresses into components (STATE, CITY, STREET, COUNTRY)
-- **`geocoding_script.py`**: Original geocoding using Gemini API
-- **`google_maps_geocoder.py`**: Geocoding using Google Maps API
-- **`batch_processor.py`**: Processes large CSV files in chunks
-- **`view_results.py`**: Utility to view results in clean format
-
-## ⚛️ React Frontend Application
-
-### Features
-- **Clean UI**: Built with React, Tailwind CSS, and shadcn/ui components
-- **Dual API Integration**: Uses both Google Maps Geocoding API and Google Places API
-- **Real-time Results**: Displays JSON responses from both APIs side by side
-- **Modern Design**: Beautiful gradient backgrounds and responsive layout
-
-### APIs Used
-
-#### 1. Google Maps Geocoding API
-- **Purpose**: Convert addresses → coordinates
-- **Strength**: Handles messy/misspelled/multi-language input
-- **Returns**: formatted_address, lat/lng, location_type
-- **Best for**: Textual addresses (even vague ones)
-
-#### 2. Google Places API (Find Place)
-- **Purpose**: Find places by name, landmarks, or business names
-- **Strength**: POIs, landmarks, businesses, informal place names
-- **Returns**: place details, ratings, types
-- **Best for**: "Hospital Central", business names, landmarks
-
-### Setup
-
-1. **Install dependencies**:
-   ```bash
-   npm install
-   ```
-
-2. **Configure API Key**:
-   The `.env` file is already created with your Google Maps API key.
-
-3. **Run the application**:
-   
-   **Option 1: Run both frontend and backend together**:
-   ```bash
-   npm run start:all
-   ```
-   
-   **Option 2: Run separately**:
-   ```bash
-   # Terminal 1 - Backend server
-   npm run server:dev
-   
-   # Terminal 2 - Frontend dev server
-   npm run dev
-   ```
-
-4. **Access the application**:
-   - Frontend: http://localhost:5173
-   - Backend API: http://localhost:3001
-   - Health check: http://localhost:3001/health
-
-### Usage
-
-1. Enter any address, landmark, or place name in the input field
-2. Click "Search Location" 
-3. View the JSON responses from both Google APIs side by side
-4. Compare the results to see the strengths of each API
-
-### Example Inputs
-
-- **Addresses**: "123 Main Street, New York, NY"
-- **Landmarks**: "Hospital Nacional Itaugua Paraguay"
-- **Businesses**: "Shopping Mariscal"
-- **Informal locations**: "near Hospital Central"
+Transform addresses into precise coordinates using Google's powerful APIs with AI-powered address cleaning.
 
 ## 🏗️ Project Structure
 
 ```
 GeoNorm/
-├── 🐍 Python Scripts
-│   ├── address_normalizer.py      # Address normalization
-│   ├── address_parser.py          # Address component parsing
-│   ├── geocoding_script.py        # Gemini geocoding
-│   ├── google_maps_geocoder.py    # Google Maps geocoding
-│   ├── batch_processor.py         # Batch processing
-│   ├── view_results.py            # Results viewer
-│   ├── requirements.txt           # Python dependencies
-│   └── env_template.txt           # Environment template
-├── ⚛️ React Frontend
-│   ├── src/                       # Frontend React app
-│   │   ├── components/            # UI components
-│   │   └── lib/                   # Utility functions
-│   ├── server/                    # Backend Express server
-│   ├── package.json               # Node.js dependencies
-│   └── .env                       # Environment variables
-└── 📊 Data Files
-    ├── base para prueba maps.csv  # Sample data
-    └── test_*.csv                 # Test results
+├── 📁 backend/              # Express.js API server
+│   ├── index.ts            # Main server file
+│   ├── types.ts            # TypeScript interfaces
+│   └── tsconfig.json       # Backend TypeScript config
+├── 📁 frontend/            # React frontend application
+│   ├── components/
+│   │   ├── forms/          # Form components
+│   │   │   ├── SimpleAddressForm.tsx
+│   │   │   └── CsvUploader.tsx
+│   │   ├── shared/         # Shared UI components
+│   │   │   └── ui/         # shadcn/ui components
+│   │   └── AddressForm.tsx # Legacy form (unused)
+│   ├── lib/               # Utility functions
+│   ├── assets/            # Static assets
+│   ├── App.tsx            # Main app component
+│   ├── main.tsx           # App entry point
+│   └── index.css          # Global styles
+├── 📁 scripts/             # Processing scripts
+│   ├── csv_parallel_processor.py  # Main CSV processor
+│   └── unused/            # Legacy/unused scripts
+├── 📁 data/               # Data storage
+│   ├── uploads/           # Uploaded CSV files
+│   ├── outputs/           # Processed results
+│   └── samples/           # Sample data files
+├── 📁 docs/               # Documentation
+├── 📁 venv/               # Python virtual environment
+└── 📁 public/             # Static public files
 ```
 
-## 🛠️ Technologies
+## 🚀 Features
 
-### Python Backend
-- **Python 3.7+**
-- **Google Generative AI** (Gemini API)
-- **Google Maps API**
-- **pandas, csv, requests**
+- **🤖 AI-Powered Address Cleaning**: Uses Google Gemini AI to normalize and clean addresses
+- **🗺️ Precise Geocoding**: Google Maps API for accurate coordinate conversion
+- **📊 Batch Processing**: Upload CSV files for bulk address processing
+- **🎯 Confidence Scoring**: Visual confidence indicators for geocoding results
+- **📍 Interactive Maps**: Static maps showing exact locations
+- **⚡ Real-time Progress**: Live updates during processing
 
-### React Frontend
-- **Frontend**: React, TypeScript, Vite, Tailwind CSS, shadcn/ui
-- **Backend**: Node.js, Express, TypeScript
-- **APIs**: Google Maps Geocoding API, Google Places API
+## 🛠️ Setup & Installation
 
-## 📋 Workflow
+### Prerequisites
+- Node.js 20.19+ or 22.12+
+- Python 3.13+
+- Google Maps API Key
+- Google Gemini AI API Key
 
-1. **Data Preparation**: Use Python scripts to normalize and parse addresses from CSV
-2. **Geocoding**: Use either Gemini API or Google Maps API for coordinates
-3. **Web Interface**: Use React app for interactive address lookup and testing
-4. **Results**: Export clean, structured data with coordinates and confidence scores
+### Installation
 
-## 🔑 API Keys Required
+1. **Clone and install dependencies**:
+```bash
+git clone <repository>
+cd GeoNorm
+npm install
+```
 
-- **Gemini API Key**: For address normalization and parsing
-- **Google Maps API Key**: For geocoding and the React frontend
+2. **Set up Python environment**:
+```bash
+python3 -m venv venv
+source venv/bin/activate  # On Windows: venv\Scripts\activate
+pip install google-generativeai requests python-dotenv aiohttp
+```
 
-## 📄 License
+3. **Configure environment variables**:
+```bash
+cp docs/env_template.txt .env
+# Edit .env with your API keys
+```
 
-This project is licensed under the MIT License - see the LICENSE file for details.
+4. **Start the application**:
+```bash
+npm run start:all
+```
+
+## 🎯 Usage
+
+### Single Address Processing
+1. Navigate to http://localhost:5173
+2. Select "Single Address" mode
+3. Enter address and optional components
+4. View geocoding results with confidence scores
+
+### CSV Batch Processing
+1. Select "CSV Batch Processing" mode
+2. Upload a CSV file with address columns:
+   - `Buyer Address1` - Main address
+   - `Buyer City` - City name
+   - `Buyer State` - State/Department
+   - `Buyer ZIP` - Postal code
+3. Monitor real-time processing progress
+4. Download processed results
+
+## 📊 API Endpoints
+
+- `GET /health` - Health check
+- `GET /api/geocoding` - Single address geocoding
+- `GET /api/places` - Places API search
+- `POST /api/geocode-both` - Geocode with confidence scoring
+- `POST /api/process-csv` - Upload and process CSV
+- `GET /api/progress/:taskId` - Check processing progress
+- `GET /api/results/:taskId` - Get processed results
+
+## 🔧 Configuration
+
+### Environment Variables
+```env
+# Google Maps API
+VITE_GOOGLE_MAPS_API_KEY=your_google_maps_api_key
+
+# Google Gemini AI
+GEMINI_API_KEY=your_gemini_api_key
+GEMINI_MODEL_NAME=gemini-2.5-flash
+```
+
+### CSV Format
+Your CSV should contain address columns:
+- `Buyer Address1` - Street address
+- `Buyer City` - City name  
+- `Buyer State` - State/Department
+- `Buyer ZIP` - Postal code
+
+## 🎨 Tech Stack
+
+- **Frontend**: React, TypeScript, Tailwind CSS, Vite
+- **Backend**: Node.js, Express.js, TypeScript
+- **AI Processing**: Google Gemini AI, Python
+- **APIs**: Google Maps Geocoding & Places APIs
+- **Storage**: File-based (CSV/JSON)
+
+## 📈 Confidence Levels
+
+- 🟢 **80%+ (Green)**: High confidence - Exact address match
+- 🟡 **60-79% (Yellow)**: Medium confidence - Approximate location
+- 🔴 **<60% (Red)**: Low confidence - General area only
+
+## 🤝 Contributing
+
+1. Fork the repository
+2. Create a feature branch
+3. Make your changes
+4. Test thoroughly
+5. Submit a pull request
+
+## 📝 License
+
+[Your License Here]
