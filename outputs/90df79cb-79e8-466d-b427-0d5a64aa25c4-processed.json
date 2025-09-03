@@ -1,0 +1,74 @@
+[
+  {
+    "original_address": "Paseo del yatch y Del Cerro Edificio Excellence Piso 15 A, Lambare, Central",
+    "cleaned_address": "Paseo del Yacht y Del Cerro, Edificio Excellence Piso 15 A, Lambaré, Central, Paraguay",
+    "state": "Central",
+    "city": "Lambaré",
+    "street": "Paseo del Yacht y Del Cerro",
+    "country": "Paraguay"
+  },
+  {
+    "original_address": "caleradelsur95@gmail.com casa, virgen del rosario y parana -general artigas, itapua",
+    "cleaned_address": "Virgen del Rosario y Paraná, General Artigas, Itapúa, Paraguay",
+    "state": "Itapúa",
+    "city": "General Artigas",
+    "street": "Virgen del Rosario y Paraná",
+    "country": "Paraguay"
+  },
+  {
+    "original_address": "Benjamin Constant c/ Colón Edificio Colon 1 dpto 12B, Asuncion, Central, 001101",
+    "cleaned_address": "Benjamin Constant y Colón, Edificio Colón 1, Departamento 12B, Asunción, Central, 001101, Paraguay",
+    "state": "Central",
+    "city": "Asunción",
+    "street": "Benjamin Constant y Colón",
+    "country": "Paraguay"
+  },
+  {
+    "original_address": "Carlos antonio lopez c/ Constitucion Nacional S3-C2, Encarnacion, Itapua, 6000",
+    "cleaned_address": "Carlos Antonio López c/ Constitución Nacional S3-C2, Encarnación, Itapúa, 6000, Paraguay",
+    "state": "Itapúa",
+    "city": "Encarnación",
+    "street": "Carlos Antonio López c/ Constitución Nacional",
+    "country": "Paraguay"
+  },
+  {
+    "original_address": "Avda. Lopez Godoy, Ruta 1, Km. 20, Capiata, Other, 2560",
+    "cleaned_address": "Avenida Lopez Godoy, Ruta 1 Km 20, Capiatá, Paraguay",
+    "state": "Central",
+    "city": "Capiatá",
+    "street": "Avenida Lopez Godoy, Ruta 1 Km 20",
+    "country": "Paraguay"
+  },
+  {
+    "original_address": "territorio social 31 de julio calle itacurubi manzana 9 lpte 8, coronel oviedo, caaguazu, 50111",
+    "cleaned_address": "Territorio Social 31 de Julio, Calle Itacurubí, Manzana 9 Lote 8, Coronel Oviedo, Caaguazú, 50111, Paraguay",
+    "state": "Caaguazú",
+    "city": "Coronel Oviedo",
+    "street": "Territorio Social 31 de Julio, Calle Itacurubí",
+    "country": "Paraguay"
+  },
+  {
+    "original_address": "Col. Independencia Planta Urbana, Guaira, Independencia, CP-040712",
+    "cleaned_address": "Colonia Independencia Planta Urbana, Independencia, Guairá, CP-040712, Paraguay",
+    "state": "Guairá",
+    "city": "Independencia",
+    "street": "Colonia Independencia Planta Urbana",
+    "country": "Paraguay"
+  },
+  {
+    "original_address": "cale principal mecanica agrícola wille, santa Rosa del monday, alto Parana Paraguaiy, 101501",
+    "cleaned_address": "Calle Principal, Mecánica Agrícola Wille, Santa Rosa del Monday, Alto Paraná, Paraguay, 101501",
+    "state": "Alto Paraná",
+    "city": "Santa Rosa del Monday",
+    "street": "Calle Principal, Mecánica Agrícola Wille",
+    "country": "Paraguay"
+  },
+  {
+    "original_address": "isla pucu casa, lambare, assumption",
+    "cleaned_address": "Isla Pucú, Lambaré, Central, Paraguay",
+    "state": "Central",
+    "city": "Lambaré",
+    "street": "Isla Pucú",
+    "country": "Paraguay"
+  }
+]

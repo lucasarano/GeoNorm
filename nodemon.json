@@ -1,0 +1,14 @@
+{
+  "watch": [
+    "server/**/*.ts"
+  ],
+  "ignore": [
+    "uploads/**",
+    "outputs/**",
+    "node_modules/**"
+  ],
+  "ext": "ts,js,json",
+  "exec": "tsx server/index.ts"
+}
+
+
