@@ -8,6 +8,8 @@ import fs from 'fs'
 import { v4 as uuidv4 } from 'uuid'
 import { fileURLToPath } from 'url'
 import { RequestWithTaskId, ProcessingTask } from './types'
+import WhatsAppService from './whatsapp'
+import AddressProcessor, { AddressRecord } from './addressProcessor'
 
 dotenv.config()
 
@@ -57,6 +59,13 @@ const upload = multer({
 
 // Store processing tasks
 const processingTasks = new Map<string, ProcessingTask>()
+
+// Initialize WhatsApp and Address Processor services
+const whatsappService = new WhatsAppService()
+const addressProcessor = new AddressProcessor()
+
+// Store address records for WhatsApp follow-up
+const addressRecords = new Map<string, AddressRecord>()
 
 // Enable CORS for all routes
 app.use(cors({
@@ -593,8 +602,263 @@ setInterval(() => {
     }
 }, 60 * 60 * 1000) // Run every hour
 
+// WhatsApp Business API Endpoints
+
+// Send low confidence messages endpoint
+app.post('/api/whatsapp/send-low-confidence', async (req, res) => {
+    try {
+        const { addresses } = req.body
+        
+        if (!Array.isArray(addresses)) {
+            return res.status(400).json({ error: 'Addresses array is required' })
+        }
+
+        console.log(`[WHATSAPP] Processing ${addresses.length} addresses for low confidence check`)
+        
+        const results = []
+        let sentCount = 0
+        let errorCount = 0
+
+        for (const addr of addresses) {
+            const { phoneNumber, originalAddress, cleanedAddress, confidence } = addr
+            
+            if (confidence < 0.6) {
+                try {
+                    // Store address record
+                    const record: AddressRecord = {
+                        id: uuidv4(),
+                        phoneNumber,
+                        originalAddress,
+                        cleanedAddress,
+                        confidence,
+                        status: 'low_confidence',
+                        timestamp: new Date()
+                    }
+                    
+                    addressRecords.set(record.id, record)
+                    
+                    // Send WhatsApp message
+                    const messageResult = await whatsappService.sendLowConfidenceAddressMessage(
+                        phoneNumber,
+                        cleanedAddress || originalAddress,
+                        originalAddress
+                    )
+                    
+                    record.whatsappMessageId = messageResult.messages?.[0]?.id
+                    
+                    results.push({
+                        phoneNumber,
+                        status: 'sent',
+                        messageId: record.whatsappMessageId,
+                        recordId: record.id
+                    })
+                    
+                    sentCount++
+                    console.log(`[WHATSAPP] Sent message to ${phoneNumber}`)
+                    
+                    // Small delay to respect rate limits
+                    await new Promise(resolve => setTimeout(resolve, 200))
+                    
+                } catch (error) {
+                    console.error(`[WHATSAPP] Error sending to ${phoneNumber}:`, error)
+                    results.push({
+                        phoneNumber,
+                        status: 'error',
+                        error: error.message
+                    })
+                    errorCount++
+                }
+            } else {
+                results.push({
+                    phoneNumber,
+                    status: 'skipped',
+                    reason: 'confidence_above_threshold'
+                })
+            }
+        }
+
+        res.json({
+            summary: {
+                total: addresses.length,
+                sent: sentCount,
+                errors: errorCount,
+                skipped: addresses.length - sentCount - errorCount
+            },
+            results
+        })
+
+    } catch (error) {
+        console.error('[WHATSAPP] Send low confidence error:', error)
+        res.status(500).json({ error: 'Failed to send WhatsApp messages' })
+    }
+})
+
+// WhatsApp webhook endpoint
+app.get('/api/whatsapp/webhook', (req, res) => {
+    // Webhook verification
+    const mode = req.query['hub.mode']
+    const token = req.query['hub.verify_token']
+    const challenge = req.query['hub.challenge']
+
+    if (mode && token) {
+        if (mode === 'subscribe' && token === process.env.WHATSAPP_WEBHOOK_VERIFY_TOKEN) {
+            console.log('[WHATSAPP] Webhook verified')
+            res.status(200).send(challenge)
+        } else {
+            res.status(403).send('Forbidden')
+        }
+    } else {
+        res.status(400).send('Bad Request')
+    }
+})
+
+app.post('/api/whatsapp/webhook', async (req, res) => {
+    try {
+        const { entry } = req.body
+
+        if (!entry || !Array.isArray(entry)) {
+            return res.status(200).send('OK')
+        }
+
+        for (const entryItem of entry) {
+            const changes = entryItem.changes || []
+            
+            for (const change of changes) {
+                if (change.field === 'messages') {
+                    const messages = change.value.messages || []
+                    
+                    for (const message of messages) {
+                        await handleWhatsAppMessage(message)
+                    }
+                }
+            }
+        }
+
+        res.status(200).send('OK')
+        
+    } catch (error) {
+        console.error('[WHATSAPP] Webhook error:', error)
+        res.status(500).json({ error: 'Webhook processing failed' })
+    }
+})
+
+// Handle incoming WhatsApp messages
+async function handleWhatsAppMessage(message: any) {
+    const phoneNumber = message.from
+    const messageType = message.type
+
+    console.log(`[WHATSAPP] Received ${messageType} message from ${phoneNumber}`)
+
+    try {
+        // Find the address record for this phone number
+        const record = Array.from(addressRecords.values())
+            .find(r => r.phoneNumber.includes(phoneNumber.replace('+', '')) || phoneNumber.includes(r.phoneNumber.replace('+', '')))
+
+        if (!record) {
+            console.log(`[WHATSAPP] No address record found for ${phoneNumber}`)
+            return
+        }
+
+        if (messageType === 'interactive') {
+            const buttonReply = message.interactive?.button_reply
+            
+            if (buttonReply) {
+                const buttonId = buttonReply.id
+                
+                switch (buttonId) {
+                    case 'USE_CLEANED':
+                        record.status = 'confirmed'
+                        console.log(`[WHATSAPP] ${phoneNumber} confirmed cleaned address`)
+                        
+                        // Send confirmation
+                        await whatsappService.sendFollowUpMessage(phoneNumber)
+                        break
+                        
+                    case 'SHARE_LOCATION':
+                        // User will send location next
+                        console.log(`[WHATSAPP] ${phoneNumber} will share location`)
+                        break
+                        
+                    case 'EDIT_ADDRESS':
+                        // User will send new address text
+                        console.log(`[WHATSAPP] ${phoneNumber} will edit address`)
+                        break
+                }
+            }
+        } else if (messageType === 'location') {
+            const location = message.location
+            if (location && record) {
+                record.latitude = location.latitude
+                record.longitude = location.longitude
+                record.status = 'resolved'
+                
+                console.log(`[WHATSAPP] ${phoneNumber} shared location: ${location.latitude}, ${location.longitude}`)
+                
+                // Send confirmation
+                await whatsappService.sendFollowUpMessage(phoneNumber)
+            }
+        } else if (messageType === 'text') {
+            const newAddress = message.text?.body
+            if (newAddress && record) {
+                record.cleanedAddress = newAddress
+                record.status = 'resolved'
+                
+                console.log(`[WHATSAPP] ${phoneNumber} provided new address: ${newAddress}`)
+                
+                // Optionally re-geocode the new address here
+                
+                // Send confirmation
+                await whatsappService.sendFollowUpMessage(phoneNumber)
+            }
+        }
+
+        // Update the record
+        addressRecords.set(record.id, record)
+        
+    } catch (error) {
+        console.error(`[WHATSAPP] Error handling message from ${phoneNumber}:`, error)
+    }
+}
+
+// Get address records status
+app.get('/api/whatsapp/records', (req, res) => {
+    const records = Array.from(addressRecords.values())
+    const summary = addressProcessor.getProcessingSummary(records)
+    
+    res.json({
+        summary,
+        records: records.slice(0, 50) // Limit to first 50 for performance
+    })
+})
+
+// Test WhatsApp configuration
+app.get('/api/whatsapp/test', async (req, res) => {
+    try {
+        const testNumber = req.query.number as string
+        
+        if (!testNumber) {
+            return res.status(400).json({ error: 'Phone number is required' })
+        }
+
+        const result = await whatsappService.sendFollowUpMessage(testNumber)
+        
+        res.json({
+            success: true,
+            message: 'Test message sent successfully',
+            result
+        })
+        
+    } catch (error) {
+        res.status(500).json({
+            success: false,
+            error: error.message
+        })
+    }
+})
+
 app.listen(PORT, () => {
     console.log(`Server running on http://localhost:${PORT}`)
     console.log(`Uploads directory: ${uploadsDir}`)
     console.log(`Outputs directory: ${outputsDir}`)
+    console.log(`WhatsApp webhook: http://localhost:${PORT}/api/whatsapp/webhook`)
 })
