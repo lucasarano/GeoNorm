@@ -28,3 +28,4 @@ if __name__ == "__main__":
         view_results(sys.argv[1])
     else:
         view_results("test_10_normalized.csv")
+

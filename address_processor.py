@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """
-Address Normalization Script using Gemini API
-Reads addresses from CSV, normalizes and improves them using Gemini API, and outputs cleaned addresses.
+Combined Address Processor
+Normalizes addresses and parses them into components in a single step
+Outputs a properly structured CSV with STATE, CITY, STREET, COUNTRY columns
 """
 
 import csv
@@ -17,9 +18,9 @@ from dotenv import load_dotenv
 # Load environment variables
 load_dotenv()
 
-class AddressNormalizer:
+class AddressProcessor:
     def __init__(self, api_key: str, model_name: str = "gemini-2.5-pro"):
-        """Initialize the address normalizer with Gemini API configuration."""
+        """Initialize the address processor with Gemini API configuration."""
         self.api_key = api_key
         self.model_name = model_name
         self.configure_gemini()
@@ -29,53 +30,46 @@ class AddressNormalizer:
         genai.configure(api_key=self.api_key)
         self.model = genai.GenerativeModel(self.model_name)
         
-    def construct_normalization_prompt(self, address: str) -> str:
-        """Construct a detailed prompt for the Gemini API to normalize an address."""
-        prompt = f""" You are an expert Paraguayan address normalization API. Your task is to convert a raw Paraguayan address string into a structured JSON object.
+    def construct_combined_prompt(self, address: str) -> str:
+        """Construct a prompt that both normalizes and parses the address."""
+        prompt = f"""**Objective:** Normalize and parse the following address into structured components.
 
-Rules:
+**Raw Address:**
+"{address}"
 
-Context: All addresses are in Paraguay. Use knowledge of Paraguayan geography (cities, departments) to enrich the data.
+**Task:**
+1. First, normalize and improve the address (correct spelling, add missing info, standardize format)
+2. Then, parse the normalized address into these components:
+   - STATE (Department/State/Province)
+   - CITY (City/Town/Municipality) 
+   - STREET (Street name(s), including intersections, building names)
+   - COUNTRY (Always "Paraguay" for these addresses)
 
-Abbreviations:
+**Rules:**
+- COUNTRY is always "Paraguay"
+- STATE should be the department (e.g., "Central", "Itapúa", "Alto Paraná")
+- CITY should be the main city/town name
+- STREET should include street names, intersections, building names, but NOT house numbers
+- Remove house numbers, apartment numbers, postal codes from STREET
+- Keep building names and landmarks in STREET
+- Provide confidence score for the overall processing
 
-c/, casi -> "y casi" (near intersection).
+**Output Format:**
+Return ONLY a single, minified JSON object with these keys: 
+"normalized_address", "state", "city", "street", "country", "confidence_score", "improvements_made", "address_quality".
 
-esq., esquina -> "y" (corner intersection).
+**Example:**
+- Input: "caleradelsur95@gmail.com casa, virgen del rosario y parana -general artigas, itapua"
+- Expected JSON: {{"normalized_address": "Calle Virgen del Rosario y Paraná, General Artigas, Itapúa Department, Paraguay", "state": "Itapúa", "city": "General Artigas", "street": "Calle Virgen del Rosario y Paraná", "country": "Paraguay", "confidence_score": 0.7, "improvements_made": "Removed email, corrected spelling, standardized format", "address_quality": "Street level"}}
 
-Enrichment:
-
-Infer missing departments from the city.
-
-Standardize common names (e.g., "Mcal." to "Mariscal").
-
-Clean extraneous text.
-
-Output Format: You MUST return only a valid JSON object with these exact keys: street_name_and_number, city, department, original_address, Maps_query.
-
-Maps_query: This should be a clean, single-line string optimized for the Google Maps API, ending with ", Paraguay".
-
-Example:
-
-Input: "Av. Mcal. Lopez c/ Gral. Santos, Asunción"
-
-Output:
-
-{
-  "street_name_and_number": "Avenida Mariscal Lopez y casi General Santos",
-  "city": "Asunción",
-  "department": "Distrito Capital",
-  "original_address": "Av. Mcal. Lopez c/ Gral. Santos, Asunción",
-  "google_maps_query": "Avenida Mariscal Lopez y casi General Santos, Asunción, Paraguay"
-}
- """
+Please process this address: "{address}" """
         
         return prompt
     
     def call_gemini_api(self, prompt: str) -> Optional[Dict]:
         """Call the Gemini API with the given prompt and return parsed JSON response."""
         try:
-            print(f"Calling Gemini API for normalization...")
+            print(f"Calling Gemini API for processing...")
             response = self.model.generate_content(prompt)
             
             if not response.text:
@@ -109,7 +103,7 @@ Output:
             result = json.loads(response_text)
             
             # Validate required fields
-            required_fields = ['normalized_address', 'confidence_score', 'improvements_made', 'missing_info', 'address_quality']
+            required_fields = ['normalized_address', 'state', 'city', 'street', 'country', 'confidence_score', 'improvements_made', 'address_quality']
             for field in required_fields:
                 if field not in result:
                     print(f"Warning: Missing field '{field}' in API response")
@@ -171,7 +165,7 @@ Output:
                 writer = csv.DictWriter(file, fieldnames=fieldnames)
                 writer.writeheader()
                 writer.writerows(data)
-            print(f"Normalized addresses written to '{filename}'")
+            print(f"Processed addresses written to '{filename}'")
         except Exception as e:
             print(f"Error writing CSV file: {e}")
             sys.exit(1)
@@ -196,8 +190,8 @@ Output:
             
         return processed
     
-    def normalize_addresses(self, input_file: str, output_file: str, delay: float = 1.0):
-        """Main processing function to normalize addresses from CSV."""
+    def process_addresses(self, input_file: str, output_file: str, delay: float = 1.0):
+        """Main processing function to normalize and parse addresses from CSV."""
         print(f"Reading input file: {input_file}")
         rows = self.read_csv(input_file)
         
@@ -232,32 +226,38 @@ Output:
                 skipped_count += 1
                 continue
             
-            print(f"Row {i}/{len(rows)}: Normalizing address: {address}")
+            print(f"Row {i}/{len(rows)}: Processing address: {address}")
             
             # Construct prompt and call API
-            prompt = self.construct_normalization_prompt(address)
+            prompt = self.construct_combined_prompt(address)
             result = self.call_gemini_api(prompt)
             
             if result:
-                # Add normalization results to the row
+                # Add all processing results to the row
                 row['original_address'] = address
                 row['normalized_address'] = result.get('normalized_address')
-                row['normalization_confidence'] = result.get('confidence_score')
+                row['processed_state'] = result.get('state')
+                row['processed_city'] = result.get('city')
+                row['processed_street'] = result.get('street')
+                row['processed_country'] = result.get('country')
+                row['processing_confidence'] = result.get('confidence_score')
                 row['improvements_made'] = result.get('improvements_made')
-                row['missing_info'] = result.get('missing_info')
                 row['address_quality'] = result.get('address_quality')
                 
                 new_data.append(row)
-                print(f"  -> Success: {result.get('normalized_address')}")
+                print(f"  -> Success: State={result.get('state')}, City={result.get('city')}, Street={result.get('street')}")
                 print(f"  -> Quality: {result.get('address_quality')}, Confidence: {result.get('confidence_score')}")
             else:
-                print(f"  -> Failed to normalize address")
-                # Add empty normalization fields for failed attempts
+                print(f"  -> Failed to process address")
+                # Add empty processing fields for failed attempts
                 row['original_address'] = address
-                row['normalized_address'] = address  # Keep original if normalization fails
-                row['normalization_confidence'] = 0.0
-                row['improvements_made'] = "Failed to normalize"
-                row['missing_info'] = "Unknown"
+                row['normalized_address'] = address
+                row['processed_state'] = None
+                row['processed_city'] = None
+                row['processed_street'] = None
+                row['processed_country'] = None
+                row['processing_confidence'] = 0.0
+                row['improvements_made'] = "Failed to process"
                 row['address_quality'] = "Unknown"
                 new_data.append(row)
             
@@ -271,7 +271,7 @@ Output:
         # Write results
         if all_data:
             self.write_csv(all_data, output_file)
-            print(f"\nNormalization complete!")
+            print(f"\nProcessing complete!")
             print(f"Total rows processed: {len(rows)}")
             print(f"Skipped (already processed): {skipped_count}")
             print(f"Newly processed: {len(new_data)}")
@@ -281,18 +281,18 @@ Output:
 
 
 def main():
-    """Main function to handle command line arguments and run the normalization process."""
-    parser = argparse.ArgumentParser(description='Normalize addresses using Gemini API')
+    """Main function to handle command line arguments and run the processing."""
+    parser = argparse.ArgumentParser(description='Process addresses: normalize and parse into components using Gemini API')
     parser.add_argument('--input', '-i', default='input_addresses.csv',
                        help='Input CSV file (default: input_addresses.csv)')
-    parser.add_argument('--output', '-o', default='normalized_addresses.csv',
-                       help='Output CSV file (default: normalized_addresses.csv)')
-    parser.add_argument('--delay', '-d', type=float, default=1.0,
-                       help='Delay between API calls in seconds (default: 1.0)')
+    parser.add_argument('--output', '-o', default='processed_addresses.csv',
+                       help='Output CSV file (default: processed_addresses.csv)')
+    parser.add_argument('--delay', '-d', type=float, default=2.0,
+                       help='Delay between API calls in seconds (default: 2.0)')
     parser.add_argument('--api-key', '-k',
                        help='Gemini API key (overrides environment variable)')
-    parser.add_argument('--model', '-m', default='gemini-1.5-flash',
-                       help='Gemini model name (default: gemini-1.5-flash)')
+    parser.add_argument('--model', '-m', default='gemini-2.5-pro',
+                       help='Gemini model name (default: gemini-2.5-pro)')
     
     args = parser.parse_args()
     
@@ -304,10 +304,11 @@ def main():
         print("Please set GEMINI_API_KEY environment variable or use --api-key argument.")
         sys.exit(1)
     
-    # Initialize normalizer and run
-    normalizer = AddressNormalizer(api_key, args.model)
-    normalizer.normalize_addresses(args.input, args.output, args.delay)
+    # Initialize processor and run
+    processor = AddressProcessor(api_key, args.model)
+    processor.process_addresses(args.input, args.output, args.delay)
 
 
 if __name__ == "__main__":
     main()
+

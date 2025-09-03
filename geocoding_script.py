@@ -18,7 +18,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 class GeocodingProcessor:
-    def __init__(self, api_key: str, model_name: str = "gemini-1.5-flash"):
+    def __init__(self, api_key: str, model_name: str = "gemini-2.5-pro"):
         """Initialize the geocoding processor with Gemini API configuration."""
         self.api_key = api_key
         self.model_name = model_name
