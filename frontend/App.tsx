@@ -13,11 +13,11 @@ function App() {
           <div className="flex items-center justify-between">
             <div className="flex items-center space-x-3">
               <div className="w-10 h-10 bg-gradient-to-r from-blue-600 to-indigo-600 rounded-lg flex items-center justify-center">
-                <span className="text-xl">🗺️</span>
+                <span className="text-base font-semibold text-white">GN</span>
               </div>
               <div>
-                <h1 className="text-2xl font-bold text-gray-900">GeoNorm</h1>
-                <p className="text-sm text-gray-600">AI-Powered Address Intelligence</p>
+                <h1 className="text-2xl md:text-3xl font-semibold tracking-tight text-gray-900">GeoNorm</h1>
+                <p className="text-sm md:text-base text-gray-600">AI-Powered Address Intelligence</p>
               </div>
             </div>
             <div className="hidden md:flex items-center space-x-6 text-sm text-gray-600">
@@ -120,7 +120,7 @@ function App() {
           <div className="flex items-center justify-between">
             <div className="flex items-center space-x-3">
               <div className="w-8 h-8 bg-gradient-to-r from-blue-600 to-indigo-600 rounded-lg flex items-center justify-center">
-                <span className="text-sm">🗺️</span>
+                <span className="text-xs font-semibold text-white">GN</span>
               </div>
               <span className="text-gray-600">Powered by Google Maps API & Gemini AI</span>
             </div>
