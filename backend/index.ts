@@ -11,8 +11,9 @@ import path from 'path'
 import fs from 'fs'
 import { v4 as uuidv4 } from 'uuid'
 import { fileURLToPath } from 'url'
-import { RequestWithTaskId, ProcessingTask } from './types'
-import whatsappService from './services/whatsappService'
+import { RequestWithTaskId, ProcessingTask } from './types.js'
+import whatsappService from './services/whatsappService.js'
+import { cleanParaguayAddresses } from './cleanParaguayAddresses.js'
 
 // ES module equivalent of __dirname
 const __filename = fileURLToPath(import.meta.url)
@@ -327,6 +328,148 @@ app.get('/api/staticmap', async (req, res) => {
     } catch (error) {
         console.error('[STATIC_MAP] Error:', error)
         res.status(500).json({ error: 'Failed to fetch static map', details: error.message })
+    }
+})
+
+// CSV field extraction endpoint
+app.post('/api/extract-fields', express.raw({ type: 'text/csv', limit: '10mb' }), async (req, res) => {
+    try {
+        const csvData = req.body.toString('utf-8')
+
+        if (!csvData) {
+            return res.status(400).json({ error: 'CSV data is required' })
+        }
+
+        // Parse CSV and extract the required fields
+        const lines = csvData.trim().split('\n')
+
+        // Better CSV parsing that handles quoted fields with commas
+        const parseCSVLine = (line: string): string[] => {
+            const result: string[] = []
+            let current = ''
+            let inQuotes = false
+
+            for (let i = 0; i < line.length; i++) {
+                const char = line[i]
+
+                if (char === '"') {
+                    inQuotes = !inQuotes
+                } else if (char === ',' && !inQuotes) {
+                    result.push(current.trim())
+                    current = ''
+                } else {
+                    current += char
+                }
+            }
+            result.push(current.trim())
+            return result
+        }
+
+        const headers = parseCSVLine(lines[0])
+
+        // Find column indices
+        const addressIndex = headers.findIndex((h: string) => h.includes('Buyer Address1'))
+        const cityIndex = headers.findIndex((h: string) => h.includes('Buyer City'))
+        const stateIndex = headers.findIndex((h: string) => h.includes('Buyer State'))
+        const phoneIndex = headers.findIndex((h: string) => h.includes('Buyer Phone'))
+
+        console.log('CSV Headers:', headers)
+        console.log('Column indices:', { addressIndex, cityIndex, stateIndex, phoneIndex })
+
+        if (addressIndex === -1 || cityIndex === -1 || stateIndex === -1 || phoneIndex === -1) {
+            return res.status(400).json({ error: 'Required columns not found in CSV' })
+        }
+
+        const extractedData = lines.slice(1).map((line: string, index: number) => {
+            const values = parseCSVLine(line)
+            const row = {
+                address: values[addressIndex] || '',
+                city: values[cityIndex] || '',
+                state: values[stateIndex] || '',
+                phone: values[phoneIndex] || ''
+            }
+            console.log(`Row ${index + 1}:`, row)
+            return row
+        }).filter(row => row.address || row.city || row.state || row.phone) // Filter out empty rows
+
+        res.json({ data: extractedData })
+    } catch (error) {
+        console.error('CSV extraction error:', error)
+        res.status(500).json({ error: 'Failed to extract fields from CSV' })
+    }
+})
+
+// OpenAI address cleaning endpoint
+app.post('/api/clean-with-openai', async (req, res) => {
+    try {
+        const { extractedData } = req.body
+
+        if (!extractedData || !Array.isArray(extractedData)) {
+            return res.status(400).json({ error: 'Extracted data is required' })
+        }
+
+        const apiKey = process.env.OPENAI_API_KEY
+        if (!apiKey) {
+            return res.status(500).json({ error: 'OpenAI API key not configured' })
+        }
+
+        // Convert extracted data to CSV format for OpenAI
+        const csvData = [
+            'Address,City,State,Phone',
+            ...extractedData.map((row: any) =>
+                `"${row.address}","${row.city}","${row.state}","${row.phone}"`
+            )
+        ].join('\n')
+
+        console.log('Sending data to OpenAI for cleaning...')
+
+        // Use the improved cleaning function
+        const cleanedCsv = await cleanParaguayAddresses(apiKey, csvData)
+
+        console.log('Received cleaned CSV from OpenAI')
+
+        // Parse the cleaned CSV using our robust parser
+        const parseCSVLine = (line: string): string[] => {
+            const result: string[] = []
+            let current = ''
+            let inQuotes = false
+
+            for (let i = 0; i < line.length; i++) {
+                const char = line[i]
+
+                if (char === '"') {
+                    inQuotes = !inQuotes
+                } else if (char === ',' && !inQuotes) {
+                    result.push(current.trim().replace(/^"|"$/g, ''))
+                    current = ''
+                } else {
+                    current += char
+                }
+            }
+            result.push(current.trim().replace(/^"|"$/g, ''))
+            return result
+        }
+
+        const lines = cleanedCsv.trim().split('\n')
+        const dataLines = lines.slice(1) // Skip header
+
+        const cleaned = dataLines.map((line, index) => {
+            const values = parseCSVLine(line)
+            console.log(`Parsed cleaned row ${index + 1}:`, values)
+
+            return {
+                address: values[0] || '',
+                city: values[1] || '',
+                state: values[2] || '',
+                phone: values[3] || '',
+                email: values[4] || ''
+            }
+        })
+
+        res.json({ data: cleaned })
+    } catch (error) {
+        console.error('OpenAI cleaning error:', error)
+        res.status(500).json({ error: 'Failed to clean data with OpenAI' })
     }
 })
 

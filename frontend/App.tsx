@@ -1,9 +1,10 @@
 import { useState } from 'react'
 import SimpleAddressForm from './components/forms/SimpleAddressForm'
 import CsvUploader from './components/forms/CsvUploader'
+import FieldExtractor from './components/FieldExtractor'
 
 function App() {
-  const [activeTab, setActiveTab] = useState<'single' | 'csv'>('single')
+  const [activeTab, setActiveTab] = useState<'single' | 'csv' | 'extract'>('single')
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-50 via-blue-50 to-indigo-100">
@@ -46,12 +47,12 @@ function App() {
         <div className="bg-white rounded-2xl shadow-lg border border-gray-200 mb-8">
           <div className="p-6 border-b border-gray-100">
             <h3 className="text-lg font-semibold text-gray-900 mb-4">Choose Processing Mode</h3>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
               <button
                 onClick={() => setActiveTab('single')}
                 className={`p-6 rounded-xl border-2 transition-all duration-200 text-left ${activeTab === 'single'
-                    ? 'border-blue-500 bg-blue-50 shadow-md'
-                    : 'border-gray-200 hover:border-gray-300 hover:shadow-sm'
+                  ? 'border-blue-500 bg-blue-50 shadow-md'
+                  : 'border-gray-200 hover:border-gray-300 hover:shadow-sm'
                   }`}
               >
                 <div className="flex items-center mb-3">
@@ -66,16 +67,32 @@ function App() {
               <button
                 onClick={() => setActiveTab('csv')}
                 className={`p-6 rounded-xl border-2 transition-all duration-200 text-left ${activeTab === 'csv'
-                    ? 'border-indigo-500 bg-indigo-50 shadow-md'
-                    : 'border-gray-200 hover:border-gray-300 hover:shadow-sm'
+                  ? 'border-indigo-500 bg-indigo-50 shadow-md'
+                  : 'border-gray-200 hover:border-gray-300 hover:shadow-sm'
                   }`}
               >
                 <div className="flex items-center mb-3">
                   <span className="text-2xl mr-3">📊</span>
-                  <h4 className="font-semibold text-gray-900">CSV Batch Processing</h4>
+                  <h4 className="font-semibold text-gray-900">Pipeline Testing</h4>
                 </div>
                 <p className="text-gray-600 text-sm">
                   Upload CSV files for bulk address processing with AI normalization
+                </p>
+              </button>
+
+              <button
+                onClick={() => setActiveTab('extract')}
+                className={`p-6 rounded-xl border-2 transition-all duration-200 text-left ${activeTab === 'extract'
+                  ? 'border-green-500 bg-green-50 shadow-md'
+                  : 'border-gray-200 hover:border-gray-300 hover:shadow-sm'
+                  }`}
+              >
+                <div className="flex items-center mb-3">
+                  <span className="text-2xl mr-3">🔧</span>
+                  <h4 className="font-semibold text-gray-900">Field Extractor</h4>
+                </div>
+                <p className="text-gray-600 text-sm">
+                  Simple extraction of Address, City, State, and Phone fields
                 </p>
               </button>
             </div>
@@ -96,17 +113,30 @@ function App() {
                 </div>
                 <SimpleAddressForm />
               </div>
-            ) : (
+            ) : activeTab === 'csv' ? (
               <div>
                 <div className="flex items-center mb-6">
                   <span className="text-3xl mr-3">📊</span>
                   <div>
-                    <h3 className="text-2xl font-bold text-gray-900">CSV Batch Processing</h3>
+                    <h3 className="text-2xl font-bold text-gray-900">Pipeline Testing</h3>
                     <p className="text-gray-600">Upload CSV files to process multiple addresses with AI-powered normalization</p>
                   </div>
                 </div>
                 <CsvUploader onUploadComplete={(result) => {
                   console.log('CSV processing completed:', result)
+                }} />
+              </div>
+            ) : (
+              <div>
+                <div className="flex items-center mb-6">
+                  <span className="text-3xl mr-3">🔧</span>
+                  <div>
+                    <h3 className="text-2xl font-bold text-gray-900">Field Extractor</h3>
+                    <p className="text-gray-600">Extract Address, City, State, and Phone fields from CSV files</p>
+                  </div>
+                </div>
+                <FieldExtractor onExtractComplete={(data) => {
+                  console.log('Field extraction completed:', data)
                 }} />
               </div>
             )}
