@@ -5,8 +5,8 @@ dotenv.config()
 
 import express from 'express'
 import cors from 'cors'
-import { smsService } from './services/smsService'
-import { emailService } from './services/emailService'
+import { smsService } from './services/smsService.js'
+import { emailService } from './services/emailService.js'
 // Note: dynamically import the cleaner to avoid TS type declaration issues for .js module
 
 const app = express()

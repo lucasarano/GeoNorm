@@ -5,12 +5,12 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "vite build",
+    "build": "vite build && npm run build:functions",
     "build:functions": "tsc -b backend/tsconfig.json",
     "lint": "eslint .",
     "preview": "vite preview",
-    "start": "PORT=8080 tsx backend/index.ts",
-    "server": "PORT=8080 tsx backend/index.ts",
+    "start": "PORT=8080 node backend/dist/index.js",
+    "server": "PORT=8080 node backend/dist/index.js",
     "server:dev": "PORT=3001 nodemon --exec tsx backend/index.ts",
     "start:all": "concurrently \"npm run server:dev\" \"npm run dev\""
   },

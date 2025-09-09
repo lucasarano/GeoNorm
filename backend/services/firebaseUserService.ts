@@ -1,13 +1,13 @@
-import { 
-  collection, 
-  doc, 
-  addDoc, 
-  getDoc, 
-  getDocs, 
-  updateDoc, 
-  query, 
+import {
+  collection,
+  doc,
+  addDoc,
+  getDoc,
+  getDocs,
+  updateDoc,
+  query,
   where,
-  serverTimestamp 
+  serverTimestamp
 } from 'firebase/firestore'
 import { db } from '../config/firebase.js'
 import { v4 as uuidv4 } from 'uuid'
@@ -50,9 +50,9 @@ class FirebaseUserService {
   async getUserByApiKey(apiKey: string): Promise<User | null> {
     const q = query(this.usersCollection, where('apiKey', '==', apiKey))
     const querySnapshot = await getDocs(q)
-    
+
     if (querySnapshot.empty) return null
-    
+
     const doc = querySnapshot.docs[0]
     return { id: doc.id, ...doc.data() } as User
   }
@@ -60,9 +60,9 @@ class FirebaseUserService {
   async getUserByEmail(email: string): Promise<User | null> {
     const q = query(this.usersCollection, where('email', '==', email))
     const querySnapshot = await getDocs(q)
-    
+
     if (querySnapshot.empty) return null
-    
+
     const doc = querySnapshot.docs[0]
     return { id: doc.id, ...doc.data() } as User
   }
@@ -83,9 +83,9 @@ class FirebaseUserService {
   async getUserById(userId: string): Promise<User | null> {
     const userRef = doc(this.usersCollection, userId)
     const userSnap = await getDoc(userRef)
-    
+
     if (!userSnap.exists()) return null
-    
+
     return { id: userSnap.id, ...userSnap.data() } as User
   }
 
@@ -93,13 +93,13 @@ class FirebaseUserService {
     return `gn_${uuidv4().replace(/-/g, '')}`
   }
 
-  private getMaxRequests(plan: string): number {
-    const limits = {
+  private getMaxRequests(plan: 'free' | 'pro' | 'enterprise' | string): number {
+    const limits: Record<'free' | 'pro' | 'enterprise', number> = {
       free: 100,
       pro: 1000,
       enterprise: 10000
     }
-    return limits[plan] || 100
+    return (limits as Record<string, number>)[plan] ?? 100
   }
 }
 
