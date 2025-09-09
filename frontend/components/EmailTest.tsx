@@ -47,7 +47,7 @@ const EmailTest: React.FC<EmailTestProps> = ({ onBack }) => {
         setResult(null)
 
         try {
-            const response = await fetch('http://localhost:3001/api/test-location-email', {
+            const response = await fetch('https://42f2424bd34d.ngrok-free.app/api/test-location-email', {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
