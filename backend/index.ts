@@ -17,7 +17,7 @@ const PORT = process.env.PORT || 3001
 // Enable CORS for all routes
 app.use(cors({
     origin: [
-        'http://localhost:5173',
+        'https://42f2424bd34d.ngrok-free.app',
         'http://localhost:5174',
         'http://localhost:5175',
         'http://localhost:3000'
@@ -367,7 +367,7 @@ app.post('/api/send-confirmations', async (req, res) => {
                 phoneNumber: addr.phone,
                 originalAddress: addr.originalAddress,
                 cleanedAddress: addr.cleanedAddress,
-                confirmationUrl: `${process.env.FRONTEND_URL || 'http://localhost:5173'}/confirm/${addr.id}`
+                confirmationUrl: `${process.env.FRONTEND_URL || 'https://42f2424bd34d.ngrok-free.app'}/confirm/${addr.id}`
             }))
 
         if (confirmations.length === 0) {
@@ -400,7 +400,7 @@ app.get('/confirm/:addressId/confirm', async (req, res) => {
         console.log(`Address ${addressId} confirmed via SMS`)
 
         // Redirect to a confirmation page
-        res.redirect(`${process.env.FRONTEND_URL || 'http://localhost:5173'}/confirmation-success?status=confirmed&id=${addressId}`)
+        res.redirect(`${process.env.FRONTEND_URL || 'https://42f2424bd34d.ngrok-free.app'}/confirmation-success?status=confirmed&id=${addressId}`)
     } catch (error) {
         console.error('Error confirming address:', error)
         res.status(500).json({ error: 'Failed to confirm address' })
@@ -418,7 +418,7 @@ app.get('/confirm/:addressId/reject', async (req, res) => {
         console.log(`Address ${addressId} rejected via SMS`)
 
         // Redirect to a rejection page
-        res.redirect(`${process.env.FRONTEND_URL || 'http://localhost:5173'}/confirmation-success?status=rejected&id=${addressId}`)
+        res.redirect(`${process.env.FRONTEND_URL || 'https://42f2424bd34d.ngrok-free.app'}/confirmation-success?status=rejected&id=${addressId}`)
     } catch (error) {
         console.error('Error rejecting address:', error)
         res.status(500).json({ error: 'Failed to reject address' })
@@ -669,7 +669,7 @@ app.post('/api/send-location-sms', async (req, res) => {
         }
 
         const results = []
-        const baseUrl = process.env.FRONTEND_URL || 'http://localhost:5173'
+        const baseUrl = process.env.FRONTEND_URL || 'https://42f2424bd34d.ngrok-free.app'
 
         for (const customer of customers) {
             const locationUrl = `${baseUrl}/location?orderID=${encodeURIComponent(customer.phone)}`
@@ -720,7 +720,7 @@ app.post('/api/test-location-sms', async (req, res) => {
             return res.status(400).json({ error: 'Phone number is required' })
         }
 
-        const baseUrl = process.env.FRONTEND_URL || 'http://localhost:5173'
+        const baseUrl = process.env.FRONTEND_URL || 'https://42f2424bd34d.ngrok-free.app'
         const locationUrl = `${baseUrl}/location?orderID=TEST-${Date.now()}`
         const message = `Hola! Este es un SMS de prueba. Para compartir tu ubicación, haz clic aquí: ${locationUrl}`
 
@@ -747,7 +747,7 @@ app.post('/api/test-location-email', async (req, res) => {
             return res.status(400).json({ error: 'Email address is required' })
         }
 
-        const baseUrl = process.env.FRONTEND_URL || 'http://localhost:5173'
+        const baseUrl = process.env.FRONTEND_URL || 'https://42f2424bd34d.ngrok-free.app'
         const locationUrl = `${baseUrl}/location?orderID=TEST-${Date.now()}`
         const customerName = name || 'Cliente'
 
@@ -826,7 +826,7 @@ app.post('/api/send-location-confirmations', async (req, res) => {
         }
 
         const results = []
-        const baseUrl = process.env.FRONTEND_URL || 'http://localhost:5173'
+        const baseUrl = process.env.FRONTEND_URL || 'https://42f2424bd34d.ngrok-free.app'
 
         for (const address of addresses) {
             const confirmationId = `conf-${address.rowIndex}-${Date.now()}`
@@ -905,7 +905,7 @@ app.get('/confirm-address/:confirmationId/confirm', async (req, res) => {
             console.log(`Address confirmed for row ${update.rowIndex}: ${update.address}`)
         }
 
-        res.redirect(`${process.env.FRONTEND_URL || 'http://localhost:5173'}/confirmation-success?status=confirmed&id=${confirmationId}`)
+        res.redirect(`${process.env.FRONTEND_URL || 'https://42f2424bd34d.ngrok-free.app'}/confirmation-success?status=confirmed&id=${confirmationId}`)
     } catch (error) {
         console.error('Error confirming address:', error)
         res.status(500).json({ error: 'Failed to confirm address' })
@@ -924,7 +924,7 @@ app.get('/confirm-address/:confirmationId/reject', async (req, res) => {
             console.log(`Address rejected for row ${update.rowIndex}: ${update.address}`)
         }
 
-        res.redirect(`${process.env.FRONTEND_URL || 'http://localhost:5173'}/confirmation-success?status=rejected&id=${confirmationId}`)
+        res.redirect(`${process.env.FRONTEND_URL || 'https://42f2424bd34d.ngrok-free.app'}/confirmation-success?status=rejected&id=${confirmationId}`)
     } catch (error) {
         console.error('Error rejecting address:', error)
         res.status(500).json({ error: 'Failed to reject address' })
