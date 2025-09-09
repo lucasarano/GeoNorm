@@ -14,12 +14,12 @@ export default defineConfig({
   server: {
     proxy: {
       "/api": {
-        target: "https://42f2424bd34d.ngrok-free.app",
+        target: "http://localhost:3001",
         changeOrigin: true,
         secure: false,
       },
       "/health": {
-        target: "https://42f2424bd34d.ngrok-free.app",
+        target: "http://localhost:3001",
         changeOrigin: true,
         secure: false,
       }

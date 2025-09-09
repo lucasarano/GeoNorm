@@ -65,8 +65,8 @@ export default function AddressForm() {
         try {
             // Call both APIs in parallel through our backend
             const [geocodingResponse, placesResponse] = await Promise.allSettled([
-                fetch(`https://42f2424bd34d.ngrok-free.app/api/geocoding?address=${encodeURIComponent(address)}`),
-                fetch(`https://42f2424bd34d.ngrok-free.app/api/places?input=${encodeURIComponent(address)}`)
+                fetch(`http://localhost:3001/api/geocoding?address=${encodeURIComponent(address)}`),
+                fetch(`http://localhost:3001/api/places?input=${encodeURIComponent(address)}`)
             ])
 
             // Handle Geocoding API response
