@@ -6,6 +6,7 @@ dotenv.config()
 import express from 'express'
 import cors from 'cors'
 import { smsService } from './services/smsService'
+import { emailService } from './services/emailService'
 // Note: dynamically import the cleaner to avoid TS type declaration issues for .js module
 
 const app = express()
@@ -658,7 +659,295 @@ app.post('/api/notify-completion', async (req, res) => {
     }
 })
 
-// Removed: CSV batch processing and WhatsApp integrations
+// Location Sender SMS endpoints
+app.post('/api/send-location-sms', async (req, res) => {
+    try {
+        const { customers } = req.body
+
+        if (!customers || !Array.isArray(customers)) {
+            return res.status(400).json({ error: 'Customers array is required' })
+        }
+
+        const results = []
+        const baseUrl = process.env.FRONTEND_URL || 'http://localhost:5173'
+
+        for (const customer of customers) {
+            const locationUrl = `${baseUrl}/location?orderID=${encodeURIComponent(customer.phone)}`
+            const message = `Hola ${customer.name}! Para completar tu entrega, necesitamos tu ubicación exacta. Por favor haz clic en este enlace: ${locationUrl}`
+
+            try {
+                // Use existing SMS service
+                const success = await smsService.sendSMS(customer.phone, message)
+
+                results.push({
+                    success: success,
+                    customer,
+                    messageId: success ? 'sent' : undefined,
+                    locationUrl,
+                    error: success ? undefined : 'SMS sending failed'
+                })
+            } catch (error: any) {
+                results.push({
+                    success: false,
+                    customer,
+                    locationUrl,
+                    error: error.message
+                })
+            }
+        }
+
+        const successCount = results.filter(r => r.success).length
+        const failureCount = results.filter(r => !r.success).length
+
+        res.json({
+            totalCustomers: customers.length,
+            successCount,
+            failureCount,
+            results
+        })
+
+    } catch (error) {
+        console.error('Error sending location SMS:', error)
+        res.status(500).json({ error: 'Failed to send location SMS' })
+    }
+})
+
+app.post('/api/test-location-sms', async (req, res) => {
+    try {
+        const { phone } = req.body
+
+        if (!phone) {
+            return res.status(400).json({ error: 'Phone number is required' })
+        }
+
+        const baseUrl = process.env.FRONTEND_URL || 'http://localhost:5173'
+        const locationUrl = `${baseUrl}/location?orderID=TEST-${Date.now()}`
+        const message = `Hola! Este es un SMS de prueba. Para compartir tu ubicación, haz clic aquí: ${locationUrl}`
+
+        const success = await smsService.sendSMS(phone, message)
+
+        res.json({
+            success: success,
+            messageId: success ? 'sent' : undefined,
+            locationUrl,
+            error: success ? undefined : 'SMS sending failed'
+        })
+
+    } catch (error) {
+        console.error('Error sending test SMS:', error)
+        res.status(500).json({ error: 'Failed to send test SMS' })
+    }
+})
+
+app.post('/api/test-location-email', async (req, res) => {
+    try {
+        const { email, name } = req.body
+
+        if (!email) {
+            return res.status(400).json({ error: 'Email address is required' })
+        }
+
+        const baseUrl = process.env.FRONTEND_URL || 'http://localhost:5173'
+        const locationUrl = `${baseUrl}/location?orderID=TEST-${Date.now()}`
+        const customerName = name || 'Cliente'
+
+        const success = await emailService.sendLocationRequest(email, customerName, locationUrl)
+
+        res.json({
+            success: success,
+            messageId: success ? 'sent' : undefined,
+            locationUrl,
+            error: success ? undefined : 'Email sending failed'
+        })
+
+    } catch (error) {
+        console.error('Error sending test email:', error)
+        res.status(500).json({ error: 'Failed to send test email' })
+    }
+})
+
+// Location collection endpoints
+const locations: any[] = [] // In-memory storage for demo (use database in production)
+const addressUpdates: any[] = [] // Track address confirmation updates
+
+app.post('/api/save-location', async (req, res) => {
+    try {
+        const { latitude, longitude, accuracy, orderID, userAgent } = req.body
+
+        if (!latitude || !longitude) {
+            return res.status(400).json({ error: 'Latitude and longitude are required' })
+        }
+
+        const locationData = {
+            id: Date.now().toString(),
+            latitude: parseFloat(latitude),
+            longitude: parseFloat(longitude),
+            accuracy: accuracy ? parseFloat(accuracy) : null,
+            orderID: orderID || null,
+            phoneNumber: orderID, // Using orderID as phone number for now
+            userAgent: userAgent || null,
+            timestamp: new Date().toISOString()
+        }
+
+        locations.push(locationData)
+
+        console.log(`[LOCATION] Saved location: ${latitude}, ${longitude} (Order: ${orderID})`)
+
+        res.json({ success: true, location: locationData })
+
+    } catch (error) {
+        console.error('Error saving location:', error)
+        res.status(500).json({ error: 'Failed to save location' })
+    }
+})
+
+app.get('/api/location-history', async (req, res) => {
+    try {
+        // Return locations sorted by timestamp (newest first)
+        const sortedLocations = locations.sort((a, b) =>
+            new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()
+        )
+
+        res.json(sortedLocations)
+
+    } catch (error) {
+        console.error('Error fetching location history:', error)
+        res.status(500).json({ error: 'Failed to fetch location history' })
+    }
+})
+
+// SMS Address Confirmation endpoints
+app.post('/api/send-location-confirmations', async (req, res) => {
+    try {
+        const { addresses } = req.body
+
+        if (!addresses || !Array.isArray(addresses)) {
+            return res.status(400).json({ error: 'Addresses array is required' })
+        }
+
+        const results = []
+        const baseUrl = process.env.FRONTEND_URL || 'http://localhost:5173'
+
+        for (const address of addresses) {
+            const confirmationId = `conf-${address.rowIndex}-${Date.now()}`
+            const confirmUrl = `${baseUrl}/confirm-address/${confirmationId}`
+
+            const message = `
+🏠 GeoNorm - Confirmación de Dirección
+
+Dirección procesada: ${address.cleanedAddress}
+
+¿Es correcta esta dirección?
+
+Confirmar: ${confirmUrl}/confirm
+Rechazar: ${confirmUrl}/reject
+
+Confianza actual: ${Math.round(address.confidence * 100)}%
+            `.trim()
+
+            try {
+                const success = await smsService.sendSMS(address.phone, message)
+
+                results.push({
+                    rowIndex: address.rowIndex,
+                    success: success,
+                    confirmationId,
+                    error: success ? undefined : 'SMS sending failed'
+                })
+
+                // Store confirmation request for tracking
+                if (success) {
+                    addressUpdates.push({
+                        confirmationId,
+                        rowIndex: address.rowIndex,
+                        address: address.cleanedAddress,
+                        phone: address.phone,
+                        status: 'pending',
+                        sentAt: new Date().toISOString()
+                    })
+                }
+
+            } catch (error: any) {
+                results.push({
+                    rowIndex: address.rowIndex,
+                    success: false,
+                    error: error.message
+                })
+            }
+        }
+
+        const successCount = results.filter(r => r.success).length
+        const failureCount = results.filter(r => !r.success).length
+
+        res.json({
+            totalAddresses: addresses.length,
+            successCount,
+            failureCount,
+            results
+        })
+
+    } catch (error) {
+        console.error('Error sending location confirmation SMS:', error)
+        res.status(500).json({ error: 'Failed to send location confirmation SMS' })
+    }
+})
+
+// Address confirmation response endpoints
+app.get('/confirm-address/:confirmationId/confirm', async (req, res) => {
+    try {
+        const { confirmationId } = req.params
+
+        const update = addressUpdates.find(u => u.confirmationId === confirmationId)
+        if (update) {
+            update.status = 'confirmed'
+            update.confirmedAt = new Date().toISOString()
+
+            console.log(`Address confirmed for row ${update.rowIndex}: ${update.address}`)
+        }
+
+        res.redirect(`${process.env.FRONTEND_URL || 'http://localhost:5173'}/confirmation-success?status=confirmed&id=${confirmationId}`)
+    } catch (error) {
+        console.error('Error confirming address:', error)
+        res.status(500).json({ error: 'Failed to confirm address' })
+    }
+})
+
+app.get('/confirm-address/:confirmationId/reject', async (req, res) => {
+    try {
+        const { confirmationId } = req.params
+
+        const update = addressUpdates.find(u => u.confirmationId === confirmationId)
+        if (update) {
+            update.status = 'rejected'
+            update.rejectedAt = new Date().toISOString()
+
+            console.log(`Address rejected for row ${update.rowIndex}: ${update.address}`)
+        }
+
+        res.redirect(`${process.env.FRONTEND_URL || 'http://localhost:5173'}/confirmation-success?status=rejected&id=${confirmationId}`)
+    } catch (error) {
+        console.error('Error rejecting address:', error)
+        res.status(500).json({ error: 'Failed to reject address' })
+    }
+})
+
+// Get address updates since timestamp (for real-time polling)
+app.get('/api/address-updates', async (req, res) => {
+    try {
+        const { since } = req.query
+        const sinceTime = since ? new Date(parseInt(since as string)) : new Date(0)
+
+        const recentUpdates = addressUpdates.filter(update => {
+            const updateTime = new Date(update.confirmedAt || update.rejectedAt || update.sentAt)
+            return updateTime > sinceTime && (update.status === 'confirmed' || update.status === 'rejected')
+        })
+
+        res.json(recentUpdates)
+    } catch (error) {
+        console.error('Error fetching address updates:', error)
+        res.status(500).json({ error: 'Failed to fetch address updates' })
+    }
+})
 
 app.listen(PORT, () => {
     console.log(`Server running on http://localhost:${PORT}`)

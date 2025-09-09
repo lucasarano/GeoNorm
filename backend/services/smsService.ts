@@ -1,3 +1,5 @@
+import dotenv from 'dotenv'
+dotenv.config()
 import twilio from 'twilio'
 
 // SMS Service for sending confirmation requests
@@ -120,6 +122,22 @@ Responde STOP para no recibir más mensajes.
         }
 
         return cleaned
+    }
+
+    // Send generic SMS message
+    async sendSMS(phoneNumber: string, message: string): Promise<boolean> {
+        try {
+            await this.client.messages.create({
+                body: message,
+                from: this.fromNumber,
+                to: this.formatPhoneNumber(phoneNumber)
+            })
+
+            return true
+        } catch (error) {
+            console.error('Error sending SMS:', error)
+            return false
+        }
     }
 
     // Send simple notification SMS

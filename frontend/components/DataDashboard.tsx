@@ -11,7 +11,11 @@ import {
     AlertCircle,
     XCircle,
     Eye,
-    EyeOff
+    EyeOff,
+    MessageSquare,
+    Send,
+    Users,
+    Phone
 } from 'lucide-react'
 
 interface ProcessedRow {
@@ -59,6 +63,15 @@ export default function DataDashboard({ data, statistics, onBack }: DataDashboar
     const [statusFilter, setStatusFilter] = useState<string>('all')
     const [showOriginal, setShowOriginal] = useState(true)
     const [selectedRow, setSelectedRow] = useState<ProcessedRow | null>(null)
+    const [showSMSModal, setShowSMSModal] = useState(false)
+    const [selectedForSMS, setSelectedForSMS] = useState<Set<number>>(new Set())
+    const [isSendingSMS, setIsSendingSMS] = useState(false)
+    const [smsResults, setSmsResults] = useState<Array<{
+        rowIndex: number
+        success: boolean
+        error?: string
+    }>>([])
+    const [showSMSResults, setShowSMSResults] = useState(false)
 
     // Filter and search data
     const filteredData = useMemo(() => {
@@ -88,6 +101,121 @@ export default function DataDashboard({ data, statistics, onBack }: DataDashboar
             return true
         })
     }, [data, searchTerm, statusFilter])
+
+    // Get candidates for SMS confirmation (low confidence addresses with phone numbers)
+    const smsEligibleRows = useMemo(() => {
+        return data.filter(row => {
+            const hasPhone = row.cleaned.phone && row.cleaned.phone.trim() !== ''
+            const lowConfidence = row.geocoding.confidence <= 0.4
+            return hasPhone && lowConfidence
+        })
+    }, [data])
+
+    // Track recently updated rows for animations
+    const [updatedRows, setUpdatedRows] = useState<Set<number>>(new Set())
+    const [lastUpdateTime, setLastUpdateTime] = useState<number>(Date.now())
+
+    // Initialize SMS selection with low confidence addresses
+    React.useEffect(() => {
+        if (smsEligibleRows.length > 0 && selectedForSMS.size === 0) {
+            setSelectedForSMS(new Set(smsEligibleRows.map(row => row.rowIndex)))
+        }
+    }, [smsEligibleRows, selectedForSMS.size])
+
+    // Real-time polling for address updates
+    React.useEffect(() => {
+        const pollForUpdates = async () => {
+            try {
+                const response = await fetch(`/api/address-updates?since=${lastUpdateTime}`)
+                if (response.ok) {
+                    const updates = await response.json()
+                    if (updates.length > 0) {
+                        const updatedRowIndices = new Set(updates.map((u: any) => u.rowIndex))
+                        setUpdatedRows(updatedRowIndices)
+                        setLastUpdateTime(Date.now())
+
+                        // Clear animation after 3 seconds
+                        setTimeout(() => {
+                            setUpdatedRows(new Set())
+                        }, 3000)
+                    }
+                }
+            } catch (error) {
+                console.error('Error polling for updates:', error)
+            }
+        }
+
+        // Poll every 5 seconds
+        const interval = setInterval(pollForUpdates, 5000)
+        return () => clearInterval(interval)
+    }, [lastUpdateTime])
+
+    const handleSMSSelectionToggle = (rowIndex: number) => {
+        const newSelection = new Set(selectedForSMS)
+        if (newSelection.has(rowIndex)) {
+            newSelection.delete(rowIndex)
+        } else {
+            newSelection.add(rowIndex)
+        }
+        setSelectedForSMS(newSelection)
+    }
+
+    const handleSelectAllSMSEligible = () => {
+        setSelectedForSMS(new Set(smsEligibleRows.map(row => row.rowIndex)))
+    }
+
+    const handleDeselectAllSMS = () => {
+        setSelectedForSMS(new Set())
+    }
+
+    const handleSendSMS = async () => {
+        const selectedRows = data.filter(row => selectedForSMS.has(row.rowIndex))
+
+        if (selectedRows.length === 0) {
+            alert('No hay clientes seleccionados para envío de SMS')
+            return
+        }
+
+        setIsSendingSMS(true)
+        setSmsResults([])
+
+        try {
+            const response = await fetch('/api/send-location-confirmations', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    addresses: selectedRows.map(row => ({
+                        rowIndex: row.rowIndex,
+                        originalAddress: row.original.address,
+                        cleanedAddress: row.cleaned.address,
+                        phone: row.cleaned.phone || row.original.phone,
+                        confidence: row.geocoding.confidence,
+                        coordinates: {
+                            lat: row.geocoding.latitude,
+                            lng: row.geocoding.longitude
+                        }
+                    }))
+                })
+            })
+
+            if (!response.ok) {
+                throw new Error('Error enviando SMS de confirmación')
+            }
+
+            const results = await response.json()
+            setSmsResults(results.results || [])
+            setShowSMSResults(true)
+            setShowSMSModal(false)
+
+        } catch (error) {
+            console.error('Error sending SMS:', error)
+            alert('Error enviando SMS. Verifica la configuración de Twilio.')
+        } finally {
+            setIsSendingSMS(false)
+        }
+    }
 
     const getStatusIcon = (status: string) => {
         switch (status) {
@@ -272,6 +400,16 @@ export default function DataDashboard({ data, statistics, onBack }: DataDashboar
                         </Button>
                     </div>
 
+                    {/* SMS Confirmation */}
+                    <Button
+                        onClick={() => setShowSMSModal(true)}
+                        disabled={smsEligibleRows.length === 0}
+                        className="bg-gradient-to-r from-blue-500 to-indigo-500 hover:from-blue-600 hover:to-indigo-600 text-white"
+                    >
+                        <MessageSquare className="w-4 h-4 mr-2" />
+                        Confirmar por SMS ({smsEligibleRows.length})
+                    </Button>
+
                     {/* Download */}
                     <Button
                         onClick={downloadCSV}
@@ -331,7 +469,10 @@ export default function DataDashboard({ data, statistics, onBack }: DataDashboar
                             {filteredData.map((row) => (
                                 <tr
                                     key={row.rowIndex}
-                                    className="hover:bg-gray-50 cursor-pointer"
+                                    className={`hover:bg-gray-50 cursor-pointer transition-all duration-500 ${updatedRows.has(row.rowIndex)
+                                        ? 'bg-green-100 border-l-4 border-green-500 animate-pulse'
+                                        : ''
+                                        }`}
                                     onClick={() => setSelectedRow(row)}
                                 >
                                     <td className="px-4 py-4 whitespace-nowrap text-sm font-medium text-gray-900">
@@ -490,6 +631,229 @@ export default function DataDashboard({ data, statistics, onBack }: DataDashboar
                                         </div>
                                     )}
                                 </Card>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {/* SMS Confirmation Modal */}
+            {showSMSModal && (
+                <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+                    <div className="bg-white rounded-lg max-w-4xl w-full mx-4 max-h-[90vh] overflow-y-auto">
+                        <div className="p-6">
+                            <div className="flex justify-between items-center mb-6">
+                                <h3 className="text-xl font-bold text-gray-900">
+                                    Confirmación por SMS
+                                </h3>
+                                <Button
+                                    onClick={() => setShowSMSModal(false)}
+                                    variant="outline"
+                                    size="sm"
+                                >
+                                    Cerrar
+                                </Button>
+                            </div>
+
+                            <div className="mb-6">
+                                <p className="text-gray-600 mb-4">
+                                    Selecciona los clientes que recibirán SMS para confirmar sus direcciones.
+                                    Por defecto se seleccionan direcciones con confianza ≤40%.
+                                </p>
+
+                                <div className="flex gap-4 mb-4">
+                                    <Button
+                                        onClick={handleSelectAllSMSEligible}
+                                        variant="outline"
+                                        size="sm"
+                                        className="flex items-center gap-2"
+                                    >
+                                        <Users className="w-4 h-4" />
+                                        Seleccionar Elegibles ({smsEligibleRows.length})
+                                    </Button>
+                                    <Button
+                                        onClick={handleDeselectAllSMS}
+                                        variant="outline"
+                                        size="sm"
+                                        className="flex items-center gap-2"
+                                    >
+                                        <XCircle className="w-4 h-4" />
+                                        Deseleccionar Todo
+                                    </Button>
+                                </div>
+
+                                <div className="bg-blue-50 p-4 rounded-lg mb-4">
+                                    <p className="text-sm text-blue-800">
+                                        <strong>{selectedForSMS.size}</strong> clientes seleccionados para SMS
+                                    </p>
+                                </div>
+                            </div>
+
+                            {/* Customer Selection Table */}
+                            <div className="border rounded-lg overflow-hidden mb-6">
+                                <table className="min-w-full divide-y divide-gray-200">
+                                    <thead className="bg-gray-50">
+                                        <tr>
+                                            <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                                                Seleccionar
+                                            </th>
+                                            <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                                                Fila
+                                            </th>
+                                            <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                                                Dirección Limpiada
+                                            </th>
+                                            <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                                                Teléfono
+                                            </th>
+                                            <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                                                Confianza
+                                            </th>
+                                        </tr>
+                                    </thead>
+                                    <tbody className="bg-white divide-y divide-gray-200">
+                                        {data
+                                            .filter(row => row.cleaned.phone && row.cleaned.phone.trim() !== '')
+                                            .map((row) => (
+                                                <tr key={row.rowIndex} className="hover:bg-gray-50">
+                                                    <td className="px-4 py-4 whitespace-nowrap">
+                                                        <input
+                                                            type="checkbox"
+                                                            checked={selectedForSMS.has(row.rowIndex)}
+                                                            onChange={() => handleSMSSelectionToggle(row.rowIndex)}
+                                                            className="h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded"
+                                                        />
+                                                    </td>
+                                                    <td className="px-4 py-4 whitespace-nowrap text-sm font-medium text-gray-900">
+                                                        {row.rowIndex + 1}
+                                                    </td>
+                                                    <td className="px-4 py-4 text-sm text-gray-900 max-w-xs">
+                                                        <div className="truncate" title={row.cleaned.address}>
+                                                            {row.cleaned.address}
+                                                        </div>
+                                                    </td>
+                                                    <td className="px-4 py-4 whitespace-nowrap">
+                                                        <div className="flex items-center text-sm text-gray-900">
+                                                            <Phone className="w-4 h-4 mr-2 text-gray-400" />
+                                                            {row.cleaned.phone}
+                                                        </div>
+                                                    </td>
+                                                    <td className="px-4 py-4 whitespace-nowrap">
+                                                        <div className="flex items-center">
+                                                            <span className={`px-2 py-1 text-xs font-medium rounded-full ${row.geocoding.confidence <= 0.4
+                                                                ? 'bg-red-100 text-red-800'
+                                                                : row.geocoding.confidence <= 0.7
+                                                                    ? 'bg-yellow-100 text-yellow-800'
+                                                                    : 'bg-green-100 text-green-800'
+                                                                }`}>
+                                                                {Math.round(row.geocoding.confidence * 100)}%
+                                                            </span>
+                                                        </div>
+                                                    </td>
+                                                </tr>
+                                            ))}
+                                    </tbody>
+                                </table>
+                            </div>
+
+                            {/* Send Button */}
+                            <div className="flex justify-end gap-4">
+                                <Button
+                                    onClick={() => setShowSMSModal(false)}
+                                    variant="outline"
+                                >
+                                    Cancelar
+                                </Button>
+                                <Button
+                                    onClick={handleSendSMS}
+                                    disabled={selectedForSMS.size === 0 || isSendingSMS}
+                                    className="bg-gradient-to-r from-blue-500 to-indigo-500 hover:from-blue-600 hover:to-indigo-600 text-white"
+                                >
+                                    {isSendingSMS ? (
+                                        <>
+                                            <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white mr-2"></div>
+                                            Enviando...
+                                        </>
+                                    ) : (
+                                        <>
+                                            <Send className="w-4 h-4 mr-2" />
+                                            Enviar SMS a {selectedForSMS.size} Clientes
+                                        </>
+                                    )}
+                                </Button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {/* SMS Results Modal */}
+            {showSMSResults && (
+                <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+                    <div className="bg-white rounded-lg max-w-2xl w-full mx-4 max-h-[90vh] overflow-y-auto">
+                        <div className="p-6">
+                            <div className="flex justify-between items-center mb-6">
+                                <h3 className="text-xl font-bold text-gray-900">
+                                    Resultados del Envío SMS
+                                </h3>
+                                <Button
+                                    onClick={() => setShowSMSResults(false)}
+                                    variant="outline"
+                                    size="sm"
+                                >
+                                    Cerrar
+                                </Button>
+                            </div>
+
+                            <div className="grid grid-cols-2 gap-4 mb-6">
+                                <div className="bg-green-50 p-4 rounded-lg border border-green-200">
+                                    <div className="flex items-center">
+                                        <CheckCircle className="w-5 h-5 text-green-500 mr-2" />
+                                        <div>
+                                            <p className="text-sm text-green-600">Exitosos</p>
+                                            <p className="text-2xl font-bold text-green-700">
+                                                {smsResults.filter(r => r.success).length}
+                                            </p>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div className="bg-red-50 p-4 rounded-lg border border-red-200">
+                                    <div className="flex items-center">
+                                        <XCircle className="w-5 h-5 text-red-500 mr-2" />
+                                        <div>
+                                            <p className="text-sm text-red-600">Fallidos</p>
+                                            <p className="text-2xl font-bold text-red-700">
+                                                {smsResults.filter(r => !r.success).length}
+                                            </p>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div className="space-y-2 max-h-64 overflow-y-auto">
+                                {smsResults.map((result, index) => (
+                                    <div
+                                        key={index}
+                                        className={`p-3 rounded-lg border ${result.success
+                                            ? 'bg-green-50 border-green-200'
+                                            : 'bg-red-50 border-red-200'
+                                            }`}
+                                    >
+                                        <div className="flex items-center justify-between">
+                                            <span className="font-medium">
+                                                Fila {result.rowIndex + 1}
+                                            </span>
+                                            {result.success ? (
+                                                <CheckCircle className="w-4 h-4 text-green-500" />
+                                            ) : (
+                                                <XCircle className="w-4 h-4 text-red-500" />
+                                            )}
+                                        </div>
+                                        {result.error && (
+                                            <p className="text-sm text-red-600 mt-1">{result.error}</p>
+                                        )}
+                                    </div>
+                                ))}
                             </div>
                         </div>
                     </div>

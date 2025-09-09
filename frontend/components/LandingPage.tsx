@@ -3,9 +3,11 @@ import { Button } from './shared/ui/button'
 
 interface LandingPageProps {
     onGetStarted: () => void
+    onSMSTest?: () => void
+    onEmailTest?: () => void
 }
 
-export default function LandingPage({ onGetStarted }: LandingPageProps) {
+export default function LandingPage({ onGetStarted, onSMSTest, onEmailTest }: LandingPageProps) {
     const [isVisible, setIsVisible] = useState(false)
 
     useEffect(() => {
@@ -155,20 +157,54 @@ export default function LandingPage({ onGetStarted }: LandingPageProps) {
                         </div>
                     </div>
 
-                    {/* CTA Button */}
+                    {/* CTA Buttons */}
                     <div className={`text-center mt-16 transition-all duration-1000 delay-700 ${isVisible ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-8'}`}>
-                        <Button
-                            onClick={onGetStarted}
-                            className="bg-gradient-to-r from-orange-500 via-amber-500 to-yellow-500 hover:from-orange-600 hover:via-amber-600 hover:to-yellow-600 text-white font-bold py-6 px-16 rounded-2xl text-2xl shadow-2xl hover:shadow-3xl transition-all duration-300 hover:scale-105 border-0"
-                        >
-                            <span className="flex items-center">
-                                Prueba Ahora
-                                <svg className="w-7 h-7 ml-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 7l5 5m0 0l-5 5m5-5H6" />
-                                </svg>
-                            </span>
-                        </Button>
-                        <p className="text-gray-500 text-base mt-6">Sin registro • Procesa hasta 100 direcciones gratis</p>
+                        <div className="flex flex-col items-center justify-center gap-4 mb-6">
+                            <Button
+                                onClick={onGetStarted}
+                                className="bg-gradient-to-r from-orange-500 via-amber-500 to-yellow-500 hover:from-orange-600 hover:via-amber-600 hover:to-yellow-600 text-white font-bold py-6 px-16 rounded-2xl text-2xl shadow-2xl hover:shadow-3xl transition-all duration-300 hover:scale-105 border-0"
+                            >
+                                <span className="flex items-center">
+                                    Probar Ahora
+                                    <svg className="w-7 h-7 ml-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 7l5 5m0 0l-5 5m5-5H6" />
+                                    </svg>
+                                </span>
+                            </Button>
+
+                            <div className="flex flex-col sm:flex-row items-center justify-center gap-3">
+                                {onSMSTest && (
+                                    <Button
+                                        onClick={onSMSTest}
+                                        variant="outline"
+                                        className="bg-white/80 backdrop-blur-sm border-2 border-blue-300 text-blue-600 hover:bg-blue-50 hover:border-blue-400 font-semibold py-3 px-6 rounded-xl text-base shadow-lg hover:shadow-xl transition-all duration-300 hover:scale-105"
+                                    >
+                                        <span className="flex items-center">
+                                            <svg className="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
+                                            </svg>
+                                            Test SMS
+                                        </span>
+                                    </Button>
+                                )}
+
+                                {onEmailTest && (
+                                    <Button
+                                        onClick={onEmailTest}
+                                        variant="outline"
+                                        className="bg-white/80 backdrop-blur-sm border-2 border-purple-300 text-purple-600 hover:bg-purple-50 hover:border-purple-400 font-semibold py-3 px-6 rounded-xl text-base shadow-lg hover:shadow-xl transition-all duration-300 hover:scale-105"
+                                    >
+                                        <span className="flex items-center">
+                                            <svg className="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 8l7.89 4.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
+                                            </svg>
+                                            Test Email
+                                        </span>
+                                    </Button>
+                                )}
+                            </div>
+                        </div>
+                        <p className="text-gray-500 text-base">Sin registro • Procesa hasta 100 direcciones gratis • Incluye confirmación por SMS y Email</p>
                     </div>
                 </div>
             </section>

@@ -3,8 +3,11 @@ import LandingPage from './components/LandingPage'
 import RegistrationPage from './components/auth/RegistrationPage'
 import UnifiedProcessor from './components/UnifiedProcessor'
 import DataDashboard from './components/DataDashboard'
+import LocationCollection from './components/LocationCollection'
+import SMSTest from './components/SMSTest'
+import EmailTest from './components/EmailTest'
 
-type AppState = 'landing' | 'registration' | 'pipeline' | 'dashboard'
+type AppState = 'landing' | 'registration' | 'pipeline' | 'dashboard' | 'location-collection' | 'sms-test' | 'email-test'
 
 interface ProcessingResult {
   success: boolean
@@ -19,11 +22,27 @@ interface ProcessingResult {
 }
 
 function App() {
-  const [currentView, setCurrentView] = useState<AppState>('landing')
+  const [currentView, setCurrentView] = useState<AppState>(() => {
+    // Check if this is a location collection URL
+    const path = window.location.pathname
+    const params = new URLSearchParams(window.location.search)
+
+    if (path === '/location' || params.has('orderID')) {
+      return 'location-collection'
+    }
+
+    return 'landing'
+  })
   const [processingResult, setProcessingResult] = useState<ProcessingResult | null>(null)
 
   if (currentView === 'landing') {
-    return <LandingPage onGetStarted={() => setCurrentView('registration')} />
+    return (
+      <LandingPage
+        onGetStarted={() => setCurrentView('registration')}
+        onSMSTest={() => setCurrentView('sms-test')}
+        onEmailTest={() => setCurrentView('email-test')}
+      />
+    )
   }
 
   if (currentView === 'registration') {
@@ -34,6 +53,21 @@ function App() {
       />
     )
   }
+
+  if (currentView === 'location-collection') {
+    const params = new URLSearchParams(window.location.search)
+    const orderID = params.get('orderID') || undefined
+    return <LocationCollection orderID={orderID} />
+  }
+
+  if (currentView === 'sms-test') {
+    return <SMSTest onBack={() => setCurrentView('landing')} />
+  }
+
+  if (currentView === 'email-test') {
+    return <EmailTest onBack={() => setCurrentView('landing')} />
+  }
+
 
   if (currentView === 'dashboard' && processingResult) {
     return (
