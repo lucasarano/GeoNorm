@@ -95,12 +95,6 @@ function App() {
               >
                 ← Volver al Inicio
               </button>
-              <div className="hidden md:flex items-center space-x-6 text-sm text-gray-600">
-                <span className="flex items-center">
-                  <span className="w-2 h-2 bg-green-500 rounded-full mr-2 animate-pulse"></span>
-                  IA Lista
-                </span>
-              </div>
             </div>
           </div>
         </div>

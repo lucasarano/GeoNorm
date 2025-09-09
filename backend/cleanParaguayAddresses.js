@@ -43,12 +43,12 @@ export async function cleanParaguayAddresses(apiKey, csvData) {
 
     // Sanity checks
     const header = csv.split('\n', 1)[0].trim();
-    const expectedHeader = 'Address,City,State,Phone,Email';
+    const expectedHeader = 'Address,City,State,Phone,Email,AI_Confidence';
     if (header !== expectedHeader) {
         throw new Error(`Unexpected header. Got "${header}", expected "${expectedHeader}"`);
     }
 
-    // Optional: quick structural check for 5 columns on non-empty rows.
+    // Optional: quick structural check for 6 columns on non-empty rows.
     // NOTE: This is a lightweight check; prefer a real CSV parser downstream.
     const lines = csv.split('\n').slice(1).filter(Boolean);
     const bad = lines.find(line => {
@@ -59,7 +59,7 @@ export async function cleanParaguayAddresses(apiKey, csvData) {
             if (ch === '"') inQuotes = !inQuotes;
             else if (ch === ',' && !inQuotes) commas++;
         }
-        return commas !== 4; // 5 columns => 4 commas
+        return commas !== 5; // 6 columns => 5 commas
     });
     if (bad) {
         console.warn('Row with unexpected column structure detected:', bad);

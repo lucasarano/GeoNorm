@@ -507,7 +507,8 @@ app.post('/api/process-complete', express.raw({ type: 'text/csv', limit: '10mb' 
                 city: values[1] || '',
                 state: values[2] || '',
                 phone: values[3] || '',
-                email: values[4] || ''
+                email: values[4] || '',
+                aiConfidence: parseInt(values[5]) || 0
             }
         })
 
@@ -566,7 +567,8 @@ app.post('/api/process-complete', express.raw({ type: 'text/csv', limit: '10mb' 
                         city: cleaned.city,
                         state: cleaned.state,
                         phone: cleaned.phone,
-                        email: cleaned.email
+                        email: cleaned.email,
+                        aiConfidence: cleaned.aiConfidence
                     },
                     geocoding: {
                         latitude: data.cleaned?.best?.latitude || null,
@@ -595,7 +597,8 @@ app.post('/api/process-complete', express.raw({ type: 'text/csv', limit: '10mb' 
                         city: cleaned.city,
                         state: cleaned.state,
                         phone: cleaned.phone,
-                        email: cleaned.email
+                        email: cleaned.email,
+                        aiConfidence: cleaned.aiConfidence
                     },
                     geocoding: {
                         latitude: null,

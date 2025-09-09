@@ -17,6 +17,7 @@ interface ProcessedRow {
         state: string
         phone: string
         email: string
+        aiConfidence: number
     }
     geocoding: {
         latitude: number | null
@@ -254,8 +255,8 @@ export default function UnifiedProcessor({ onProcessingComplete }: UnifiedProces
                                     return (
                                         <div key={step} className="flex items-center">
                                             <div className={`w-12 h-12 rounded-full flex items-center justify-center transition-all duration-300 ${isActive || isPassed
-                                                    ? getStepColor(step, true)
-                                                    : getStepColor(step, false)
+                                                ? getStepColor(step, true)
+                                                : getStepColor(step, false)
                                                 }`}>
                                                 {getStepIcon(step)}
                                             </div>

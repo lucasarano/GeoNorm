@@ -1,6 +1,6 @@
 // buildPrompt.js
 export function buildPrompt(csvData) {
-    return `PROMPT — Paraguay Address Cleaner (components-ready, CSV out)
+   return `PROMPT — Paraguay Address Cleaner (components-ready, CSV out)
 
 You are a senior data engineer.
 
@@ -10,8 +10,8 @@ INPUT
 - Preserve original row order.
 
 TASK
-Clean and normalize for Google Maps Geocoding. Return a CSV with exactly these 5 columns, in this order:
-Address,City,State,Phone,Email
+Clean and normalize for Google Maps Geocoding. Return a CSV with exactly these 6 columns, in this order:
+Address,City,State,Phone,Email,AI_Confidence
 
 FORMAT
 - Output one fenced code block labeled csv.
@@ -73,20 +73,32 @@ D) Keep/Drop & Duplicates
 1. Keep a row if it has Address OR (City and State) AND at least one of Phone or Email.
 2. Drop exact/near duplicates using case-insensitive comparison of (Address, City, State) and normalized Phone/Email; keep the first occurrence.
 
+E) AI Confidence Assessment
+1. For each cleaned address, assess how likely Google Maps Geocoding API will successfully geocode it.
+2. Consider factors: address completeness, street name clarity, city/state accuracy, Paraguay-specific formatting.
+3. Output a percentage (0-100) representing confidence in successful geocoding.
+4. Guidelines:
+   - 90-100%: Complete address with well-known street/city in major urban areas
+   - 70-89%: Good address but may have minor ambiguities or be in smaller towns
+   - 50-69%: Partial address or unclear components, moderate geocoding success expected
+   - 20-49%: Incomplete or problematic address, low geocoding success expected
+   - 0-19%: Very poor address data, geocoding likely to fail
+
 OUTPUT
 Return exactly one fenced code block labeled \`csv\` with:
-Address,City,State,Phone,Email
+Address,City,State,Phone,Email,AI_Confidence
 (one header row, then cleaned rows).
 
 CRITICAL FORMATTING REQUIREMENTS:
 - Output RFC-4180 CSV, UTF-8. Quote fields that contain commas, quotes, or line breaks; escape quotes by doubling them.
 - No blank lines; no trailing commas; end with a single newline.
-- Use exactly 5 columns in this exact order: Address,City,State,Phone,Email
+- Use exactly 6 columns in this exact order: Address,City,State,Phone,Email,AI_Confidence
 - Preserve original row order for kept rows; do not create or drop rows except per Rule D.
 - Phone numbers: output E.164 (+595...), drop national trunk "0" before applying +595.
 - City/State: prefer City→Department authority mapping on conflicts; never invent departments; leave blank if below fuzzy threshold.
 - Accents must be correct (á é í ó ú ü ñ). Do not replace with ASCII.
 - If unsure about a field, leave it blank but maintain column structure.
+- AI_Confidence: must be integer 0-100, no % symbol.
 - No extra text, no API calls, no coordinates.
 
 Here is the data to clean:

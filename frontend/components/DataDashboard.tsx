@@ -28,6 +28,7 @@ interface ProcessedRow {
         state: string
         phone: string
         email: string
+        aiConfidence: number
     }
     geocoding: {
         latitude: number | null
@@ -130,10 +131,11 @@ export default function DataDashboard({ data, statistics, onBack }: DataDashboar
             'Cleaned State',
             'Cleaned Phone',
             'Cleaned Email',
+            'AI Confidence',
             'Latitude',
             'Longitude',
             'Formatted Address',
-            'Confidence',
+            'Geocoding Confidence',
             'Status'
         ]
 
@@ -150,6 +152,7 @@ export default function DataDashboard({ data, statistics, onBack }: DataDashboar
                 `"${row.cleaned.state}"`,
                 `"${row.cleaned.phone}"`,
                 `"${row.cleaned.email}"`,
+                row.cleaned.aiConfidence,
                 row.geocoding.latitude || '',
                 row.geocoding.longitude || '',
                 `"${row.geocoding.formattedAddress}"`,
@@ -317,6 +320,9 @@ export default function DataDashboard({ data, statistics, onBack }: DataDashboar
                                     Confianza
                                 </th>
                                 <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                                    AI Conf.
+                                </th>
+                                <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                                     Mapa
                                 </th>
                             </tr>
@@ -387,6 +393,14 @@ export default function DataDashboard({ data, statistics, onBack }: DataDashboar
                                             {row.geocoding.locationType}
                                         </div>
                                     </td>
+                                    <td className="px-4 py-4 text-sm text-gray-900">
+                                        <div className="font-bold text-purple-700">
+                                            {row.cleaned.aiConfidence}%
+                                        </div>
+                                        <div className="text-xs text-gray-500">
+                                            AI Assessment
+                                        </div>
+                                    </td>
                                     <td className="px-4 py-4">
                                         {row.geocoding.staticMapUrl ? (
                                             <img
@@ -446,6 +460,7 @@ export default function DataDashboard({ data, statistics, onBack }: DataDashboar
                                         <div><strong>Estado:</strong> {selectedRow.cleaned.state}</div>
                                         <div><strong>Teléfono:</strong> {selectedRow.cleaned.phone}</div>
                                         <div><strong>Email:</strong> {selectedRow.cleaned.email}</div>
+                                        <div><strong>Confianza IA:</strong> <span className="text-purple-700 font-semibold">{selectedRow.cleaned.aiConfidence}%</span></div>
                                     </div>
                                 </Card>
 
