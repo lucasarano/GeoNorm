@@ -1,6 +1,8 @@
 import React, { useState } from 'react'
 import { Card } from './shared/ui/card'
 import { Button } from './shared/ui/button'
+import { useAuth } from '../contexts/AuthContext'
+import { DataService, AddressRecord } from '../services/dataService'
 
 interface ExtractedData {
     address: string
@@ -22,15 +24,18 @@ interface FieldExtractorProps {
 }
 
 export default function FieldExtractor({ onExtractComplete }: FieldExtractorProps) {
+    const { currentUser } = useAuth()
     const [file, setFile] = useState<File | null>(null)
     const [extractedData, setExtractedData] = useState<ExtractedData[]>([])
     const [cleanedData, setCleanedData] = useState<CleanedData[]>([])
     const [isProcessing, setIsProcessing] = useState(false)
     const [isCleaning, setIsCleaning] = useState(false)
     const [isGeocoding, setIsGeocoding] = useState(false)
+    const [isSendingSMS, setIsSendingSMS] = useState(false)
     const [showComparison, setShowComparison] = useState(false)
     const [showCleaned, setShowCleaned] = useState(false)
     const [currentStep, setCurrentStep] = useState<'upload' | 'extracted' | 'cleaned'>('upload')
+    const [currentCSVId, setCurrentCSVId] = useState<string | null>(null)
     const [geocodeResults, setGeocodeResults] = useState<Array<{
         index: number
         cleanedAddress: string
@@ -52,13 +57,29 @@ export default function FieldExtractor({ onExtractComplete }: FieldExtractorProp
     }
 
     const extractFields = async () => {
-        if (!file) return
+        if (!file || !currentUser) return
 
         setIsProcessing(true)
 
         try {
+            // Create CSV dataset in Firebase first
+            const csvId = await DataService.createCSVDataset(
+                currentUser.uid,
+                file.name,
+                0 // Will be updated after parsing
+            )
+            setCurrentCSVId(csvId)
+
             // Read the CSV file content
             const csvContent = await file.text()
+            const lines = csvContent.trim().split('\n')
+            const totalRows = lines.length - 1 // Subtract header
+
+            // Update CSV dataset with total rows
+            await DataService.updateCSVDataset(csvId, {
+                totalRows,
+                processingStatus: 'extracting'
+            })
 
             // Send to backend for field extraction
             const response = await fetch('/api/extract-fields', {
@@ -80,8 +101,21 @@ export default function FieldExtractor({ onExtractComplete }: FieldExtractorProp
             setCurrentStep('extracted')
             onExtractComplete?.(result.data)
 
+            // Update CSV dataset status
+            await DataService.updateCSVDataset(csvId, {
+                processedRows: result.data.length,
+                processingStatus: 'extracted'
+            })
+
         } catch (error) {
             console.error('Error extracting fields:', error)
+
+            // Update CSV dataset status to failed
+            if (currentCSVId) {
+                await DataService.updateCSVDataset(currentCSVId, {
+                    processingStatus: 'failed'
+                })
+            }
         } finally {
             setIsProcessing(false)
         }
@@ -123,9 +157,15 @@ export default function FieldExtractor({ onExtractComplete }: FieldExtractorProp
     }
 
     const geocodeCleaned = async () => {
-        if (cleanedData.length === 0) return
+        if (cleanedData.length === 0 || !currentUser || !currentCSVId) return
         setIsGeocoding(true)
+
         try {
+            // Update CSV status to geocoding
+            await DataService.updateCSVDataset(currentCSVId, {
+                processingStatus: 'geocoding'
+            })
+
             const results: Array<{
                 index: number
                 cleanedAddress: string
@@ -137,9 +177,16 @@ export default function FieldExtractor({ onExtractComplete }: FieldExtractorProp
                 error?: string
             }> = []
 
+            const addressRecords: Omit<AddressRecord, 'id'>[] = []
+            let highConfidenceCount = 0
+            let mediumConfidenceCount = 0
+            let lowConfidenceCount = 0
+            let pendingCount = 0
+
             for (let i = 0; i < cleanedData.length; i++) {
                 const cleaned = cleanedData[i]
                 const original = extractedData[i]
+
                 try {
                     const components: Record<string, string> = { country: 'PY' }
                     if (cleaned.state && cleaned.state.trim()) components.state = cleaned.state
@@ -154,8 +201,54 @@ export default function FieldExtractor({ onExtractComplete }: FieldExtractorProp
                             components
                         })
                     })
+
                     if (!resp.ok) throw new Error(`Geocode error ${resp.status}`)
                     const data = await resp.json()
+
+                    // Process geocoding result to determine status
+                    const geocodingResult = DataService.processGeocodingResult({
+                        confidence: data.confidence,
+                        geometry: {
+                            location_type: data.locationType
+                        }
+                    })
+
+                    // Count by confidence
+                    if (geocodingResult.geocodingConfidence === 'high') highConfidenceCount++
+                    else if (geocodingResult.geocodingConfidence === 'medium') mediumConfidenceCount++
+                    else lowConfidenceCount++
+
+                    if (geocodingResult.needsConfirmation) pendingCount++
+
+                    // Create address record for Firebase
+                    const addressRecord: Omit<AddressRecord, 'id'> = {
+                        userId: currentUser.uid,
+                        csvId: currentCSVId,
+                        rowIndex: i,
+                        originalAddress: original?.address ?? '',
+                        originalCity: original?.city,
+                        originalState: original?.state,
+                        originalPhone: original?.phone,
+                        cleanedAddress: cleaned.address,
+                        cleanedCity: cleaned.city,
+                        cleanedState: cleaned.state,
+                        cleanedPhone: cleaned.phone,
+                        cleanedEmail: cleaned.email,
+                        coordinates: data.cleaned?.best ? {
+                            lat: data.cleaned.best.latitude,
+                            lng: data.cleaned.best.longitude
+                        } : undefined,
+                        geocodingConfidence: geocodingResult.geocodingConfidence,
+                        locationType: data.locationType,
+                        formattedAddress: data.cleaned?.best?.formatted_address,
+                        status: geocodingResult.status,
+                        needsConfirmation: geocodingResult.needsConfirmation,
+                        processedAt: new Date() as any,
+                        updatedAt: new Date() as any
+                    }
+
+                    addressRecords.push(addressRecord)
+
                     results.push({
                         index: i,
                         cleanedAddress: cleaned.address,
@@ -166,6 +259,32 @@ export default function FieldExtractor({ onExtractComplete }: FieldExtractorProp
                         staticMapUrl: data?.staticMapUrl ?? null
                     })
                 } catch (e: any) {
+                    // Create failed address record
+                    const addressRecord: Omit<AddressRecord, 'id'> = {
+                        userId: currentUser.uid,
+                        csvId: currentCSVId,
+                        rowIndex: i,
+                        originalAddress: original?.address ?? '',
+                        originalCity: original?.city,
+                        originalState: original?.state,
+                        originalPhone: original?.phone,
+                        cleanedAddress: cleaned.address,
+                        cleanedCity: cleaned.city,
+                        cleanedState: cleaned.state,
+                        cleanedPhone: cleaned.phone,
+                        cleanedEmail: cleaned.email,
+                        geocodingConfidence: 'low',
+                        locationType: 'FAILED',
+                        status: 'pending_confirmation',
+                        needsConfirmation: true,
+                        processedAt: new Date() as any,
+                        updatedAt: new Date() as any
+                    }
+
+                    addressRecords.push(addressRecord)
+                    lowConfidenceCount++
+                    pendingCount++
+
                     results.push({
                         index: i,
                         cleanedAddress: cleaned.address,
@@ -178,75 +297,156 @@ export default function FieldExtractor({ onExtractComplete }: FieldExtractorProp
                 }
             }
 
+            // Save all address records to Firebase
+            await DataService.bulkSaveAddressRecords(addressRecords)
+
+            // Update CSV dataset with final stats
+            await DataService.updateCSVDataset(currentCSVId, {
+                processingStatus: 'completed',
+                highConfidenceAddresses: highConfidenceCount,
+                mediumConfidenceAddresses: mediumConfidenceCount,
+                lowConfidenceAddresses: lowConfidenceCount,
+                pendingConfirmations: pendingCount,
+                completedAt: new Date() as any
+            })
+
             setGeocodeResults(results)
+
+            // Send SMS confirmations for addresses that need it
+            if (pendingCount > 0) {
+                await sendSMSConfirmations(addressRecords.filter(record => record.needsConfirmation))
+            }
+
         } catch (error) {
             console.error('Error geocoding cleaned addresses:', error)
             alert('Error geocoding cleaned addresses. Please try again.')
+
+            // Update CSV status to failed
+            if (currentCSVId) {
+                await DataService.updateCSVDataset(currentCSVId, {
+                    processingStatus: 'failed'
+                })
+            }
         } finally {
             setIsGeocoding(false)
+        }
+    }
+
+    const sendSMSConfirmations = async (pendingAddresses: Omit<AddressRecord, 'id'>[]) => {
+        if (pendingAddresses.length === 0) return
+
+        setIsSendingSMS(true)
+        try {
+            const addresses = pendingAddresses.map(record => ({
+                id: `temp-${record.rowIndex}`, // Temporary ID for confirmation URL
+                phone: record.cleanedPhone || record.originalPhone || '',
+                originalAddress: record.originalAddress,
+                cleanedAddress: record.cleanedAddress,
+                needsConfirmation: record.needsConfirmation
+            })).filter(addr => addr.phone) // Only send to addresses with phone numbers
+
+            if (addresses.length === 0) {
+                alert('No phone numbers available for SMS confirmations')
+                return
+            }
+
+            const response = await fetch('/api/send-confirmations', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ addresses })
+            })
+
+            if (!response.ok) {
+                throw new Error('Failed to send SMS confirmations')
+            }
+
+            const result = await response.json()
+            alert(`SMS confirmations sent: ${result.sent} successful, ${result.failed} failed`)
+
+        } catch (error) {
+            console.error('Error sending SMS confirmations:', error)
+            alert('Error sending SMS confirmations. Please try again.')
+        } finally {
+            setIsSendingSMS(false)
         }
     }
 
     return (
         <div className="space-y-6">
             {/* Progress Steps */}
-            <Card className="p-6">
+            <Card className="p-6 bg-white/50 backdrop-blur-sm border border-orange-100 shadow-lg">
                 <div className="flex items-center justify-between mb-6">
-                    <div className={`flex items-center space-x-2 ${currentStep === 'upload' ? 'text-blue-600' : currentStep === 'extracted' || currentStep === 'cleaned' ? 'text-green-600' : 'text-gray-400'}`}>
-                        <div className={`w-8 h-8 rounded-full flex items-center justify-center ${currentStep === 'upload' ? 'bg-blue-100 border-2 border-blue-600' : currentStep === 'extracted' || currentStep === 'cleaned' ? 'bg-green-100 border-2 border-green-600' : 'bg-gray-100 border-2 border-gray-300'}`}>
+                    <div className={`flex items-center space-x-2 ${currentStep === 'upload' ? 'text-orange-600' : currentStep === 'extracted' || currentStep === 'cleaned' ? 'text-green-600' : 'text-gray-400'}`}>
+                        <div className={`w-8 h-8 rounded-full flex items-center justify-center ${currentStep === 'upload' ? 'bg-orange-100 border-2 border-orange-600' : currentStep === 'extracted' || currentStep === 'cleaned' ? 'bg-green-100 border-2 border-green-600' : 'bg-gray-100 border-2 border-gray-300'}`}>
                             {currentStep === 'extracted' || currentStep === 'cleaned' ? '✓' : '1'}
                         </div>
-                        <span className="font-medium">Extract Fields</span>
+                        <span className="font-semibold">Extraer Campos</span>
                     </div>
 
-                    <div className={`h-0.5 flex-1 mx-4 ${currentStep === 'extracted' || currentStep === 'cleaned' ? 'bg-green-600' : 'bg-gray-300'}`}></div>
+                    <div className={`h-0.5 flex-1 mx-4 ${currentStep === 'extracted' || currentStep === 'cleaned' ? 'bg-green-500' : 'bg-gray-300'}`}></div>
 
-                    <div className={`flex items-center space-x-2 ${currentStep === 'cleaned' ? 'text-green-600' : currentStep === 'extracted' ? 'text-blue-600' : 'text-gray-400'}`}>
-                        <div className={`w-8 h-8 rounded-full flex items-center justify-center ${currentStep === 'cleaned' ? 'bg-green-100 border-2 border-green-600' : currentStep === 'extracted' ? 'bg-blue-100 border-2 border-blue-600' : 'bg-gray-100 border-2 border-gray-300'}`}>
+                    <div className={`flex items-center space-x-2 ${currentStep === 'cleaned' ? 'text-green-600' : currentStep === 'extracted' ? 'text-orange-600' : 'text-gray-400'}`}>
+                        <div className={`w-8 h-8 rounded-full flex items-center justify-center ${currentStep === 'cleaned' ? 'bg-green-100 border-2 border-green-600' : currentStep === 'extracted' ? 'bg-orange-100 border-2 border-orange-600' : 'bg-gray-100 border-2 border-gray-300'}`}>
                             {currentStep === 'cleaned' ? '✓' : '2'}
                         </div>
-                        <span className="font-medium">Clean with AI</span>
+                        <span className="font-semibold">Limpiar con IA</span>
                     </div>
                 </div>
             </Card>
 
-            <Card className="p-6">
-                <h3 className="text-lg font-semibold mb-4">Field Extractor</h3>
-                <p className="text-gray-600 mb-4">
-                    Upload a CSV file to extract Address, City, State, and Phone fields
+            <Card className="p-6 bg-white/50 backdrop-blur-sm border border-orange-100 shadow-lg">
+                <h3 className="text-lg font-bold mb-4 text-gray-800">Extractor de Campos CSV</h3>
+                <p className="text-gray-600 mb-6">
+                    Sube un archivo CSV para extraer automáticamente los campos de Dirección, Ciudad, Estado y Teléfono
                 </p>
 
                 <div className="space-y-4">
                     <div>
-                        <label className="block text-sm font-medium mb-2">Select CSV File</label>
+                        <label className="block text-sm font-semibold mb-3 text-gray-700">Seleccionar Archivo CSV</label>
                         <input
                             type="file"
                             accept=".csv"
                             onChange={handleFileUpload}
-                            className="block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100"
+                            className="block w-full text-sm text-gray-600 file:mr-4 file:py-3 file:px-6 file:rounded-xl file:border-0 file:text-sm file:font-semibold file:bg-gradient-to-r file:from-orange-50 file:to-amber-50 file:text-orange-700 hover:file:from-orange-100 hover:file:to-amber-100 file:shadow-md hover:file:shadow-lg transition-all duration-200"
                         />
                     </div>
 
                     <Button
                         onClick={extractFields}
                         disabled={!file || isProcessing}
-                        className="w-full"
+                        className="w-full bg-gradient-to-r from-orange-500 to-amber-500 hover:from-orange-600 hover:to-amber-600 text-white font-semibold py-3 px-6 rounded-xl shadow-lg hover:shadow-xl transition-all duration-200 border-0"
                     >
-                        {isProcessing ? 'Extracting...' : 'Extract Fields'}
+                        {isProcessing ? (
+                            <span className="flex items-center justify-center">
+                                <svg className="animate-spin -ml-1 mr-3 h-5 w-5 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                                </svg>
+                                Extrayendo...
+                            </span>
+                        ) : 'Extraer Campos'}
                     </Button>
                 </div>
             </Card>
 
             {showComparison && extractedData.length > 0 && (
-                <Card className="p-6">
+                <Card className="p-6 bg-white/50 backdrop-blur-sm border border-orange-100 shadow-lg">
                     <div className="flex justify-between items-center mb-4">
-                        <h3 className="text-lg font-semibold">Extracted Fields</h3>
+                        <h3 className="text-lg font-semibold">Campos Extraídos</h3>
                         <Button
                             onClick={cleanWithOpenAI}
                             disabled={isCleaning}
-                            className="bg-blue-600 hover:bg-blue-700"
+                            className="bg-gradient-to-r from-orange-500 to-amber-500 hover:from-orange-600 hover:to-amber-600 text-white font-semibold px-6 py-2 rounded-xl shadow-lg hover:shadow-xl transition-all duration-200 border-0"
                         >
-                            {isCleaning ? 'Cleaning with AI...' : 'Clean with OpenAI'}
+                            {isCleaning ? (
+                                <span className="flex items-center">
+                                    <svg className="animate-spin -ml-1 mr-2 h-4 w-4 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                                    </svg>
+                                    Limpiando con IA...
+                                </span>
+                            ) : 'Limpiar con OpenAI'}
                         </Button>
                     </div>
 
@@ -255,19 +455,19 @@ export default function FieldExtractor({ onExtractComplete }: FieldExtractorProp
                             <thead className="bg-gray-50">
                                 <tr>
                                     <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                                        Row
+                                        Fila
                                     </th>
                                     <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                                        Address
+                                        Dirección
                                     </th>
                                     <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                                        City
+                                        Ciudad
                                     </th>
                                     <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                                        State
+                                        Estado
                                     </th>
                                     <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                                        Phone
+                                        Teléfono
                                     </th>
                                 </tr>
                             </thead>
@@ -299,7 +499,7 @@ export default function FieldExtractor({ onExtractComplete }: FieldExtractorProp
 
                     <div className="mt-4 flex justify-between items-center">
                         <p className="text-sm text-gray-600">
-                            Extracted {extractedData.length} rows
+                            Extraídas {extractedData.length} filas
                         </p>
                         <Button
                             onClick={() => {
@@ -318,24 +518,32 @@ export default function FieldExtractor({ onExtractComplete }: FieldExtractorProp
                                 a.click()
                                 URL.revokeObjectURL(url)
                             }}
-                            className="bg-green-600 hover:bg-green-700"
+                            className="bg-gradient-to-r from-green-500 to-emerald-500 hover:from-green-600 hover:to-emerald-600 text-white font-semibold px-4 py-2 rounded-xl shadow-md hover:shadow-lg transition-all duration-200 border-0"
                         >
-                            Download Raw CSV
+                            Descargar CSV Original
                         </Button>
                     </div>
                 </Card>
             )}
 
             {showCleaned && cleanedData.length > 0 && (
-                <Card className="p-6">
+                <Card className="p-6 bg-white/50 backdrop-blur-sm border border-orange-100 shadow-lg">
                     <div className="flex justify-between items-center mb-4">
-                        <h3 className="text-lg font-semibold">AI-Cleaned Data Comparison</h3>
+                        <h3 className="text-lg font-semibold">Comparación de Datos Limpiados por IA</h3>
                         <Button
                             onClick={geocodeCleaned}
                             disabled={isGeocoding}
-                            className="bg-indigo-600 hover:bg-indigo-700"
+                            className="bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-600 hover:to-orange-600 text-white font-semibold px-6 py-2 rounded-xl shadow-lg hover:shadow-xl transition-all duration-200 border-0"
                         >
-                            {isGeocoding ? 'Geocoding…' : 'Geocode Cleaned Addresses'}
+                            {isGeocoding ? (
+                                <span className="flex items-center">
+                                    <svg className="animate-spin -ml-1 mr-2 h-4 w-4 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                                    </svg>
+                                    Geocodificando…
+                                </span>
+                            ) : 'Geocodificar Direcciones Limpiadas'}
                         </Button>
                     </div>
 
@@ -344,16 +552,16 @@ export default function FieldExtractor({ onExtractComplete }: FieldExtractorProp
                             <thead className="bg-gray-50">
                                 <tr>
                                     <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                                        Row
+                                        Fila
                                     </th>
                                     <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                                        Field
+                                        Campo
                                     </th>
                                     <th className="px-4 py-3 text-left text-xs font-medium text-red-500 uppercase tracking-wider">
                                         Original
                                     </th>
                                     <th className="px-4 py-3 text-left text-xs font-medium text-green-500 uppercase tracking-wider">
-                                        AI Cleaned
+                                        Limpiado por IA
                                     </th>
                                 </tr>
                             </thead>
@@ -369,7 +577,7 @@ export default function FieldExtractor({ onExtractComplete }: FieldExtractorProp
                                             </tr>
                                             <tr>
                                                 <td className="px-4 py-2"></td>
-                                                <td className="px-4 py-2 text-sm font-medium text-gray-700">Address</td>
+                                                <td className="px-4 py-2 text-sm font-medium text-gray-700">Dirección</td>
                                                 <td className="px-4 py-2 text-sm text-red-600 max-w-xs">
                                                     <div className="truncate" title={originalRow?.address}>
                                                         {originalRow?.address || '-'}
@@ -383,7 +591,7 @@ export default function FieldExtractor({ onExtractComplete }: FieldExtractorProp
                                             </tr>
                                             <tr>
                                                 <td className="px-4 py-2"></td>
-                                                <td className="px-4 py-2 text-sm font-medium text-gray-700">City</td>
+                                                <td className="px-4 py-2 text-sm font-medium text-gray-700">Ciudad</td>
                                                 <td className="px-4 py-2 text-sm text-red-600">
                                                     {originalRow?.city || '-'}
                                                 </td>
@@ -393,7 +601,7 @@ export default function FieldExtractor({ onExtractComplete }: FieldExtractorProp
                                             </tr>
                                             <tr>
                                                 <td className="px-4 py-2"></td>
-                                                <td className="px-4 py-2 text-sm font-medium text-gray-700">State</td>
+                                                <td className="px-4 py-2 text-sm font-medium text-gray-700">Estado</td>
                                                 <td className="px-4 py-2 text-sm text-red-600">
                                                     {originalRow?.state || '-'}
                                                 </td>
@@ -403,7 +611,7 @@ export default function FieldExtractor({ onExtractComplete }: FieldExtractorProp
                                             </tr>
                                             <tr>
                                                 <td className="px-4 py-2"></td>
-                                                <td className="px-4 py-2 text-sm font-medium text-gray-700">Phone</td>
+                                                <td className="px-4 py-2 text-sm font-medium text-gray-700">Teléfono</td>
                                                 <td className="px-4 py-2 text-sm text-red-600">
                                                     {originalRow?.phone || '-'}
                                                 </td>
@@ -413,7 +621,7 @@ export default function FieldExtractor({ onExtractComplete }: FieldExtractorProp
                                             </tr>
                                             <tr>
                                                 <td className="px-4 py-2"></td>
-                                                <td className="px-4 py-2 text-sm font-medium text-gray-700">Email</td>
+                                                <td className="px-4 py-2 text-sm font-medium text-gray-700">Correo</td>
                                                 <td className="px-4 py-2 text-sm text-red-600">
                                                     -
                                                 </td>
@@ -430,7 +638,7 @@ export default function FieldExtractor({ onExtractComplete }: FieldExtractorProp
 
                     <div className="mt-4 flex justify-between items-center">
                         <p className="text-sm text-gray-600">
-                            Cleaned {cleanedData.length} rows with AI
+                            Limpiadas {cleanedData.length} filas con IA
                         </p>
                         <Button
                             onClick={() => {
@@ -449,9 +657,9 @@ export default function FieldExtractor({ onExtractComplete }: FieldExtractorProp
                                 a.click()
                                 URL.revokeObjectURL(url)
                             }}
-                            className="bg-green-600 hover:bg-green-700"
+                            className="bg-gradient-to-r from-green-500 to-emerald-500 hover:from-green-600 hover:to-emerald-600 text-white font-semibold px-4 py-2 rounded-xl shadow-md hover:shadow-lg transition-all duration-200 border-0"
                         >
-                            Download Cleaned CSV
+                            Descargar CSV Limpiado
                         </Button>
                     </div>
 

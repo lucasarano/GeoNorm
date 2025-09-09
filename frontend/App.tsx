@@ -1,161 +1,163 @@
-import { useState } from 'react'
-import SimpleAddressForm from './components/forms/SimpleAddressForm'
-import CsvUploader from './components/forms/CsvUploader'
-import FieldExtractor from './components/FieldExtractor'
+import React, { useState } from 'react'
+import LandingPage from './components/LandingPage'
+import RegistrationPage from './components/auth/RegistrationPage'
+import UnifiedProcessor from './components/UnifiedProcessor'
+import DataDashboard from './components/DataDashboard'
+
+type AppState = 'landing' | 'registration' | 'pipeline' | 'dashboard'
+
+interface ProcessingResult {
+  success: boolean
+  totalProcessed: number
+  statistics: {
+    highConfidence: number
+    mediumConfidence: number
+    lowConfidence: number
+    totalRows: number
+  }
+  results: any[]
+}
 
 function App() {
-  const [activeTab, setActiveTab] = useState<'single' | 'csv' | 'extract'>('single')
+  const [currentView, setCurrentView] = useState<AppState>('landing')
+  const [processingResult, setProcessingResult] = useState<ProcessingResult | null>(null)
+
+  if (currentView === 'landing') {
+    return <LandingPage onGetStarted={() => setCurrentView('registration')} />
+  }
+
+  if (currentView === 'registration') {
+    return (
+      <RegistrationPage
+        onRegistrationComplete={() => setCurrentView('pipeline')}
+        onBackToHome={() => setCurrentView('landing')}
+      />
+    )
+  }
+
+  if (currentView === 'dashboard' && processingResult) {
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-orange-50 via-amber-50 to-yellow-50">
+        {/* Header */}
+        <header className="bg-white/90 backdrop-blur-md border-b border-orange-100 sticky top-0 z-50">
+          <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center space-x-3">
+                <div className="w-10 h-10 bg-gradient-to-r from-orange-500 to-amber-500 rounded-xl flex items-center justify-center shadow-lg">
+                  <svg className="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z" />
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 11a3 3 0 11-6 0 3 3 0 016 0z" />
+                  </svg>
+                </div>
+                <div>
+                  <h1 className="text-2xl md:text-3xl font-bold tracking-tight bg-gradient-to-r from-orange-600 to-amber-600 bg-clip-text text-transparent">GeoNorm</h1>
+                  <p className="text-sm text-gray-600">Dashboard de Resultados</p>
+                </div>
+              </div>
+            </div>
+          </div>
+        </header>
+
+        {/* Main Content */}
+        <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+          <DataDashboard
+            data={processingResult.results}
+            statistics={processingResult.statistics}
+            onBack={() => setCurrentView('pipeline')}
+          />
+        </main>
+      </div>
+    )
+  }
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-50 via-blue-50 to-indigo-100">
+    <div className="min-h-screen bg-gradient-to-br from-orange-50 via-amber-50 to-yellow-50">
       {/* Header */}
-      <header className="bg-white/80 backdrop-blur-sm border-b border-gray-200 sticky top-0 z-50">
+      <header className="bg-white/90 backdrop-blur-md border-b border-orange-100 sticky top-0 z-50">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4">
           <div className="flex items-center justify-between">
             <div className="flex items-center space-x-3">
-              <div className="w-10 h-10 bg-gradient-to-r from-blue-600 to-indigo-600 rounded-lg flex items-center justify-center">
-                <span className="text-base font-semibold text-white">GN</span>
+              <div className="w-10 h-10 bg-gradient-to-r from-orange-500 to-amber-500 rounded-xl flex items-center justify-center shadow-lg">
+                <svg className="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z" />
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 11a3 3 0 11-6 0 3 3 0 016 0z" />
+                </svg>
               </div>
               <div>
-                <h1 className="text-2xl md:text-3xl font-semibold tracking-tight text-gray-900">GeoNorm</h1>
-                <p className="text-sm md:text-base text-gray-600">AI-Powered Address Intelligence</p>
+                <h1 className="text-2xl md:text-3xl font-bold tracking-tight bg-gradient-to-r from-orange-600 to-amber-600 bg-clip-text text-transparent">GeoNorm</h1>
+                <p className="text-sm text-gray-600">Inteligencia de Direcciones con IA</p>
               </div>
             </div>
-            <div className="hidden md:flex items-center space-x-6 text-sm text-gray-600">
-              <span className="flex items-center"><span className="w-2 h-2 bg-green-500 rounded-full mr-2"></span>API Connected</span>
+            <div className="flex items-center space-x-4">
+              <button
+                onClick={() => setCurrentView('landing')}
+                className="text-gray-600 hover:text-orange-600 transition-colors duration-200 text-sm font-medium"
+              >
+                ← Volver al Inicio
+              </button>
+              <div className="hidden md:flex items-center space-x-6 text-sm text-gray-600">
+                <span className="flex items-center">
+                  <span className="w-2 h-2 bg-green-500 rounded-full mr-2 animate-pulse"></span>
+                  IA Lista
+                </span>
+              </div>
             </div>
           </div>
         </div>
       </header>
 
       {/* Hero Section */}
-      <section className="py-16 px-4 sm:px-6 lg:px-8">
+      <section className="py-12 px-4 sm:px-6 lg:px-8">
         <div className="max-w-4xl mx-auto text-center">
-          <h2 className="text-4xl md:text-5xl font-bold text-gray-900 mb-6">
-            Transform Addresses Into
-            <span className="text-transparent bg-clip-text bg-gradient-to-r from-blue-600 to-indigo-600"> Precise Coordinates</span>
+          <h2 className="text-4xl md:text-5xl font-black text-gray-900 mb-6">
+            Transforma Direcciones En
+            <span className="bg-gradient-to-r from-orange-600 via-amber-600 to-yellow-600 bg-clip-text text-transparent"> Coordenadas Precisas</span>
           </h2>
-          <p className="text-xl text-gray-600 mb-8 max-w-2xl mx-auto">
-            Powered by Google Maps API and Gemini AI for accurate geocoding and intelligent address normalization
+          <p className="text-xl text-gray-700 mb-8 max-w-2xl mx-auto">
+            Potenciado por OpenAI y Google Maps para geocodificación precisa y normalización inteligente de direcciones
           </p>
         </div>
       </section>
 
       {/* Main Content */}
       <main className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 pb-16">
-        {/* Tab Navigation */}
-        <div className="bg-white rounded-2xl shadow-lg border border-gray-200 mb-8">
-          <div className="p-6 border-b border-gray-100">
-            <h3 className="text-lg font-semibold text-gray-900 mb-4">Choose Processing Mode</h3>
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-              <button
-                onClick={() => setActiveTab('single')}
-                className={`p-6 rounded-xl border-2 transition-all duration-200 text-left ${activeTab === 'single'
-                  ? 'border-blue-500 bg-blue-50 shadow-md'
-                  : 'border-gray-200 hover:border-gray-300 hover:shadow-sm'
-                  }`}
-              >
-                <div className="flex items-center mb-3">
-                  <span className="text-2xl mr-3">🔍</span>
-                  <h4 className="font-semibold text-gray-900">Single Address</h4>
-                </div>
-                <p className="text-gray-600 text-sm">
-                  Process individual addresses with detailed geocoding results
-                </p>
-              </button>
-
-              <button
-                onClick={() => setActiveTab('csv')}
-                className={`p-6 rounded-xl border-2 transition-all duration-200 text-left ${activeTab === 'csv'
-                  ? 'border-indigo-500 bg-indigo-50 shadow-md'
-                  : 'border-gray-200 hover:border-gray-300 hover:shadow-sm'
-                  }`}
-              >
-                <div className="flex items-center mb-3">
-                  <span className="text-2xl mr-3">📊</span>
-                  <h4 className="font-semibold text-gray-900">Pipeline Testing</h4>
-                </div>
-                <p className="text-gray-600 text-sm">
-                  Upload CSV files for bulk address processing with AI normalization
-                </p>
-              </button>
-
-              <button
-                onClick={() => setActiveTab('extract')}
-                className={`p-6 rounded-xl border-2 transition-all duration-200 text-left ${activeTab === 'extract'
-                  ? 'border-green-500 bg-green-50 shadow-md'
-                  : 'border-gray-200 hover:border-gray-300 hover:shadow-sm'
-                  }`}
-              >
-                <div className="flex items-center mb-3">
-                  <span className="text-2xl mr-3">🔧</span>
-                  <h4 className="font-semibold text-gray-900">Field Extractor</h4>
-                </div>
-                <p className="text-gray-600 text-sm">
-                  Simple extraction of Address, City, State, and Phone fields
-                </p>
-              </button>
-            </div>
-          </div>
-        </div>
-
-        {/* Content Area */}
-        <div className="bg-white rounded-2xl shadow-lg border border-gray-200">
+        <div className="bg-white/70 backdrop-blur-sm rounded-3xl shadow-2xl border border-orange-100">
           <div className="p-8">
-            {activeTab === 'single' ? (
-              <div>
-                <div className="flex items-center mb-6">
-                  <span className="text-3xl mr-3">🔍</span>
-                  <div>
-                    <h3 className="text-2xl font-bold text-gray-900">Single Address Geocoding</h3>
-                    <p className="text-gray-600">Enter an address to get precise coordinates and location data</p>
-                  </div>
+            <div>
+              <div className="flex items-center mb-6">
+                <div className="w-12 h-12 bg-gradient-to-r from-orange-500 to-amber-500 rounded-xl flex items-center justify-center shadow-lg mr-4">
+                  <svg className="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19.428 15.428a2 2 0 00-1.022-.547l-2.387-.477a6 6 0 00-3.86.517l-.318.158a6 6 0 01-3.86.517L6.05 15.21a2 2 0 00-1.806.547M8 4h8l-1 1v5.172a2 2 0 00.586 1.414l5 5c1.26 1.26.367 3.414-1.415 3.414H4.828c-1.782 0-2.674-2.154-1.414-3.414l5-5A2 2 0 009 10.172V5L8 4z" />
+                  </svg>
                 </div>
-                <SimpleAddressForm />
-              </div>
-            ) : activeTab === 'csv' ? (
-              <div>
-                <div className="flex items-center mb-6">
-                  <span className="text-3xl mr-3">📊</span>
-                  <div>
-                    <h3 className="text-2xl font-bold text-gray-900">Pipeline Testing</h3>
-                    <p className="text-gray-600">Upload CSV files to process multiple addresses with AI-powered normalization</p>
-                  </div>
+                <div>
+                  <h3 className="text-2xl font-bold text-gray-900">Pipeline de Procesamiento de Direcciones</h3>
+                  <p className="text-gray-600">Extraer desde CSV → Limpiar con IA → Geocodificar con Precisión</p>
                 </div>
-                <CsvUploader onUploadComplete={(result) => {
-                  console.log('CSV processing completed:', result)
-                }} />
               </div>
-            ) : (
-              <div>
-                <div className="flex items-center mb-6">
-                  <span className="text-3xl mr-3">🔧</span>
-                  <div>
-                    <h3 className="text-2xl font-bold text-gray-900">Field Extractor</h3>
-                    <p className="text-gray-600">Extract Address, City, State, and Phone fields from CSV files</p>
-                  </div>
-                </div>
-                <FieldExtractor onExtractComplete={(data) => {
-                  console.log('Field extraction completed:', data)
-                }} />
-              </div>
-            )}
+              <UnifiedProcessor
+                onProcessingComplete={(result) => {
+                  setProcessingResult(result)
+                  setCurrentView('dashboard')
+                }}
+              />
+            </div>
           </div>
         </div>
       </main>
 
       {/* Footer */}
-      <footer className="bg-gray-50 border-t border-gray-200">
+      <footer className="bg-white/60 backdrop-blur-sm border-t border-orange-100">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
           <div className="flex items-center justify-between">
             <div className="flex items-center space-x-3">
-              <div className="w-8 h-8 bg-gradient-to-r from-blue-600 to-indigo-600 rounded-lg flex items-center justify-center">
-                <span className="text-xs font-semibold text-white">GN</span>
+              <div className="w-8 h-8 bg-gradient-to-r from-orange-500 to-amber-500 rounded-lg flex items-center justify-center">
+                <span className="text-xs font-bold text-white">GN</span>
               </div>
-              <span className="text-gray-600">Powered by Google Maps API & Gemini AI</span>
+              <span className="text-gray-600">Powered by OpenAI & Google Maps</span>
             </div>
             <div className="text-sm text-gray-500">
-              Built for precise address intelligence
+              Construido para el futuro de la inteligencia de direcciones
             </div>
           </div>
         </div>
