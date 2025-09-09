@@ -18,6 +18,7 @@ const PORT = process.env.PORT || 3001
 app.use(cors({
     origin: [
         'https://42f2424bd34d.ngrok-free.app',
+        'http://localhost:5173',
         'http://localhost:5174',
         'http://localhost:5175',
         'http://localhost:3000'
