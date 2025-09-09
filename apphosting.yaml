@@ -1,0 +1,33 @@
+runConfig:
+  # Configure the backend to run on port 8080
+  env:
+    - variable: PORT
+      value: "8080"
+    - variable: NODE_ENV
+      value: "production"
+
+# Build configuration
+buildConfig:
+  # Use Node.js runtime
+  runtime: nodejs22
+  
+  # Install dependencies
+  commands:
+    - name: "Install dependencies"
+      command: "npm ci"
+    
+    # Build the frontend
+    - name: "Build frontend"  
+      command: "npm run build"
+    
+    # Prepare backend
+    - name: "Prepare backend"
+      command: "cd backend && npm ci"
+
+# Health check configuration  
+healthCheck:
+  path: "/health"
+  
+# Resource configuration
+cpu: 1
+memory: 512Mi

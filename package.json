@@ -9,8 +9,9 @@
     "build:functions": "tsc -b backend/tsconfig.json",
     "lint": "eslint .",
     "preview": "vite preview",
-    "server": "tsx backend/index.ts",
-    "server:dev": "nodemon --exec tsx backend/index.ts",
+    "start": "PORT=8080 tsx backend/index.ts",
+    "server": "PORT=8080 tsx backend/index.ts",
+    "server:dev": "PORT=3001 nodemon --exec tsx backend/index.ts",
     "start:all": "concurrently \"npm run server:dev\" \"npm run dev\""
   },
   "dependencies": {

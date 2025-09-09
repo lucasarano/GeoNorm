@@ -10,7 +10,7 @@ import { emailService } from './services/emailService'
 // Note: dynamically import the cleaner to avoid TS type declaration issues for .js module
 
 const app = express()
-const PORT = process.env.PORT || 3001
+const PORT = process.env.PORT || 8080
 
 // Minimal server for extract -> clean -> geocode flow only
 

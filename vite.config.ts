@@ -14,12 +14,12 @@ export default defineConfig({
   server: {
     proxy: {
       "/api": {
-        target: "http://localhost:3001",
+        target: process.env.NODE_ENV === 'production' ? "http://localhost:8080" : "http://localhost:3001",
         changeOrigin: true,
         secure: false,
       },
       "/health": {
-        target: "http://localhost:3001",
+        target: process.env.NODE_ENV === 'production' ? "http://localhost:8080" : "http://localhost:3001",
         changeOrigin: true,
         secure: false,
       }
