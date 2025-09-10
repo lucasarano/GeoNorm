@@ -10,6 +10,7 @@ export default defineConfig({
     outDir: path.resolve(__dirname, 'dist'),
     emptyOutDir: true
   },
+  envPrefix: ['VITE_', 'FIREBASE_'],
   resolve: {
     alias: {
       "@": path.resolve(__dirname, "./frontend"),

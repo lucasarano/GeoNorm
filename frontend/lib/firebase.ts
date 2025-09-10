@@ -3,16 +3,24 @@ import { initializeApp } from 'firebase/app'
 import { getAuth, GoogleAuthProvider } from 'firebase/auth'
 import { getFirestore } from 'firebase/firestore'
 
-// Your web app's Firebase configuration
-// For Firebase JS SDK v9-compat and later, measurementId is optional
+// Build config from VITE_* (local) or FIREBASE_WEBAPP_CONFIG (App Hosting)
+const webAppConfigFromFirebase = (() => {
+  try {
+    const str = (import.meta as any).env?.FIREBASE_WEBAPP_CONFIG as string | undefined
+    return str ? JSON.parse(str) : undefined
+  } catch {
+    return undefined
+  }
+})()
+
 const firebaseConfig = {
-  apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
-  authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN,
-  projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID,
-  storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET,
-  messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID,
-  appId: import.meta.env.VITE_FIREBASE_APP_ID,
-  measurementId: import.meta.env.VITE_FIREBASE_MEASUREMENT_ID
+  apiKey: import.meta.env.VITE_FIREBASE_API_KEY || (webAppConfigFromFirebase?.apiKey as string | undefined),
+  authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN || (webAppConfigFromFirebase?.authDomain as string | undefined),
+  projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID || (webAppConfigFromFirebase?.projectId as string | undefined),
+  storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET || (webAppConfigFromFirebase?.storageBucket as string | undefined),
+  messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID || (webAppConfigFromFirebase?.messagingSenderId as string | undefined),
+  appId: import.meta.env.VITE_FIREBASE_APP_ID || (webAppConfigFromFirebase?.appId as string | undefined),
+  measurementId: import.meta.env.VITE_FIREBASE_MEASUREMENT_ID || (webAppConfigFromFirebase?.measurementId as string | undefined)
 }
 
 // Initialize Firebase
