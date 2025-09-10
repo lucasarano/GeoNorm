@@ -16,17 +16,17 @@ buildConfig:
     - name: "Install dependencies (with dev)"
       command: "npm ci"
       
-    - name: "Build frontend"
-      command: "npm run build"
+    - name: "Build frontend and backend"
+      command: "npm run build:all"
       
     - name: "Install backend dependencies (already installed at root)"
       command: "echo skip"
       
-    - name: "Build backend"
-      command: "npm run build:functions"
+    - name: "Verify backend build exists"
+      command: "test -f backend/dist/index.js && echo 'backend/dist/index.js present' || (echo 'ERROR: backend build missing' && ls -la backend || true && ls -la backend/dist || true && exit 1)"
       
     - name: "Prune dev dependencies"
-      command: "npm prune --omit=dev"
+      command: "npm prune --omit=dev || true"
 
     - name: "Verify build output"
       command: "ls -la public/ || true && ls -la backend/dist/ || true"
