@@ -75,6 +75,8 @@ export default function UnifiedProcessor({ onProcessingComplete }: UnifiedProces
         try {
             // Read file content
             const csvContent = await file.text()
+            console.log('[DEBUG] CSV file size:', csvContent.length)
+            console.log('[DEBUG] CSV preview:', csvContent.substring(0, 300))
 
             // Step 1: Extracting
             setCurrentStep('extracting')
@@ -109,7 +111,25 @@ export default function UnifiedProcessor({ onProcessingComplete }: UnifiedProces
             })
 
             if (!response.ok) {
-                throw new Error(`Error en el servidor: ${response.status}`)
+                const errorBody = await response.text()
+                console.error('Server error response:', errorBody)
+
+                let errorMessage = `Error en el servidor: ${response.status}`
+                try {
+                    const errorJson = JSON.parse(errorBody)
+                    if (errorJson.error) {
+                        errorMessage = errorJson.error
+                    }
+                    if (errorJson.availableHeaders) {
+                        errorMessage += `\n\nColumnas disponibles: ${errorJson.availableHeaders.join(', ')}`
+                        errorMessage += `\nColumnas requeridas: ${errorJson.requiredHeaders.join(', ')}`
+                    }
+                } catch (e) {
+                    // If error response is not JSON, use the text as is
+                    errorMessage = errorBody || errorMessage
+                }
+
+                throw new Error(errorMessage)
             }
 
             const result: ProcessingResult = await response.json()

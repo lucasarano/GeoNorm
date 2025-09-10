@@ -19,10 +19,54 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   }
 
   try {
-    const csvData = typeof req.body === 'string' ? req.body : JSON.stringify(req.body)
+    // Debug logging
+    const contentType = req.headers['content-type'] || ''
+    console.log('[DEBUG] Request method:', req.method)
+    console.log('[DEBUG] Content-Type:', contentType)
+    console.log('[DEBUG] Body type:', typeof req.body)
+    console.log('[DEBUG] Body has length:', req.body && typeof (req.body as any).length === 'number')
+
+    // Helper to read raw body when body parser didn't populate req.body
+    const readRawBody = async (request: any): Promise<string> => {
+      return await new Promise((resolve, reject) => {
+        try {
+          let data = ''
+          request.setEncoding && request.setEncoding('utf8')
+          request.on('data', (chunk: any) => {
+            data += typeof chunk === 'string' ? chunk : chunk.toString('utf8')
+          })
+          request.on('end', () => resolve(data))
+          request.on('error', (err: any) => reject(err))
+        } catch (err) {
+          reject(err)
+        }
+      })
+    }
+
+    let csvData: string | undefined
+    if (typeof req.body === 'string') {
+      csvData = req.body
+    } else if ((req as any).body && Buffer.isBuffer((req as any).body)) {
+      csvData = (req as any).body.toString('utf8')
+    } else {
+      // Fallback: read the raw request stream
+      csvData = await readRawBody(req)
+    }
+
+    console.log('[DEBUG] Processed csvData type:', typeof csvData)
+    console.log('[DEBUG] Processed csvData length:', csvData ? csvData.length : 'undefined')
+    if (csvData) {
+      console.log('[DEBUG] csvData preview:', csvData.substring(0, 200))
+    }
 
     if (!csvData) {
+      console.log('[DEBUG] ERROR: CSV data is empty or undefined')
       return res.status(400).json({ error: 'CSV data is required' })
+    }
+
+    if (csvData.length < 10) {
+      console.log('[DEBUG] ERROR: CSV data too short:', csvData)
+      return res.status(400).json({ error: 'CSV data appears to be too short or invalid' })
     }
 
     console.log('[UNIFIED_PROCESS] Starting complete processing pipeline...')
@@ -31,45 +75,98 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     console.log('[UNIFIED_PROCESS] Step 1/3: Extracting fields...')
     const lines = csvData.trim().split('\n')
 
+    console.log('[DEBUG] Total lines in CSV:', lines.length)
+    if (lines.length < 2) {
+      console.log('[DEBUG] ERROR: CSV must have at least 2 lines (header + data)')
+      return res.status(400).json({ error: 'CSV must have at least a header row and one data row' })
+    }
+
     const parseCSVLine = (line: string): string[] => {
+      if (!line || typeof line !== 'string') {
+        console.log('[DEBUG] parseCSVLine received invalid input:', line)
+        return []
+      }
+
       const result: string[] = []
       let current = ''
       let inQuotes = false
 
-      for (let i = 0; i < line.length; i++) {
-        const char = line[i]
-        if (char === '"') {
-          inQuotes = !inQuotes
-        } else if (char === ',' && !inQuotes) {
-          result.push(current.trim())
-          current = ''
-        } else {
-          current += char
+      try {
+        for (let i = 0; i < line.length; i++) {
+          const char = line[i]
+          if (char === '"') {
+            inQuotes = !inQuotes
+          } else if (char === ',' && !inQuotes) {
+            result.push(current.trim())
+            current = ''
+          } else {
+            current += char
+          }
         }
+        result.push(current.trim())
+        return result
+      } catch (error) {
+        console.log('[DEBUG] Error in parseCSVLine:', error)
+        return []
       }
-      result.push(current.trim())
-      return result
     }
 
     const headers = parseCSVLine(lines[0])
-    const addressIndex = headers.findIndex((h: string) => h.includes('Buyer Address1'))
-    const cityIndex = headers.findIndex((h: string) => h.includes('Buyer City'))
-    const stateIndex = headers.findIndex((h: string) => h.includes('Buyer State'))
-    const phoneIndex = headers.findIndex((h: string) => h.includes('Buyer Phone'))
+    console.log('[DEBUG] Headers found:', headers)
 
-    if (addressIndex === -1 || cityIndex === -1 || stateIndex === -1 || phoneIndex === -1) {
-      return res.status(400).json({ error: 'Required columns not found in CSV' })
+    // Try multiple patterns for more flexible column detection
+    const findColumnIndex = (patterns: string[]) => {
+      for (const pattern of patterns) {
+        const index = headers.findIndex((h: string) =>
+          h.toLowerCase().includes(pattern.toLowerCase())
+        )
+        if (index !== -1) return index
+      }
+      return -1
     }
 
-    const extractedData = lines.slice(1).map((line: string) => {
-      const values = parseCSVLine(line)
-      return {
-        address: values[addressIndex] || '',
-        city: values[cityIndex] || '',
-        state: values[stateIndex] || '',
-        phone: values[phoneIndex] || ''
+    const addressIndex = findColumnIndex(['Buyer Address1', 'address', 'direccion', 'addr'])
+    const cityIndex = findColumnIndex(['Buyer City', 'city', 'ciudad', 'localidad'])
+    const stateIndex = findColumnIndex(['Buyer State', 'state', 'estado', 'provincia', 'region'])
+    const phoneIndex = findColumnIndex(['Buyer Phone', 'phone', 'telefono', 'tel', 'celular'])
+
+    console.log('[DEBUG] Column indices:', { addressIndex, cityIndex, stateIndex, phoneIndex })
+
+    if (addressIndex === -1 || cityIndex === -1 || stateIndex === -1 || phoneIndex === -1) {
+      console.log('[DEBUG] ERROR: Required columns not found')
+      console.log('[DEBUG] Available headers:', headers)
+      console.log('[DEBUG] Tried patterns: address/direccion, city/ciudad, state/estado, phone/telefono')
+      return res.status(400).json({
+        error: 'Required columns not found in CSV',
+        availableHeaders: headers,
+        requiredHeaders: ['Address/Direccion', 'City/Ciudad', 'State/Estado', 'Phone/Telefono'],
+        foundIndices: { addressIndex, cityIndex, stateIndex, phoneIndex },
+        suggestions: 'Make sure your CSV has columns for address, city, state/province, and phone number'
+      })
+    }
+
+    const extractedData = lines.slice(1).map((line: string, lineIndex: number) => {
+      try {
+        const values = parseCSVLine(line)
+        console.log(`[DEBUG] Line ${lineIndex + 2} parsed values count:`, values ? values.length : 'undefined')
+        console.log(`[DEBUG] Line ${lineIndex + 2} values:`, values)
+
+        return {
+          address: values && values[addressIndex] ? values[addressIndex] : '',
+          city: values && values[cityIndex] ? values[cityIndex] : '',
+          state: values && values[stateIndex] ? values[stateIndex] : '',
+          phone: values && values[phoneIndex] ? values[phoneIndex] : ''
+        }
+      } catch (error) {
+        console.log(`[DEBUG] Error parsing line ${lineIndex + 2}:`, error)
+        return {
+          address: '',
+          city: '',
+          state: '',
+          phone: ''
+        }
       }
-    }).filter((row: any) => row.address || row.city || row.state || row.phone)
+    }).filter((row: any) => row && (row.address || row.city || row.state || row.phone))
 
     console.log(`[UNIFIED_PROCESS] Extracted ${extractedData.length} rows`)
 
@@ -83,60 +180,187 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const csvForCleaning = [
       'Address,City,State,Phone',
       ...extractedData.map((row: any) =>
-        `"${row.address}","${row.city}","${row.state}","${row.phone}"`
+        `"${row.address || ''}","${row.city || ''}","${row.state || ''}","${row.phone || ''}"`
       )
     ].join('\n')
+    console.log('[DEBUG] CSV for cleaning preview:', csvForCleaning.substring(0, 200))
 
-    // Simplified OpenAI cleaning for Vercel function
-    const cleanedData = extractedData.map((row: any, index: number) => ({
-      address: row.address,
-      city: row.city,
-      state: row.state,
-      phone: row.phone,
-      email: '',
-      aiConfidence: 85 // Mock confidence for now
-    }))
+    // Dynamically import the cleaning module and call OpenAI
+    // @ts-ignore - JS module without TypeScript types
+    const cleanerModule: any = await import('../backend/cleanParaguayAddresses.js')
+    const cleanedCsv: string = await cleanerModule.cleanParaguayAddresses(openaiApiKey, csvForCleaning)
+    console.log('[DEBUG] Received cleaned CSV length:', cleanedCsv?.length)
 
-    console.log(`[UNIFIED_PROCESS] Cleaned ${cleanedData.length} rows`)
+    // Parser that strips surrounding quotes when pushing
+    const parseCleanCSVLine = (line: string): string[] => {
+      const result: string[] = []
+      let current = ''
+      let inQuotes = false
+      for (let i = 0; i < line.length; i++) {
+        const char = line[i]
+        if (char === '"') {
+          inQuotes = !inQuotes
+        } else if (char === ',' && !inQuotes) {
+          result.push(current.trim().replace(/^"|"$/g, ''))
+          current = ''
+        } else {
+          current += char
+        }
+      }
+      result.push(current.trim().replace(/^"|"$/g, ''))
+      return result
+    }
 
-    // Step 3: Mock geocoding results for now (to avoid timeout issues)
-    console.log('[UNIFIED_PROCESS] Step 3/3: Geocoding addresses...')
-    
-    const results = cleanedData.map((cleaned: any, i: number) => {
-      const original = extractedData[i]
-      
+    const cleanedLines = cleanedCsv.trim().split('\n')
+    const cleanedData = cleanedLines.slice(1).map((line: string) => {
+      const values = parseCleanCSVLine(line)
       return {
-        rowIndex: i,
-        original: {
-          address: original?.address || '',
-          city: original?.city || '',
-          state: original?.state || '',
-          phone: original?.phone || ''
-        },
-        cleaned: {
-          address: cleaned.address,
-          city: cleaned.city,
-          state: cleaned.state,
-          phone: cleaned.phone,
-          email: cleaned.email,
-          aiConfidence: cleaned.aiConfidence
-        },
-        geocoding: {
-          latitude: -25.2637 + (Math.random() - 0.5) * 0.1, // Mock coordinates around Asunción
-          longitude: -57.5759 + (Math.random() - 0.5) * 0.1,
-          formattedAddress: `${cleaned.address}, ${cleaned.city}, ${cleaned.state}, Paraguay`,
-          confidence: 0.8,
-          confidenceDescription: 'High precision - mock data',
-          locationType: 'APPROXIMATE',
-          staticMapUrl: null
-        },
-        status: 'high_confidence'
+        address: values[0] || '',
+        city: values[1] || '',
+        state: values[2] || '',
+        phone: values[3] || '',
+        email: values[4] || '',
+        aiConfidence: parseInt(values[5] || '0') || 0
       }
     })
+    console.log('[DEBUG] Sample cleaned data:', cleanedData.slice(0, 2))
+    console.log(`[UNIFIED_PROCESS] Cleaned ${cleanedData.length} rows`)
 
-    const highConfidence = results.length
-    const mediumConfidence = 0
-    const lowConfidence = 0
+    // Step 3: Real geocoding results via Google Maps
+    console.log('[UNIFIED_PROCESS] Step 3/3: Geocoding addresses...')
+
+    const mapsApiKey = process.env.GOOGLE_MAPS_API_KEY || process.env.VITE_GOOGLE_MAPS_API_KEY
+    if (!mapsApiKey) {
+      return res.status(500).json({ error: 'Google Maps API key not configured' })
+    }
+
+    const confidenceFor = (locationType: string | undefined) => {
+      const map: Record<string, number> = {
+        ROOFTOP: 1.0,
+        RANGE_INTERPOLATED: 0.8,
+        GEOMETRIC_CENTER: 0.6,
+        APPROXIMATE: 0.4
+      }
+      return locationType ? (map[locationType] ?? 0.5) : 0
+    }
+
+    const getConfidenceDescription = (locationType: string | undefined) => {
+      const descriptions: Record<string, string> = {
+        ROOFTOP: 'Most precise - exact address match',
+        RANGE_INTERPOLATED: 'High precision - interpolated within address range',
+        GEOMETRIC_CENTER: 'Medium precision - center of building/area',
+        APPROXIMATE: 'Low precision - approximate location'
+      }
+      return locationType ? descriptions[locationType] || 'Unknown precision' : 'No location type'
+    }
+
+    const geocode = async (address: string, city?: string, state?: string) => {
+      if (!address || address.trim().length < 3) return null
+      let url = `https://maps.googleapis.com/maps/api/geocode/json?address=${encodeURIComponent(address)}&key=${mapsApiKey}`
+      const components: string[] = ['country:PY']
+      if (state && state.trim()) components.push(`administrative_area:${state}`)
+      if (city && city.trim()) components.push(`locality:${city}`)
+      if (components.length) {
+        url += `&components=${encodeURIComponent(components.join('|'))}`
+      }
+      const r = await fetch(url)
+      if (!r.ok) return { status: 'ERROR', error: `HTTP ${r.status}` }
+      const data: any = await r.json()
+      let best: any = null
+      if (data.status === 'OK' && Array.isArray(data.results) && data.results.length > 0) {
+        best = data.results.reduce((acc: any, cur: any) => {
+          const score = confidenceFor(cur?.geometry?.location_type)
+          if (!acc || score > acc.confidence_score) {
+            const loc = cur.geometry.location
+            return {
+              latitude: loc.lat,
+              longitude: loc.lng,
+              formatted_address: cur.formatted_address,
+              location_type: cur.geometry.location_type,
+              confidence_score: score,
+              confidence_description: getConfidenceDescription(cur.geometry.location_type)
+            }
+          }
+          return acc
+        }, null)
+      }
+      return { status: data.status, best, rawCount: data.results?.length || 0 }
+    }
+
+    const results: any[] = []
+    let highConfidence = 0
+    let mediumConfidence = 0
+    let lowConfidence = 0
+
+    for (let i = 0; i < cleanedData.length; i++) {
+      const cleaned = cleanedData[i]
+      const original = extractedData[i]
+      try {
+        const geo = await geocode(cleaned.address, cleaned.city, cleaned.state)
+        const confidence = geo?.best?.confidence_score || 0
+        if (confidence >= 0.8) highConfidence++
+        else if (confidence >= 0.6) mediumConfidence++
+        else lowConfidence++
+
+        results.push({
+          rowIndex: i,
+          original: {
+            address: original?.address || '',
+            city: original?.city || '',
+            state: original?.state || '',
+            phone: original?.phone || ''
+          },
+          cleaned: {
+            address: cleaned.address,
+            city: cleaned.city,
+            state: cleaned.state,
+            phone: cleaned.phone,
+            email: cleaned.email,
+            aiConfidence: cleaned.aiConfidence
+          },
+          geocoding: {
+            latitude: geo?.best?.latitude || null,
+            longitude: geo?.best?.longitude || null,
+            formattedAddress: geo?.best?.formatted_address || '',
+            confidence: confidence,
+            confidenceDescription: geo?.best?.confidence_description || 'No geocoding result',
+            locationType: geo?.best?.location_type || 'N/A',
+            staticMapUrl: null
+          },
+          status: confidence >= 0.8 ? 'high_confidence' : confidence >= 0.6 ? 'medium_confidence' : 'low_confidence'
+        })
+      } catch (error: any) {
+        lowConfidence++
+        results.push({
+          rowIndex: i,
+          original: {
+            address: original?.address || '',
+            city: original?.city || '',
+            state: original?.state || '',
+            phone: original?.phone || ''
+          },
+          cleaned: {
+            address: cleaned.address,
+            city: cleaned.city,
+            state: cleaned.state,
+            phone: cleaned.phone,
+            email: cleaned.email,
+            aiConfidence: cleaned.aiConfidence
+          },
+          geocoding: {
+            latitude: null,
+            longitude: null,
+            formattedAddress: '',
+            confidence: 0,
+            confidenceDescription: 'Geocoding failed',
+            locationType: 'FAILED',
+            staticMapUrl: null
+          },
+          status: 'failed',
+          error: error.message
+        })
+      }
+    }
 
     console.log(`[UNIFIED_PROCESS] Processed ${results.length} addresses`)
 
