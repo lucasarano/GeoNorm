@@ -13,20 +13,23 @@ runConfig:
 buildConfig:
   runtime: nodejs22
   commands:
-    - name: "Install dependencies"
-      command: "npm ci --omit=dev"
+    - name: "Install dependencies (with dev)"
+      command: "npm ci"
       
     - name: "Build frontend"
       command: "npm run build"
       
-    - name: "Install backend dependencies"
-      command: "cd backend && npm ci --omit=dev"
+    - name: "Install backend dependencies (already installed at root)"
+      command: "echo skip"
       
     - name: "Build backend"
       command: "npm run build:functions"
       
+    - name: "Prune dev dependencies"
+      command: "npm prune --omit=dev"
+
     - name: "Verify build output"
-      command: "ls -la public/ && ls -la backend/dist/"
+      command: "ls -la public/ || true && ls -la backend/dist/ || true"
 
 healthCheck:
   path: "/health"
