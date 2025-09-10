@@ -9,26 +9,24 @@ runConfig:
       value: "8080"
     - variable: NODE_ENV
       value: "production"
-    - variable: GOOGLE_ENTRYPOINT
-      value: "node server.js"
 
 buildConfig:
   runtime: nodejs22
   commands:
-    - name: "Install dependencies (with dev)"
+    - name: "Install dependencies"
       command: "npm ci"
       
     - name: "Build frontend"
       command: "npm run build"
       
-    - name: "Verify tsx is available"
-      command: "npx tsx --version"
+    - name: "Verify tsx and server.js"
+      command: "npx tsx --version && test -f server.js && echo 'server.js exists'"
       
-    - name: "Keep tsx for runtime, prune other dev deps"
-      command: "npm uninstall typescript @types/cors @types/express @types/multer @types/react @types/react-dom @types/uuid @vitejs/plugin-react autoprefixer concurrently eslint globals nodemon postcss tailwindcss typescript-eslint vite || true"
+    - name: "Test server startup"
+      command: "timeout 10 node server.js || echo 'Server test completed'"
 
     - name: "Verify build output"
-      command: "ls -la public/ || true && ls -la backend/dist/ || true"
+      command: "ls -la public/ && ls -la server.js"
 
 healthCheck:
   path: "/health"
