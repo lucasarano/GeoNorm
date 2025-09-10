@@ -13,7 +13,7 @@ import { emailService } from './services/emailService.js'
 // Note: dynamically import the cleaner to avoid TS type declaration issues for .js module
 
 const app = express()
-const PORT = process.env.PORT || 8080
+const PORT = parseInt(process.env.PORT || '8080', 10)
 
 // Minimal server for extract -> clean -> geocode flow only
 
@@ -967,79 +967,112 @@ app.get('/api/address-updates', async (req, res) => {
     }
 })
 
-// Serve static files from public directory
-const __filename = fileURLToPath(import.meta.url)
-const __dirname = path.dirname(__filename)
+// Simple static file serving with better error handling
+console.log('[STARTUP] Current working directory:', process.cwd())
+console.log('[STARTUP] __dirname:', path.dirname(fileURLToPath(import.meta.url)))
 
-// Try multiple possible static file locations
-const staticPaths = [
-    path.resolve(process.cwd(), 'public'),
+// Define possible static file locations
+const staticCandidates = [
     path.resolve('/workspace', 'public'),
-    path.resolve(__dirname, '../public'),
-    path.resolve(__dirname, '../../public')
+    path.resolve(process.cwd(), 'public'),
+    path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../public'),
+    path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../public')
 ]
 
-let publicPath: string | null = null
-for (const testPath of staticPaths) {
+console.log('[STARTUP] Looking for static files in:', staticCandidates)
+
+let staticDir: string | null = null
+for (const candidate of staticCandidates) {
     try {
-        if (fs.existsSync(path.join(testPath, 'index.html'))) {
-            publicPath = testPath
+        const indexPath = path.join(candidate, 'index.html')
+        if (fs.existsSync(indexPath)) {
+            staticDir = candidate
+            console.log(`[STATIC] Found index.html at: ${indexPath}`)
             break
+        } else {
+            console.log(`[STATIC] No index.html found at: ${indexPath}`)
         }
-    } catch (e) {
-        // Continue to next path
+    } catch (error) {
+        console.log(`[STATIC] Error checking ${candidate}:`, error)
     }
 }
 
-if (publicPath) {
-    console.log(`[STATIC] Serving static files from: ${publicPath}`)
+if (staticDir) {
+    console.log(`[STATIC] Serving static files from: ${staticDir}`)
     
-    // Serve static files with proper MIME types
-    app.use(express.static(publicPath, {
-        maxAge: '1d',
-        etag: true,
-        lastModified: true,
-        setHeaders: (res, path) => {
-            if (path.endsWith('.js')) {
-                res.setHeader('Content-Type', 'application/javascript; charset=utf-8')
-            } else if (path.endsWith('.css')) {
-                res.setHeader('Content-Type', 'text/css; charset=utf-8')
-            } else if (path.endsWith('.html')) {
-                res.setHeader('Content-Type', 'text/html; charset=utf-8')
+    // Serve static files
+    app.use(express.static(staticDir, {
+        setHeaders: (res, filePath) => {
+            if (filePath.endsWith('.js')) {
+                res.setHeader('Content-Type', 'application/javascript')
             }
         }
     }))
-
-    // SPA fallback - serve index.html for non-API routes
-    app.use((req, res, next) => {
-        // Skip if it's an API route, health check, or confirmation route
-        if (req.method !== 'GET' || 
-            req.path.startsWith('/api/') || 
-            req.path === '/health' ||
-            req.path.startsWith('/confirm/') || 
-            req.path.startsWith('/confirm-address/')) {
-            return next()
+    
+    // Catch-all handler for SPA routing
+    app.get('*', (req, res) => {
+        // Skip API and confirmation routes
+        if (req.path.startsWith('/api') || req.path.startsWith('/health') || req.path.startsWith('/confirm')) {
+            return res.status(404).json({ error: 'Not found' })
         }
         
-        // Skip if it's a static asset (has file extension)
-        const hasExtension = path.extname(req.path) !== ''
-        if (hasExtension) {
-            return next()
-        }
-        
-        // Serve index.html for SPA routes
-        res.sendFile(path.join(publicPath!, 'index.html'), (err) => {
+        const indexPath = path.join(staticDir!, 'index.html')
+        res.sendFile(indexPath, (err) => {
             if (err) {
                 console.error('[STATIC] Error serving index.html:', err)
-                res.status(500).send('Internal Server Error')
+                res.status(500).send('Error loading application')
             }
         })
     })
 } else {
-    console.warn('[STATIC] No public directory found. Static file serving disabled.')
-    console.warn('[STATIC] Searched paths:', staticPaths)
+    console.error('[STATIC] CRITICAL: No static files found!')
+    
+    // Fallback route for debugging
+    app.get('*', (req, res) => {
+        if (req.path.startsWith('/api') || req.path.startsWith('/health')) {
+            return res.status(404).json({ error: 'API not found' })
+        }
+        
+        res.status(404).send(`
+            <h1>Static Files Not Found</h1>
+            <p>Current directory: ${process.cwd()}</p>
+            <p>Searched paths: ${staticCandidates.join(', ')}</p>
+            <p>Available files in current directory:</p>
+            <pre>${fs.readdirSync(process.cwd()).join('\n')}</pre>
+        `)
+    })
 }
 
-app.listen(PORT, () => {
-    console.log(`Server running on http://localhost:${PORT}`)
+// Enhanced startup with error handling
+const server = app.listen(PORT, '0.0.0.0', () => {
+    console.log(`✅ Server successfully started on http://0.0.0.0:${PORT}`)
+    console.log(`📁 Static files served from: ${staticDir || 'NONE'}`)
+    console.log(`🌍 Environment: ${process.env.NODE_ENV || 'development'}`)
+    console.log(`📋 Available routes:`)
+    console.log(`   GET  /health - Health check`)
+    console.log(`   POST /api/test-location-sms - SMS test`)
+    console.log(`   POST /api/test-location-email - Email test`) 
+    console.log(`   GET  /* - SPA fallback to index.html`)
+})
+
+server.on('error', (error) => {
+    console.error('❌ Server failed to start:', error)
+    process.exit(1)
+})
+
+// Graceful shutdown
+process.on('SIGTERM', () => {
+    console.log('🔄 Received SIGTERM, shutting down gracefully')
+    server.close(() => {
+        console.log('✅ Server closed')
+        process.exit(0)
+    })
+})
+
+process.on('SIGINT', () => {
+    console.log('🔄 Received SIGINT, shutting down gracefully')
+    server.close(() => {
+        console.log('✅ Server closed')
+        process.exit(0)
+    })
 })
