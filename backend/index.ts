@@ -4,6 +4,8 @@ import dotenv from 'dotenv'
 dotenv.config()
 
 import express from 'express'
+import path from 'path'
+import { fileURLToPath } from 'url'
 import cors from 'cors'
 import { smsService } from './services/smsService.js'
 import { emailService } from './services/emailService.js'
@@ -28,6 +30,21 @@ app.use(cors({
 }))
 
 app.use(express.json())
+
+// Set Content Security Policy to allow external fonts and common assets
+app.use((req, res, next) => {
+    res.setHeader('Content-Security-Policy', [
+        "default-src 'self'",
+        "connect-src 'self' https:",
+        "img-src 'self' data: blob: https:",
+        "style-src 'self' 'unsafe-inline' https:",
+        "font-src 'self' data: https://r2cdn.perplexity.ai",
+        "script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'",
+        "frame-ancestors 'self'",
+        "base-uri 'self'"
+    ].join('; '))
+    next()
+})
 
 // Health check endpoint
 app.get('/health', (req, res) => {
@@ -948,6 +965,24 @@ app.get('/api/address-updates', async (req, res) => {
         res.status(500).json({ error: 'Failed to fetch address updates' })
     }
 })
+
+// Serve frontend static assets (Vite build output)
+try {
+    const __filename = fileURLToPath(import.meta.url)
+    const __dirname = path.dirname(__filename)
+    const distPath = path.resolve(__dirname, '../../dist')
+    app.use(express.static(distPath))
+
+    // Fallback to index.html for non-API GET routes
+    app.get('*', (req, res, next) => {
+        if (req.path.startsWith('/api') || req.path.startsWith('/confirm') || req.path.startsWith('/confirm-address')) {
+            return next()
+        }
+        res.sendFile(path.join(distPath, 'index.html'))
+    })
+} catch (e) {
+    console.warn('[STATIC] Skipping static file serving setup:', e)
+}
 
 app.listen(PORT, () => {
     console.log(`Server running on http://localhost:${PORT}`)
