@@ -10,7 +10,7 @@ runConfig:
     - variable: NODE_ENV
       value: "production"
     - variable: GOOGLE_ENTRYPOINT
-      value: "node backend/dist/index.js"
+      value: "node server.js"
 
 buildConfig:
   runtime: nodejs22
@@ -18,17 +18,14 @@ buildConfig:
     - name: "Install dependencies (with dev)"
       command: "npm ci"
       
-    - name: "Build frontend and backend"
-      command: "npm run build:all"
+    - name: "Build frontend"
+      command: "npm run build"
       
-    - name: "Install backend dependencies (already installed at root)"
-      command: "echo skip"
+    - name: "Verify tsx is available"
+      command: "npx tsx --version"
       
-    - name: "Verify backend build exists"
-      command: "test -f backend/dist/index.js && echo 'backend/dist/index.js present' || (echo 'ERROR: backend build missing' && ls -la backend || true && ls -la backend/dist || true && exit 1)"
-      
-    - name: "Prune dev dependencies"
-      command: "npm prune --omit=dev || true"
+    - name: "Keep tsx for runtime, prune other dev deps"
+      command: "npm uninstall typescript @types/cors @types/express @types/multer @types/react @types/react-dom @types/uuid @vitejs/plugin-react autoprefixer concurrently eslint globals nodemon postcss tailwindcss typescript-eslint vite || true"
 
     - name: "Verify build output"
       command: "ls -la public/ || true && ls -la backend/dist/ || true"

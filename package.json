@@ -10,7 +10,7 @@
     "build:all": "npm run build && npm run build:functions",
     "lint": "eslint .",
     "preview": "vite preview",
-    "start": "node backend/dist/index.js",
+    "start": "node server.js",
     "server": "node backend/dist/index.js",
     "server:dev": "PORT=3001 nodemon --exec tsx backend/index.ts",
     "start:all": "concurrently \"npm run server:dev\" \"npm run dev\"",
