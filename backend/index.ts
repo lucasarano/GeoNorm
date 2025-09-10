@@ -5,6 +5,7 @@ dotenv.config()
 
 import express from 'express'
 import path from 'path'
+import fs from 'fs'
 import { fileURLToPath } from 'url'
 import cors from 'cors'
 import { smsService } from './services/smsService.js'
@@ -970,16 +971,27 @@ app.get('/api/address-updates', async (req, res) => {
 try {
     const __filename = fileURLToPath(import.meta.url)
     const __dirname = path.dirname(__filename)
-    const distPath = path.resolve(__dirname, '../../dist')
-    app.use(express.static(distPath))
-
-    // Fallback to index.html for non-API GET routes
-    app.get('*', (req, res, next) => {
-        if (req.path.startsWith('/api') || req.path.startsWith('/confirm') || req.path.startsWith('/confirm-address')) {
-            return next()
-        }
-        res.sendFile(path.join(distPath, 'index.html'))
+    const candidates = [
+        path.resolve(process.cwd(), 'dist'),
+        path.resolve(process.cwd(), 'frontend/dist'),
+        path.resolve('/workspace', 'dist'),
+        path.resolve(__dirname, '../../dist')
+    ]
+    const distPath = candidates.find(p => {
+        try { return fs.existsSync(path.join(p, 'index.html')) } catch { return false }
     })
+
+    if (distPath) {
+        console.log('[STATIC] Serving static files from', distPath)
+        app.use(express.static(distPath))
+
+        // Fallback to index.html for non-API GET routes (Express 5 compatible)
+        app.get(/^(?!\/(api|confirm|confirm-address)\b).*/, (req, res) => {
+            res.sendFile(path.join(distPath!, 'index.html'))
+        })
+    } else {
+        console.warn('[STATIC] dist/index.html not found. Skipping static serving.')
+    }
 } catch (e) {
     console.warn('[STATIC] Skipping static file serving setup:', e)
 }
