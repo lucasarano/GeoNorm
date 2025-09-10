@@ -23,7 +23,7 @@ buildConfig:
       command: "npx tsx --version && test -f server.js && echo 'server.js exists'"
       
     - name: "Test server startup"
-      command: "timeout 10 node server.js || echo 'Server test completed'"
+      command: "PORT=8080 timeout 10s node server.js || echo 'Server test completed'"
 
     - name: "Verify build output"
       command: "ls -la public/ && ls -la server.js"
