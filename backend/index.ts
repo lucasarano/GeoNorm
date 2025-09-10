@@ -967,33 +967,77 @@ app.get('/api/address-updates', async (req, res) => {
     }
 })
 
-// Serve frontend static assets (Vite build output)
-try {
-    const __filename = fileURLToPath(import.meta.url)
-    const __dirname = path.dirname(__filename)
-    const candidates = [
-        path.resolve(process.cwd(), 'dist'),
-        path.resolve(process.cwd(), 'frontend/dist'),
-        path.resolve('/workspace', 'dist'),
-        path.resolve(__dirname, '../../dist')
-    ]
-    const distPath = candidates.find(p => {
-        try { return fs.existsSync(path.join(p, 'index.html')) } catch { return false }
-    })
+// Serve static files from public directory
+const __filename = fileURLToPath(import.meta.url)
+const __dirname = path.dirname(__filename)
 
-    if (distPath) {
-        console.log('[STATIC] Serving static files from', distPath)
-        app.use(express.static(distPath))
+// Try multiple possible static file locations
+const staticPaths = [
+    path.resolve(process.cwd(), 'public'),
+    path.resolve('/workspace', 'public'),
+    path.resolve(__dirname, '../public'),
+    path.resolve(__dirname, '../../public')
+]
 
-        // Fallback to index.html for non-API GET routes (Express 5 compatible)
-        app.get(/^(?!\/(api|confirm|confirm-address)\b).*/, (req, res) => {
-            res.sendFile(path.join(distPath!, 'index.html'))
-        })
-    } else {
-        console.warn('[STATIC] dist/index.html not found. Skipping static serving.')
+let publicPath: string | null = null
+for (const testPath of staticPaths) {
+    try {
+        if (fs.existsSync(path.join(testPath, 'index.html'))) {
+            publicPath = testPath
+            break
+        }
+    } catch (e) {
+        // Continue to next path
     }
-} catch (e) {
-    console.warn('[STATIC] Skipping static file serving setup:', e)
+}
+
+if (publicPath) {
+    console.log(`[STATIC] Serving static files from: ${publicPath}`)
+    
+    // Serve static files with proper MIME types
+    app.use(express.static(publicPath, {
+        maxAge: '1d',
+        etag: true,
+        lastModified: true,
+        setHeaders: (res, path) => {
+            if (path.endsWith('.js')) {
+                res.setHeader('Content-Type', 'application/javascript; charset=utf-8')
+            } else if (path.endsWith('.css')) {
+                res.setHeader('Content-Type', 'text/css; charset=utf-8')
+            } else if (path.endsWith('.html')) {
+                res.setHeader('Content-Type', 'text/html; charset=utf-8')
+            }
+        }
+    }))
+
+    // SPA fallback - serve index.html for non-API routes
+    app.use((req, res, next) => {
+        // Skip if it's an API route, health check, or confirmation route
+        if (req.method !== 'GET' || 
+            req.path.startsWith('/api/') || 
+            req.path === '/health' ||
+            req.path.startsWith('/confirm/') || 
+            req.path.startsWith('/confirm-address/')) {
+            return next()
+        }
+        
+        // Skip if it's a static asset (has file extension)
+        const hasExtension = path.extname(req.path) !== ''
+        if (hasExtension) {
+            return next()
+        }
+        
+        // Serve index.html for SPA routes
+        res.sendFile(path.join(publicPath!, 'index.html'), (err) => {
+            if (err) {
+                console.error('[STATIC] Error serving index.html:', err)
+                res.status(500).send('Internal Server Error')
+            }
+        })
+    })
+} else {
+    console.warn('[STATIC] No public directory found. Static file serving disabled.')
+    console.warn('[STATIC] Searched paths:', staticPaths)
 }
 
 app.listen(PORT, () => {

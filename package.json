@@ -5,14 +5,16 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "vite build && npm run build:functions",
+    "build": "vite build",
     "build:functions": "tsc -b backend/tsconfig.json",
+    "build:all": "npm run build && npm run build:functions",
     "lint": "eslint .",
     "preview": "vite preview",
-    "start": "PORT=8080 node backend/dist/index.js",
-    "server": "PORT=8080 node backend/dist/index.js",
+    "start": "node backend/dist/index.js",
+    "server": "node backend/dist/index.js",
     "server:dev": "PORT=3001 nodemon --exec tsx backend/index.ts",
-    "start:all": "concurrently \"npm run server:dev\" \"npm run dev\""
+    "start:all": "concurrently \"npm run server:dev\" \"npm run dev\"",
+    "clean": "rm -rf public backend/dist"
   },
   "dependencies": {
     "@radix-ui/react-label": "^2.1.7",

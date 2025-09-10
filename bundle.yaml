@@ -1,5 +1,0 @@
-static:
-  headers:
-    - path: /**
-      headers:
-        Content-Security-Policy: "default-src 'self'; connect-src 'self' https:; img-src 'self' data: blob: https:; style-src 'self' 'unsafe-inline' https:; font-src 'self' data: https://r2cdn.perplexity.ai; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'; frame-ancestors 'self'; base-uri 'self';"

@@ -7,8 +7,17 @@ export default defineConfig({
   plugins: [react()],
   root: './frontend',
   build: {
-    outDir: path.resolve(__dirname, 'dist'),
-    emptyOutDir: true
+    outDir: '../public',
+    emptyOutDir: true,
+    assetsDir: 'assets',
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          vendor: ['react', 'react-dom'],
+          firebase: ['firebase/app', 'firebase/auth', 'firebase/firestore']
+        }
+      }
+    }
   },
   envPrefix: ['VITE_', 'FIREBASE_'],
   resolve: {
@@ -19,12 +28,12 @@ export default defineConfig({
   server: {
     proxy: {
       "/api": {
-        target: process.env.NODE_ENV === 'production' ? "http://localhost:8080" : "http://localhost:3001",
+        target: "http://localhost:3001",
         changeOrigin: true,
         secure: false,
       },
       "/health": {
-        target: process.env.NODE_ENV === 'production' ? "http://localhost:8080" : "http://localhost:3001",
+        target: "http://localhost:3001", 
         changeOrigin: true,
         secure: false,
       }

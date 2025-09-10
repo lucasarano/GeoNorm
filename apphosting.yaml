@@ -1,33 +1,35 @@
 runConfig:
-  # Configure the backend to run on port 8080
+  cpu: 1
+  memoryMiB: 512
+  maxInstances: 10
+  minInstances: 0
+  concurrency: 80
   env:
     - variable: PORT
       value: "8080"
     - variable: NODE_ENV
       value: "production"
 
-# Build configuration
 buildConfig:
-  # Use Node.js runtime
   runtime: nodejs22
-  
-  # Install dependencies
   commands:
     - name: "Install dependencies"
-      command: "npm ci"
-    
-    # Build the frontend
-    - name: "Build frontend"  
+      command: "npm ci --omit=dev"
+      
+    - name: "Build frontend"
       command: "npm run build"
-    
-    # Prepare backend
-    - name: "Prepare backend"
-      command: "cd backend && npm ci"
+      
+    - name: "Install backend dependencies"
+      command: "cd backend && npm ci --omit=dev"
+      
+    - name: "Build backend"
+      command: "npm run build:functions"
+      
+    - name: "Verify build output"
+      command: "ls -la public/ && ls -la backend/dist/"
 
-# Health check configuration  
 healthCheck:
   path: "/health"
-  
-# Resource configuration
-cpu: 1
-memory: 512Mi
+  timeoutSeconds: 10
+  checkIntervalSeconds: 10
+  failureThreshold: 3
