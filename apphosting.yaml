@@ -9,6 +9,8 @@ runConfig:
       value: "8080"
     - variable: NODE_ENV
       value: "production"
+    - variable: GOOGLE_ENTRYPOINT
+      value: "node backend/dist/index.js"
 
 buildConfig:
   runtime: nodejs22
