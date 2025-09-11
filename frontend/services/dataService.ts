@@ -103,15 +103,21 @@ export class DataService {
     static async getUserCSVDatasets(userId: string): Promise<CSVDataset[]> {
         const q = query(
             collection(db, 'csv_datasets'),
-            where('userId', '==', userId),
-            orderBy('uploadedAt', 'desc')
+            where('userId', '==', userId)
         )
 
         const querySnapshot = await getDocs(q)
-        return querySnapshot.docs.map(doc => ({
+        const datasets = querySnapshot.docs.map(doc => ({
             id: doc.id,
             ...doc.data()
         } as CSVDataset))
+
+        // Sort in memory instead of using orderBy to avoid index requirement
+        return datasets.sort((a, b) => {
+            const aTime = a.uploadedAt?.toDate?.()?.getTime() || 0
+            const bTime = b.uploadedAt?.toDate?.()?.getTime() || 0
+            return bTime - aTime // Descending order (newest first)
+        })
     }
 
     // Address Record Management
@@ -148,44 +154,58 @@ export class DataService {
     static async getAddressRecords(csvId: string): Promise<AddressRecord[]> {
         const q = query(
             collection(db, 'address_records'),
-            where('csvId', '==', csvId),
-            orderBy('rowIndex', 'asc')
+            where('csvId', '==', csvId)
         )
 
         const querySnapshot = await getDocs(q)
-        return querySnapshot.docs.map(doc => ({
+        const records = querySnapshot.docs.map(doc => ({
             id: doc.id,
             ...doc.data()
         } as AddressRecord))
+
+        // Sort in memory instead of using orderBy to avoid index requirement
+        return records.sort((a, b) => a.rowIndex - b.rowIndex)
     }
 
     static async getUserAddressRecords(userId: string): Promise<AddressRecord[]> {
         const q = query(
             collection(db, 'address_records'),
-            where('userId', '==', userId),
-            orderBy('processedAt', 'desc')
+            where('userId', '==', userId)
         )
 
         const querySnapshot = await getDocs(q)
-        return querySnapshot.docs.map(doc => ({
+        const records = querySnapshot.docs.map(doc => ({
             id: doc.id,
             ...doc.data()
         } as AddressRecord))
+
+        // Sort in memory instead of using orderBy to avoid index requirement
+        return records.sort((a, b) => {
+            const aTime = a.processedAt?.toDate?.()?.getTime() || 0
+            const bTime = b.processedAt?.toDate?.()?.getTime() || 0
+            return bTime - aTime // Descending order (newest first)
+        })
     }
 
     static async getPendingConfirmationAddresses(userId: string): Promise<AddressRecord[]> {
         const q = query(
             collection(db, 'address_records'),
             where('userId', '==', userId),
-            where('status', '==', 'pending_confirmation'),
-            orderBy('processedAt', 'desc')
+            where('status', '==', 'pending_confirmation')
         )
 
         const querySnapshot = await getDocs(q)
-        return querySnapshot.docs.map(doc => ({
+        const records = querySnapshot.docs.map(doc => ({
             id: doc.id,
             ...doc.data()
         } as AddressRecord))
+
+        // Sort in memory instead of using orderBy to avoid index requirement
+        return records.sort((a, b) => {
+            const aTime = a.processedAt?.toDate?.()?.getTime() || 0
+            const bTime = b.processedAt?.toDate?.()?.getTime() || 0
+            return bTime - aTime // Descending order (newest first)
+        })
     }
 
     // Analytics and Stats

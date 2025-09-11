@@ -3,11 +3,12 @@ import LandingPage from './components/LandingPage'
 import RegistrationPage from './components/auth/RegistrationPage'
 import UnifiedProcessor from './components/UnifiedProcessor'
 import DataDashboard from './components/DataDashboard'
+import DataHistory from './components/DataHistory'
 import LocationCollection from './components/LocationCollection'
 import SMSTest from './components/SMSTest'
 import EmailTest from './components/EmailTest'
 
-type AppState = 'landing' | 'registration' | 'pipeline' | 'dashboard' | 'location-collection' | 'sms-test' | 'email-test'
+type AppState = 'landing' | 'registration' | 'pipeline' | 'dashboard' | 'data-history' | 'location-collection' | 'sms-test' | 'email-test'
 
 interface ProcessingResult {
   success: boolean
@@ -68,6 +69,86 @@ function App() {
     return <EmailTest onBack={() => setCurrentView('landing')} />
   }
 
+  if (currentView === 'data-history') {
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-orange-50 via-amber-50 to-yellow-50">
+        {/* Header */}
+        <header className="bg-white/90 backdrop-blur-md border-b border-orange-100 sticky top-0 z-50">
+          <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center space-x-3">
+                <div className="w-10 h-10 bg-gradient-to-r from-orange-500 to-amber-500 rounded-xl flex items-center justify-center shadow-lg">
+                  <svg className="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z" />
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 11a3 3 0 11-6 0 3 3 0 016 0z" />
+                  </svg>
+                </div>
+                <div>
+                  <h1 className="text-2xl md:text-3xl font-bold tracking-tight bg-gradient-to-r from-orange-600 to-amber-600 bg-clip-text text-transparent">GeoNorm</h1>
+                  <p className="text-sm text-gray-600">Historial de Datos</p>
+                </div>
+              </div>
+            </div>
+          </div>
+        </header>
+
+        {/* Main Content */}
+        <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+          <DataHistory
+            onSelectDataset={(dataset, addresses) => {
+              // Convert Firebase data to the format expected by DataDashboard
+              const convertedResults = addresses.map(addr => ({
+                rowIndex: addr.rowIndex,
+                original: {
+                  address: addr.originalAddress,
+                  city: addr.originalCity || '',
+                  state: addr.originalState || '',
+                  phone: addr.originalPhone || ''
+                },
+                cleaned: {
+                  address: addr.cleanedAddress,
+                  city: addr.cleanedCity,
+                  state: addr.cleanedState,
+                  phone: addr.cleanedPhone || '',
+                  email: addr.cleanedEmail || '',
+                  aiConfidence: 85 // Default value since it's not stored in Firebase
+                },
+                geocoding: {
+                  latitude: addr.coordinates?.lat || null,
+                  longitude: addr.coordinates?.lng || null,
+                  formattedAddress: addr.formattedAddress || '',
+                  confidence: addr.geocodingConfidence === 'high' ? 0.9 :
+                    addr.geocodingConfidence === 'medium' ? 0.7 : 0.4,
+                  confidenceDescription: `Confidence: ${addr.geocodingConfidence}`,
+                  locationType: addr.locationType || 'N/A',
+                  staticMapUrl: null
+                },
+                status: addr.geocodingConfidence === 'high' ? 'high_confidence' :
+                  addr.geocodingConfidence === 'medium' ? 'medium_confidence' : 'low_confidence'
+              }))
+
+              const statistics = {
+                highConfidence: dataset.highConfidenceAddresses,
+                mediumConfidence: dataset.mediumConfidenceAddresses,
+                lowConfidence: dataset.lowConfidenceAddresses,
+                totalRows: dataset.processedRows
+              }
+
+              setProcessingResult({
+                success: true,
+                totalProcessed: dataset.processedRows,
+                statistics,
+                results: convertedResults
+              })
+              setCurrentView('dashboard')
+            }}
+            onBack={() => setCurrentView('pipeline')}
+          />
+        </main>
+      </div>
+    )
+  }
+
 
   if (currentView === 'dashboard' && processingResult) {
     return (
@@ -123,6 +204,12 @@ function App() {
               </div>
             </div>
             <div className="flex items-center space-x-4">
+              <button
+                onClick={() => setCurrentView('data-history')}
+                className="text-gray-600 hover:text-orange-600 transition-colors duration-200 text-sm font-medium"
+              >
+                📊 Ver Datos Anteriores
+              </button>
               <button
                 onClick={() => setCurrentView('landing')}
                 className="text-gray-600 hover:text-orange-600 transition-colors duration-200 text-sm font-medium"

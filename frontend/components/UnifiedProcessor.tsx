@@ -2,6 +2,8 @@ import React, { useState } from 'react'
 import { Card } from './shared/ui/card'
 import { Button } from './shared/ui/button'
 import { Upload, FileText, Sparkles, MapPin, CheckCircle } from 'lucide-react'
+import { DataService } from '../services/dataService'
+import { useAuth } from '../contexts/AuthContext'
 
 interface ProcessedRow {
     rowIndex: number
@@ -49,6 +51,7 @@ interface UnifiedProcessorProps {
 }
 
 export default function UnifiedProcessor({ onProcessingComplete }: UnifiedProcessorProps) {
+    const { currentUser } = useAuth()
     const [file, setFile] = useState<File | null>(null)
     const [isProcessing, setIsProcessing] = useState(false)
     const [currentStep, setCurrentStep] = useState<'upload' | 'extracting' | 'cleaning' | 'geocoding' | 'completed'>('upload')
@@ -136,6 +139,63 @@ export default function UnifiedProcessor({ onProcessingComplete }: UnifiedProces
 
             setStepDetails('Finalizando procesamiento...')
             setProgress(90)
+
+            // Save to Firebase if user is authenticated
+            if (currentUser && result.success) {
+                try {
+                    setStepDetails('Guardando datos en Firebase...')
+
+                    // Create CSV dataset
+                    const csvId = await DataService.createCSVDataset(
+                        currentUser.uid,
+                        file.name,
+                        result.totalProcessed
+                    )
+
+                    // Update with statistics
+                    await DataService.updateCSVDataset(csvId, {
+                        processedRows: result.totalProcessed,
+                        highConfidenceAddresses: result.statistics.highConfidence,
+                        mediumConfidenceAddresses: result.statistics.mediumConfidence,
+                        lowConfidenceAddresses: result.statistics.lowConfidence,
+                        processingStatus: 'completed',
+                        completedAt: new Date() as any
+                    })
+
+                    // Save address records
+                    const addressRecords = result.results.map(row => ({
+                        userId: currentUser.uid,
+                        csvId: csvId,
+                        rowIndex: row.rowIndex,
+                        originalAddress: row.original.address,
+                        originalCity: row.original.city,
+                        originalState: row.original.state,
+                        originalPhone: row.original.phone,
+                        cleanedAddress: row.cleaned.address,
+                        cleanedCity: row.cleaned.city,
+                        cleanedState: row.cleaned.state,
+                        cleanedPhone: row.cleaned.phone,
+                        cleanedEmail: row.cleaned.email,
+                        coordinates: row.geocoding.latitude && row.geocoding.longitude ? {
+                            lat: row.geocoding.latitude,
+                            lng: row.geocoding.longitude
+                        } : undefined,
+                        geocodingConfidence: row.status === 'high_confidence' ? 'high' :
+                            row.status === 'medium_confidence' ? 'medium' : 'low',
+                        locationType: row.geocoding.locationType,
+                        formattedAddress: row.geocoding.formattedAddress,
+                        status: 'processed' as const,
+                        needsConfirmation: row.status === 'low_confidence'
+                    }))
+
+                    await DataService.bulkSaveAddressRecords(addressRecords)
+
+                    setStepDetails('Datos guardados exitosamente')
+                } catch (error) {
+                    console.error('Error saving to Firebase:', error)
+                    setStepDetails('Procesamiento completado (error guardando en Firebase)')
+                }
+            }
 
             await new Promise(resolve => setTimeout(resolve, 500))
 

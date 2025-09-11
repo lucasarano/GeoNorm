@@ -364,6 +364,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     console.log(`[UNIFIED_PROCESS] Processed ${results.length} addresses`)
 
+    // Note: Data will be saved to Firebase by the frontend after processing
+    // The frontend will handle the Firebase integration using the existing DataService
+
     return res.json({
       success: true,
       totalProcessed: results.length,
