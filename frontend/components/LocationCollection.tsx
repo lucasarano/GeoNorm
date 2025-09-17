@@ -18,15 +18,24 @@ interface LocationData {
 
 interface LocationCollectionProps {
     orderID?: string
+    token?: string
 }
 
-export default function LocationCollection({ orderID }: LocationCollectionProps) {
+export default function LocationCollection({ orderID, token }: LocationCollectionProps) {
     const [location, setLocation] = useState<LocationData | null>(null)
     const [loading, setLoading] = useState(false)
     const [error, setError] = useState<string | null>(null)
     const [submitting, setSubmitting] = useState(false)
     const [submitted, setSubmitted] = useState(false)
     const [submitError, setSubmitError] = useState<string | null>(null)
+    const [metadataLoading, setMetadataLoading] = useState(false)
+    const [metadataError, setMetadataError] = useState<string | null>(null)
+    const [requestMetadata, setRequestMetadata] = useState<{
+        addressId?: string
+        customerName?: string
+        cleanedAddress?: string
+        status?: string
+    } | null>(null)
 
     // Get orderID from URL params if not provided as prop
     const actualOrderID = useMemo(() => {
@@ -39,7 +48,53 @@ export default function LocationCollection({ orderID }: LocationCollectionProps)
         }
     }, [orderID])
 
+    const actualToken = useMemo(() => {
+        if (token) return token
+        try {
+            const params = new URLSearchParams(window.location.search)
+            return params.get('token') || undefined
+        } catch {
+            return undefined
+        }
+    }, [token])
+
     const isSupported = 'geolocation' in navigator
+
+    useEffect(() => {
+        if (!actualToken) {
+            setRequestMetadata(null)
+            return
+        }
+
+        const fetchMetadata = async () => {
+            try {
+                setMetadataLoading(true)
+                setMetadataError(null)
+                const response = await fetch(`/api/location-link/${actualToken}`)
+                if (!response.ok) {
+                    throw new Error('No pudimos cargar la solicitud de ubicación')
+                }
+                const data = await response.json()
+                setRequestMetadata(data)
+                if (data?.status === 'submitted') {
+                    setSubmitted(true)
+                }
+                if (typeof data?.latitude === 'number' && typeof data?.longitude === 'number' && !location) {
+                    setLocation({
+                        lat: data.latitude,
+                        lng: data.longitude,
+                        accuracy: typeof data.accuracy === 'number' ? data.accuracy : undefined
+                    })
+                }
+            } catch (err: any) {
+                setMetadataError(err.message || 'No pudimos cargar la solicitud de ubicación')
+            } finally {
+                setMetadataLoading(false)
+            }
+        }
+
+        fetchMetadata()
+    }, [actualToken, location])
 
     const getCurrentLocation = useCallback(() => {
         if (!isSupported) {
@@ -94,25 +149,39 @@ export default function LocationCollection({ orderID }: LocationCollectionProps)
         setSubmitError(null)
 
         try {
-            const response = await fetch('/api/save-location', {
+            const payload: Record<string, any> = {
+                latitude: location.lat,
+                longitude: location.lng,
+                accuracy: location.accuracy,
+                orderID: actualOrderID,
+                userAgent: navigator.userAgent,
+                timestamp: new Date().toISOString(),
+            }
+
+            if (actualToken) {
+                payload.token = actualToken
+            }
+
+            const endpoint = actualToken
+                ? `/api/location-link/${actualToken}/submit`
+                : '/api/save-location'
+
+            const response = await fetch(endpoint, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
                 },
-                body: JSON.stringify({
-                    latitude: location.lat,
-                    longitude: location.lng,
-                    accuracy: location.accuracy,
-                    orderID: actualOrderID,
-                    userAgent: navigator.userAgent,
-                    timestamp: new Date().toISOString()
-                }),
+                body: JSON.stringify(payload),
             })
 
             if (response.ok) {
                 setSubmitted(true)
+                if (actualToken) {
+                    setRequestMetadata(prev => prev ? { ...prev, status: 'submitted' } : prev)
+                }
             } else {
-                throw new Error('Error enviando ubicación')
+                const errorText = await response.text()
+                throw new Error(errorText || 'Error enviando ubicación')
             }
         } catch (err) {
             setSubmitError('Error enviando ubicación. Por favor intenta nuevamente.')
@@ -120,7 +189,7 @@ export default function LocationCollection({ orderID }: LocationCollectionProps)
         } finally {
             setSubmitting(false)
         }
-    }, [location, actualOrderID])
+    }, [location, actualOrderID, actualToken])
 
     const handleStartOver = useCallback(() => {
         setSubmitted(false)
@@ -131,10 +200,37 @@ export default function LocationCollection({ orderID }: LocationCollectionProps)
 
     // Auto-request location on component mount
     useEffect(() => {
-        if (isSupported && !location && !loading && !error) {
+        if (isSupported && !location && !loading && !error && (!actualToken || !metadataLoading)) {
             getCurrentLocation()
         }
-    }, [isSupported, location, loading, error, getCurrentLocation])
+    }, [isSupported, location, loading, error, getCurrentLocation, metadataLoading, actualToken])
+
+    if (actualToken && metadataLoading && !requestMetadata) {
+        return (
+            <div className="min-h-screen bg-gradient-to-br from-blue-50 via-indigo-50 to-purple-50 flex items-center justify-center p-4">
+                <Card className="w-full max-w-md p-8 bg-white/90 backdrop-blur-sm shadow-xl text-center">
+                    <Loader2 className="w-10 h-10 mx-auto animate-spin text-blue-600" />
+                    <h2 className="mt-6 text-xl font-semibold text-gray-900">Cargando solicitud de ubicación...</h2>
+                    <p className="mt-2 text-gray-600">Estamos preparando los detalles de tu entrega.</p>
+                </Card>
+            </div>
+        )
+    }
+
+    if (actualToken && metadataError && !requestMetadata) {
+        return (
+            <div className="min-h-screen bg-gradient-to-br from-red-50 via-rose-50 to-pink-50 flex items-center justify-center p-4">
+                <Card className="w-full max-w-md p-8 bg-white/90 backdrop-blur-sm shadow-xl text-center">
+                    <div className="w-16 h-16 bg-red-100 rounded-full flex items-center justify-center mx-auto mb-6">
+                        <AlertCircle className="w-8 h-8 text-red-600" />
+                    </div>
+                    <h2 className="text-2xl font-bold text-gray-900 mb-4">Solicitud no encontrada</h2>
+                    <p className="text-gray-600 mb-6">{metadataError}</p>
+                    <p className="text-sm text-gray-500">Verifica que el enlace sea correcto o contacta al remitente.</p>
+                </Card>
+            </div>
+        )
+    }
 
     if (submitted) {
         return (
@@ -148,19 +244,30 @@ export default function LocationCollection({ orderID }: LocationCollectionProps)
                     </h2>
                     <div className="bg-gray-50 rounded-lg p-4 mb-6 text-left">
                         <p className="text-sm text-gray-600 mb-2">
-                            <strong>Latitud:</strong> {location?.lat.toFixed(6)}
+                            <strong>Latitud:</strong> {location ? location.lat.toFixed(6) : '—'}
                         </p>
                         <p className="text-sm text-gray-600 mb-2">
-                            <strong>Longitud:</strong> {location?.lng.toFixed(6)}
+                            <strong>Longitud:</strong> {location ? location.lng.toFixed(6) : '—'}
                         </p>
-                        {location?.accuracy && (
+                        {location?.accuracy ? (
                             <p className="text-sm text-gray-600">
                                 <strong>Precisión:</strong> ±{Math.round(location.accuracy)}m
                             </p>
+                        ) : (
+                            requestMetadata?.status === 'submitted' && (
+                                <p className="text-sm text-gray-600">
+                                    <strong>Precisión:</strong> Confirmada por el cliente
+                                </p>
+                            )
                         )}
                         {actualOrderID && (
                             <p className="text-sm text-gray-600 mt-2">
                                 <strong>Order ID:</strong> {actualOrderID}
+                            </p>
+                        )}
+                        {requestMetadata?.cleanedAddress && (
+                            <p className="text-sm text-gray-600 mt-2">
+                                <strong>Dirección confirmada:</strong> {requestMetadata.cleanedAddress}
                             </p>
                         )}
                     </div>
@@ -193,11 +300,33 @@ export default function LocationCollection({ orderID }: LocationCollectionProps)
                     <p className="text-gray-600">
                         Necesitamos tu ubicación exacta usando el GPS de tu dispositivo para completar la entrega.
                     </p>
-                    {actualOrderID && (
-                        <div className="mt-4 p-3 bg-blue-50 rounded-lg">
-                            <p className="text-sm text-blue-700">
-                                <strong>Order ID:</strong> {actualOrderID}
-                            </p>
+                    {(actualOrderID || requestMetadata?.cleanedAddress || requestMetadata?.customerName) && (
+                        <div className="mt-4 p-3 bg-blue-50 rounded-lg text-left space-y-2">
+                            {requestMetadata?.customerName && (
+                                <p className="text-sm text-blue-700">
+                                    <strong>Nombre:</strong> {requestMetadata.customerName}
+                                </p>
+                            )}
+                            {requestMetadata?.cleanedAddress && (
+                                <p className="text-sm text-blue-700">
+                                    <strong>Dirección procesada:</strong> {requestMetadata.cleanedAddress}
+                                </p>
+                            )}
+                            {actualOrderID && (
+                                <p className="text-sm text-blue-700">
+                                    <strong>Order ID:</strong> {actualOrderID}
+                                </p>
+                            )}
+                            {requestMetadata?.status && requestMetadata.status !== 'submitted' && (
+                                <p className="text-xs text-blue-600 uppercase tracking-wide">
+                                    Estado: {requestMetadata.status === 'pending' ? 'Pendiente de confirmación' : requestMetadata.status}
+                                </p>
+                            )}
+                        </div>
+                    )}
+                    {metadataError && requestMetadata && (
+                        <div className="mt-4 p-3 bg-red-50 rounded-lg text-sm text-red-600">
+                            {metadataError}
                         </div>
                     )}
                 </div>

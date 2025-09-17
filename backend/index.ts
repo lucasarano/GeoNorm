@@ -5,6 +5,9 @@ dotenv.config()
 
 import express from 'express'
 import cors from 'cors'
+import { randomUUID } from 'crypto'
+import { doc, getDoc, updateDoc, setDoc, collection, query, where, getDocs, Timestamp, serverTimestamp } from 'firebase/firestore'
+import { db } from './config/firebase.js'
 import { smsService } from './services/smsService'
 import { emailService } from './services/emailService'
 // Note: dynamically import the cleaner to avoid TS type declaration issues for .js module
@@ -770,6 +773,196 @@ app.post('/api/test-location-email', async (req, res) => {
 const locations: any[] = [] // In-memory storage for demo (use database in production)
 const addressUpdates: any[] = [] // Track address confirmation updates
 
+app.post('/api/address-records/location-links', async (req, res) => {
+    try {
+        const { addressIds, userId } = req.body || {}
+
+        if (!Array.isArray(addressIds) || addressIds.length === 0) {
+            return res.status(400).json({ error: 'addressIds array is required' })
+        }
+
+        if (!userId) {
+            return res.status(400).json({ error: 'userId is required' })
+        }
+
+        const baseUrl = process.env.FRONTEND_URL || 'http://localhost:5173'
+        const expiration = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000) // 7 days
+        const locationLinksCollection = collection(db, 'location_links')
+        const results: Array<{ addressId: string, token: string, url: string, status: string, expiresAt?: string }> = []
+
+        for (const addressId of addressIds) {
+            try {
+                const addressRef = doc(db, 'address_records', addressId)
+                const addressSnap = await getDoc(addressRef)
+
+                if (!addressSnap.exists()) {
+                    console.warn(`[LOCATION_LINK] Address record not found: ${addressId}`)
+                    continue
+                }
+
+                const addressData: any = addressSnap.data()
+                if (addressData.userId !== userId) {
+                    console.warn(`[LOCATION_LINK] User mismatch for address ${addressId}`)
+                    continue
+                }
+
+                const token = randomUUID()
+                const linkRef = doc(locationLinksCollection, token)
+
+                await setDoc(linkRef, {
+                    token,
+                    addressId,
+                    userId,
+                    createdAt: serverTimestamp(),
+                    expiresAt: Timestamp.fromDate(expiration),
+                    status: 'sent'
+                })
+
+                await updateDoc(addressRef, {
+                    locationLinkToken: token,
+                    locationLinkStatus: 'sent',
+                    locationLinkCreatedAt: serverTimestamp(),
+                    locationLinkExpiresAt: Timestamp.fromDate(expiration),
+                    updatedAt: serverTimestamp()
+                })
+
+                results.push({
+                    addressId,
+                    token,
+                    url: `${baseUrl}/location?token=${token}`,
+                    status: 'sent',
+                    expiresAt: expiration.toISOString()
+                })
+            } catch (innerError) {
+                console.error('Error generating link for address', addressId, innerError)
+            }
+        }
+
+        res.json({ links: results })
+    } catch (error) {
+        console.error('Error creating location links:', error)
+        res.status(500).json({ error: 'Failed to create location links' })
+    }
+})
+
+app.get('/api/location-link/:token', async (req, res) => {
+    try {
+        const { token } = req.params
+
+        if (!token) {
+            return res.status(400).json({ error: 'Token is required' })
+        }
+
+        const linkRef = doc(db, 'location_links', token)
+        const linkSnap = await getDoc(linkRef)
+
+        if (!linkSnap.exists()) {
+            return res.status(404).json({ error: 'Location link not found' })
+        }
+
+        const linkData: any = linkSnap.data()
+        const addressRef = doc(db, 'address_records', linkData.addressId)
+        const addressSnap = await getDoc(addressRef)
+
+        if (!addressSnap.exists()) {
+            return res.status(404).json({ error: 'Address record not found' })
+        }
+
+        const addressData: any = addressSnap.data()
+        const expiresAt = linkData.expiresAt?.toDate?.() as Date | undefined
+        const isExpired = expiresAt ? expiresAt.getTime() < Date.now() : false
+
+        if (isExpired && linkData.status !== 'expired') {
+            await updateDoc(addressRef, {
+                locationLinkStatus: 'expired',
+                updatedAt: serverTimestamp()
+            })
+            await updateDoc(linkRef, {
+                status: 'expired',
+                expiredAt: serverTimestamp()
+            })
+        }
+
+        res.json({
+            token,
+            addressId: linkData.addressId,
+            status: isExpired ? 'expired' : (linkData.status || addressData.locationLinkStatus || 'sent'),
+            cleanedAddress: addressData.cleanedAddress,
+            customerName: addressData.cleanedName || addressData.customerName || null,
+            expiresAt: expiresAt?.toISOString(),
+            userId: linkData.userId,
+            latitude: linkData.latitude || null,
+            longitude: linkData.longitude || null,
+            accuracy: linkData.accuracy || null
+        })
+    } catch (error) {
+        console.error('Error loading location link metadata:', error)
+        res.status(500).json({ error: 'Failed to load location link metadata' })
+    }
+})
+
+app.post('/api/location-link/:token/submit', async (req, res) => {
+    try {
+        const { token } = req.params
+        const { latitude, longitude, accuracy } = req.body || {}
+
+        if (!token) {
+            return res.status(400).json({ error: 'Token is required' })
+        }
+
+        if (typeof latitude !== 'number' && typeof latitude !== 'string') {
+            return res.status(400).json({ error: 'Latitude is required' })
+        }
+
+        if (typeof longitude !== 'number' && typeof longitude !== 'string') {
+            return res.status(400).json({ error: 'Longitude is required' })
+        }
+
+        const linkRef = doc(db, 'location_links', token)
+        const linkSnap = await getDoc(linkRef)
+
+        if (!linkSnap.exists()) {
+            return res.status(404).json({ error: 'Location link not found' })
+        }
+
+        const linkData: any = linkSnap.data()
+        const addressRef = doc(db, 'address_records', linkData.addressId)
+        const addressSnap = await getDoc(addressRef)
+
+        if (!addressSnap.exists()) {
+            return res.status(404).json({ error: 'Address record not found' })
+        }
+
+        const numericLatitude = typeof latitude === 'string' ? parseFloat(latitude) : latitude
+        const numericLongitude = typeof longitude === 'string' ? parseFloat(longitude) : longitude
+        const numericAccuracy = accuracy ? (typeof accuracy === 'string' ? parseFloat(accuracy) : accuracy) : null
+
+        await updateDoc(addressRef, {
+            coordinates: {
+                lat: numericLatitude,
+                lng: numericLongitude
+            },
+            lastLocationUpdate: serverTimestamp(),
+            locationLinkStatus: 'submitted',
+            updatedAt: serverTimestamp(),
+            status: 'confirmed'
+        })
+
+        await updateDoc(linkRef, {
+            status: 'submitted',
+            submittedAt: serverTimestamp(),
+            latitude: numericLatitude,
+            longitude: numericLongitude,
+            accuracy: numericAccuracy
+        })
+
+        res.json({ success: true })
+    } catch (error) {
+        console.error('Error submitting location for token:', error)
+        res.status(500).json({ error: 'Failed to submit location' })
+    }
+})
+
 app.post('/api/save-location', async (req, res) => {
     try {
         const { latitude, longitude, accuracy, orderID, userAgent } = req.body
@@ -934,15 +1127,54 @@ app.get('/confirm-address/:confirmationId/reject', async (req, res) => {
 // Get address updates since timestamp (for real-time polling)
 app.get('/api/address-updates', async (req, res) => {
     try {
-        const { since } = req.query
-        const sinceTime = since ? new Date(parseInt(since as string)) : new Date(0)
+        const { since, userId } = req.query as { since?: string, userId?: string }
 
-        const recentUpdates = addressUpdates.filter(update => {
-            const updateTime = new Date(update.confirmedAt || update.rejectedAt || update.sentAt)
-            return updateTime > sinceTime && (update.status === 'confirmed' || update.status === 'rejected')
-        })
+        if (!userId) {
+            return res.status(400).json({ error: 'userId is required' })
+        }
 
-        res.json(recentUpdates)
+        const sinceTime = since ? new Date(parseInt(since, 10)) : new Date(0)
+        const addressCollection = collection(db, 'address_records')
+        const q = query(addressCollection, where('userId', '==', userId))
+        const snapshot = await getDocs(q)
+
+        const updates = snapshot.docs
+            .map(docSnap => ({ id: docSnap.id, ...(docSnap.data() as any) }))
+            .filter(record => {
+                const lastUpdate = record.lastLocationUpdate?.toDate?.() || record.updatedAt?.toDate?.()
+                if (!lastUpdate) return false
+                return lastUpdate.getTime() > sinceTime.getTime()
+            })
+            .map(record => {
+                const confidenceScore = record.geocodingConfidence === 'high'
+                    ? 0.95
+                    : record.geocodingConfidence === 'medium'
+                        ? 0.7
+                        : 0.4
+
+                return {
+                    addressId: record.id,
+                    rowIndex: record.rowIndex,
+                    coordinates: record.coordinates || null,
+                    status: record.geocodingConfidence === 'high'
+                        ? 'high_confidence'
+                        : record.geocodingConfidence === 'medium'
+                            ? 'medium_confidence'
+                            : 'low_confidence',
+                    locationLinkStatus: record.locationLinkStatus || null,
+                    locationLinkToken: record.locationLinkToken || null,
+                    locationLinkExpiresAt: record.locationLinkExpiresAt?.toDate?.()?.toISOString(),
+                    lastLocationUpdate: (record.lastLocationUpdate?.toDate?.() || record.updatedAt?.toDate?.())?.toISOString(),
+                    formattedAddress: record.formattedAddress || record.cleanedAddress || '',
+                    confidence: confidenceScore,
+                    confidenceDescription: record.locationLinkStatus === 'submitted'
+                        ? 'Ubicación confirmada por el cliente'
+                        : 'Actualización de dirección',
+                    locationType: record.locationType || 'USER_CONFIRMED'
+                }
+            })
+
+        res.json(updates)
     } catch (error) {
         console.error('Error fetching address updates:', error)
         res.status(500).json({ error: 'Failed to fetch address updates' })

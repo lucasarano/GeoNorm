@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react'
+import React, { useState, useMemo, useEffect, useRef } from 'react'
 import { Card } from './shared/ui/card'
 import { Button } from './shared/ui/button'
 import { Input } from './shared/ui/input'
@@ -15,11 +15,16 @@ import {
     MessageSquare,
     Send,
     Users,
-    Phone
+    Phone,
+    Link,
+    Copy,
+    Loader2
 } from 'lucide-react'
+import { useAuth } from '../contexts/AuthContext'
 
 interface ProcessedRow {
     rowIndex: number
+    recordId?: string
     original: {
         address: string
         city: string
@@ -45,6 +50,10 @@ interface ProcessedRow {
     }
     status: 'high_confidence' | 'medium_confidence' | 'low_confidence' | 'failed'
     error?: string
+    locationLinkToken?: string
+    locationLinkStatus?: 'pending' | 'sent' | 'submitted' | 'expired'
+    locationLinkExpiresAt?: string
+    lastLocationUpdate?: string
 }
 
 interface DataDashboardProps {
@@ -59,6 +68,8 @@ interface DataDashboardProps {
 }
 
 export default function DataDashboard({ data, statistics, onBack }: DataDashboardProps) {
+    const { currentUser } = useAuth()
+    const [rows, setRows] = useState<ProcessedRow[]>(data)
     const [searchTerm, setSearchTerm] = useState('')
     const [statusFilter, setStatusFilter] = useState<string>('all')
     const [showOriginal, setShowOriginal] = useState(true)
@@ -72,10 +83,30 @@ export default function DataDashboard({ data, statistics, onBack }: DataDashboar
         error?: string
     }>>([])
     const [showSMSResults, setShowSMSResults] = useState(false)
+    const [selectedForLinks, setSelectedForLinks] = useState<Set<string>>(new Set())
+    const [generatingLinks, setGeneratingLinks] = useState(false)
+    const [linkError, setLinkError] = useState<string | null>(null)
+    const [copiedLinkId, setCopiedLinkId] = useState<string | null>(null)
+    const selectAllLinksRef = useRef<HTMLInputElement | null>(null)
+    const baseLocationUrl = typeof window !== 'undefined' ? window.location.origin : ''
+
+    useEffect(() => {
+        setRows(data)
+    }, [data])
+
+    useEffect(() => {
+        if (!selectedRow) return
+        const updated = rows.find(row =>
+            (row.recordId && row.recordId === selectedRow.recordId) || row.rowIndex === selectedRow.rowIndex
+        )
+        if (updated && updated !== selectedRow) {
+            setSelectedRow(updated)
+        }
+    }, [rows, selectedRow])
 
     // Filter and search data
     const filteredData = useMemo(() => {
-        return data.filter(row => {
+        return rows.filter(row => {
             // Status filter
             if (statusFilter !== 'all' && row.status !== statusFilter) {
                 return false
@@ -100,19 +131,19 @@ export default function DataDashboard({ data, statistics, onBack }: DataDashboar
 
             return true
         })
-    }, [data, searchTerm, statusFilter])
+    }, [rows, searchTerm, statusFilter])
 
     // Get candidates for SMS confirmation (low confidence addresses with phone numbers)
     const smsEligibleRows = useMemo(() => {
-        return data.filter(row => {
+        return rows.filter(row => {
             const hasPhone = row.cleaned.phone && row.cleaned.phone.trim() !== ''
             const lowConfidence = row.geocoding.confidence <= 0.4
             return hasPhone && lowConfidence
         })
-    }, [data])
+    }, [rows])
 
     // Track recently updated rows for animations
-    const [updatedRows, setUpdatedRows] = useState<Set<number>>(new Set())
+    const [updatedRows, setUpdatedRows] = useState<Set<string>>(new Set())
     const [lastUpdateTime, setLastUpdateTime] = useState<number>(Date.now())
 
     // Initialize SMS selection with low confidence addresses
@@ -123,18 +154,50 @@ export default function DataDashboard({ data, statistics, onBack }: DataDashboar
     }, [smsEligibleRows, selectedForSMS.size])
 
     // Real-time polling for address updates
-    React.useEffect(() => {
+    useEffect(() => {
+        if (!currentUser) return
+
         const pollForUpdates = async () => {
             try {
-                const response = await fetch(`/api/address-updates?since=${lastUpdateTime}`)
+                const response = await fetch(`/api/address-updates?since=${lastUpdateTime}&userId=${currentUser.uid}`)
                 if (response.ok) {
                     const updates = await response.json()
-                    if (updates.length > 0) {
-                        const updatedRowIndices = new Set(updates.map((u: any) => u.rowIndex))
-                        setUpdatedRows(updatedRowIndices)
+                    if (Array.isArray(updates) && updates.length > 0) {
+                        const updateMap = new Map(updates.map((u: any) => [u.addressId, u]))
+
+                        setRows(prev => prev.map(row => {
+                            if (!row.recordId) return row
+                            const update = updateMap.get(row.recordId)
+                            if (!update) return row
+
+                            return {
+                                ...row,
+                                geocoding: {
+                                    ...row.geocoding,
+                                    latitude: update.coordinates?.lat ?? row.geocoding.latitude,
+                                    longitude: update.coordinates?.lng ?? row.geocoding.longitude,
+                                    formattedAddress: update.formattedAddress || row.geocoding.formattedAddress,
+                                    confidence: update.confidence ?? row.geocoding.confidence,
+                                    confidenceDescription: update.confidenceDescription || row.geocoding.confidenceDescription,
+                                    locationType: update.locationType || row.geocoding.locationType,
+                                    staticMapUrl: row.geocoding.staticMapUrl
+                                },
+                                status: update.status || row.status,
+                                locationLinkStatus: update.locationLinkStatus || row.locationLinkStatus,
+                                locationLinkToken: update.locationLinkToken ?? row.locationLinkToken,
+                                locationLinkExpiresAt: update.locationLinkExpiresAt ?? row.locationLinkExpiresAt,
+                                lastLocationUpdate: update.lastLocationUpdate || row.lastLocationUpdate
+                            }
+                        }))
+
+                        const updatedIds = new Set(
+                            updates
+                                .map((u: any) => u.addressId)
+                                .filter((id: string | undefined) => typeof id === 'string')
+                        ) as Set<string>
+                        setUpdatedRows(updatedIds)
                         setLastUpdateTime(Date.now())
 
-                        // Clear animation after 3 seconds
                         setTimeout(() => {
                             setUpdatedRows(new Set())
                         }, 3000)
@@ -145,10 +208,9 @@ export default function DataDashboard({ data, statistics, onBack }: DataDashboar
             }
         }
 
-        // Poll every 5 seconds
         const interval = setInterval(pollForUpdates, 5000)
         return () => clearInterval(interval)
-    }, [lastUpdateTime])
+    }, [currentUser, lastUpdateTime])
 
     const handleSMSSelectionToggle = (rowIndex: number) => {
         const newSelection = new Set(selectedForSMS)
@@ -168,8 +230,152 @@ export default function DataDashboard({ data, statistics, onBack }: DataDashboar
         setSelectedForSMS(new Set())
     }
 
+    const selectableRows = useMemo(() => rows.filter(row => !!row.recordId), [rows])
+
+    const allLinksSelected = useMemo(() => {
+        if (selectableRows.length === 0) return false
+        return selectableRows.every(row => row.recordId && selectedForLinks.has(row.recordId))
+    }, [selectableRows, selectedForLinks])
+
+    const someLinksSelected = useMemo(() => {
+        if (selectableRows.length === 0) return false
+        return selectableRows.some(row => row.recordId && selectedForLinks.has(row.recordId))
+    }, [selectableRows, selectedForLinks])
+
+    useEffect(() => {
+        if (selectAllLinksRef.current) {
+            selectAllLinksRef.current.indeterminate = !allLinksSelected && someLinksSelected
+        }
+    }, [allLinksSelected, someLinksSelected])
+
+    useEffect(() => {
+        setSelectedForLinks(prev => {
+            const validIds = new Set(selectableRows.map(row => row.recordId!))
+            const next = new Set<string>()
+            prev.forEach(id => {
+                if (validIds.has(id)) {
+                    next.add(id)
+                }
+            })
+            if (next.size === prev.size && Array.from(next).every(id => prev.has(id))) {
+                return prev
+            }
+            return next
+        })
+    }, [selectableRows])
+
+    const handleLinkSelectionToggle = (recordId?: string) => {
+        if (!recordId) return
+        setSelectedForLinks(prev => {
+            const next = new Set(prev)
+            if (next.has(recordId)) {
+                next.delete(recordId)
+            } else {
+                next.add(recordId)
+            }
+            return next
+        })
+    }
+
+    const handleSelectAllLinks = () => {
+        setSelectedForLinks(new Set(selectableRows.map(row => row.recordId!)))
+    }
+
+    const handleClearLinkSelection = () => {
+        setSelectedForLinks(new Set())
+    }
+
+    const handleGenerateLinks = async () => {
+        if (!currentUser) {
+            alert('Debes iniciar sesión para generar enlaces de ubicación')
+            return
+        }
+
+        const selectedIds = Array.from(selectedForLinks)
+
+        if (selectedIds.length === 0) {
+            alert('Selecciona al menos un registro para generar enlaces de ubicación')
+            return
+        }
+
+        setGeneratingLinks(true)
+        setLinkError(null)
+
+        try {
+            const response = await fetch('/api/address-records/location-links', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    userId: currentUser.uid,
+                    addressIds: selectedIds
+                })
+            })
+
+            if (!response.ok) {
+                const errorText = await response.text()
+                throw new Error(errorText || 'Error generando enlaces de ubicación')
+            }
+
+            const payload = await response.json()
+            const links: Array<{
+                addressId: string
+                token: string
+                url: string
+                status: string
+                expiresAt?: string
+            }> = payload.links || []
+
+            const linkMap = new Map(links.map(link => [link.addressId, link]))
+
+            setRows(prev => prev.map(row => {
+                if (!row.recordId) return row
+                const link = linkMap.get(row.recordId)
+                if (!link) return row
+
+                return {
+                    ...row,
+                    locationLinkToken: link.token,
+                    locationLinkStatus: (link.status as ProcessedRow['locationLinkStatus']) || 'sent',
+                    locationLinkExpiresAt: link.expiresAt || row.locationLinkExpiresAt,
+                    lastLocationUpdate: row.lastLocationUpdate
+                }
+            }))
+
+            const updatedIds = new Set(links.map(link => link.addressId)) as Set<string>
+            setUpdatedRows(updatedIds)
+            setSelectedForLinks(new Set())
+
+            setTimeout(() => {
+                setUpdatedRows(new Set())
+            }, 3000)
+        } catch (error: any) {
+            console.error('Error generating location links:', error)
+            setLinkError(error.message || 'Error generando enlaces de ubicación')
+        } finally {
+            setGeneratingLinks(false)
+        }
+    }
+
+    const handleCopyLink = async (row: ProcessedRow) => {
+        if (!row.locationLinkToken) return
+
+        const baseUrl = window.location.origin
+        const linkUrl = `${baseUrl}/location?token=${row.locationLinkToken}`
+
+        try {
+            await navigator.clipboard.writeText(linkUrl)
+            setCopiedLinkId(row.recordId || row.locationLinkToken)
+            setTimeout(() => setCopiedLinkId(null), 2000)
+        } catch (error) {
+            console.error('Error copying link:', error)
+            setLinkError('No se pudo copiar el enlace. Intenta manualmente.')
+        }
+    }
+
     const handleSendSMS = async () => {
-        const selectedRows = data.filter(row => selectedForSMS.has(row.rowIndex))
+        const selectedRows = rows.filter(row => selectedForSMS.has(row.rowIndex))
 
         if (selectedRows.length === 0) {
             alert('No hay clientes seleccionados para envío de SMS')
@@ -244,6 +450,30 @@ export default function DataDashboard({ data, statistics, onBack }: DataDashboar
                 return 'bg-red-100 text-red-800'
             default:
                 return 'bg-gray-100 text-gray-800'
+        }
+    }
+
+    const getLinkStatusBadge = (status?: ProcessedRow['locationLinkStatus']) => {
+        switch (status) {
+            case 'submitted':
+                return { label: 'Ubicación recibida', className: 'bg-green-100 text-green-800' }
+            case 'sent':
+                return { label: 'Enlace enviado', className: 'bg-blue-100 text-blue-800' }
+            case 'pending':
+                return { label: 'Pendiente de envío', className: 'bg-yellow-100 text-yellow-800' }
+            case 'expired':
+                return { label: 'Enlace vencido', className: 'bg-gray-200 text-gray-600' }
+            default:
+                return { label: 'Sin enlace', className: 'bg-gray-200 text-gray-600' }
+        }
+    }
+
+    const formatDateTime = (isoString?: string) => {
+        if (!isoString) return ''
+        try {
+            return new Date(isoString).toLocaleString()
+        } catch {
+            return ''
         }
     }
 
@@ -400,28 +630,70 @@ export default function DataDashboard({ data, statistics, onBack }: DataDashboar
                         </Button>
                     </div>
 
-                    {/* SMS Confirmation */}
-                    <Button
-                        onClick={() => setShowSMSModal(true)}
-                        disabled={smsEligibleRows.length === 0}
-                        className="bg-gradient-to-r from-blue-500 to-indigo-500 hover:from-blue-600 hover:to-indigo-600 text-white"
-                    >
-                        <MessageSquare className="w-4 h-4 mr-2" />
-                        Confirmar por SMS ({smsEligibleRows.length})
-                    </Button>
+                    <div className="flex flex-col md:flex-row items-stretch gap-2 md:justify-end">
+                        <div className="flex flex-wrap items-center gap-2 justify-end">
+                            <Button
+                                onClick={handleGenerateLinks}
+                                disabled={selectedForLinks.size === 0 || generatingLinks}
+                                className="bg-gradient-to-r from-orange-500 to-pink-500 hover:from-orange-600 hover:to-pink-600 text-white"
+                            >
+                                {generatingLinks ? (
+                                    <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                                ) : (
+                                    <Link className="w-4 h-4 mr-2" />
+                                )}
+                                {generatingLinks ? 'Generando enlaces...' : `Enlace GPS (${selectedForLinks.size})`}
+                            </Button>
+                            <Button
+                                onClick={handleSelectAllLinks}
+                                variant="outline"
+                                size="sm"
+                                className="border-orange-200 text-orange-700 hover:bg-orange-50"
+                            >
+                                Seleccionar todo
+                            </Button>
+                            <Button
+                                onClick={handleClearLinkSelection}
+                                variant="outline"
+                                size="sm"
+                                className="border-orange-200 text-orange-700 hover:bg-orange-50"
+                            >
+                                Limpiar selección
+                            </Button>
+                        </div>
+                        <div className="flex flex-wrap items-center gap-2 justify-end">
+                            <Button
+                                onClick={() => setShowSMSModal(true)}
+                                disabled={smsEligibleRows.length === 0}
+                                className="bg-gradient-to-r from-blue-500 to-indigo-500 hover:from-blue-600 hover:to-indigo-600 text-white"
+                            >
+                                <MessageSquare className="w-4 h-4 mr-2" />
+                                Confirmar por SMS ({smsEligibleRows.length})
+                            </Button>
 
-                    {/* Download */}
-                    <Button
-                        onClick={downloadCSV}
-                        className="bg-gradient-to-r from-green-500 to-emerald-500 hover:from-green-600 hover:to-emerald-600 text-white"
-                    >
-                        <Download className="w-4 h-4 mr-2" />
-                        Descargar CSV
-                    </Button>
+                            <Button
+                                onClick={downloadCSV}
+                                className="bg-gradient-to-r from-green-500 to-emerald-500 hover:from-green-600 hover:to-emerald-600 text-white"
+                            >
+                                <Download className="w-4 h-4 mr-2" />
+                                Descargar CSV
+                            </Button>
+                        </div>
+                    </div>
                 </div>
 
-                <div className="mt-2 text-sm text-gray-600">
-                    Mostrando {filteredData.length} de {data.length} registros
+                <div className="mt-3 flex flex-col gap-2 md:flex-row md:items-center md:justify-between text-sm text-gray-600">
+                    <span>
+                        Mostrando {filteredData.length} de {rows.length} registros
+                    </span>
+                    <div className="flex flex-wrap items-center gap-3 text-xs md:text-sm">
+                        <span className="text-gray-500">
+                            Seleccionados para enlace: {selectedForLinks.size}
+                        </span>
+                        {linkError && (
+                            <span className="text-red-600">{linkError}</span>
+                        )}
+                    </div>
                 </div>
             </Card>
 
@@ -431,6 +703,16 @@ export default function DataDashboard({ data, statistics, onBack }: DataDashboar
                     <table className="min-w-full divide-y divide-gray-200">
                         <thead className="bg-gray-50">
                             <tr>
+                                <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                                    <input
+                                        ref={selectAllLinksRef}
+                                        type="checkbox"
+                                        checked={allLinksSelected && selectableRows.length > 0}
+                                        onChange={() => (allLinksSelected ? handleClearLinkSelection() : handleSelectAllLinks())}
+                                        className="rounded border-gray-300 text-orange-600 focus:ring-orange-500"
+                                        aria-label="Seleccionar todos los registros"
+                                    />
+                                </th>
                                 <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                                     #
                                 </th>
@@ -452,6 +734,9 @@ export default function DataDashboard({ data, statistics, onBack }: DataDashboar
                                     Teléfono/Email
                                 </th>
                                 <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                                    Enlace Ubicación
+                                </th>
+                                <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                                     Coordenadas
                                 </th>
                                 <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
@@ -466,97 +751,158 @@ export default function DataDashboard({ data, statistics, onBack }: DataDashboar
                             </tr>
                         </thead>
                         <tbody className="bg-white divide-y divide-gray-200">
-                            {filteredData.map((row) => (
-                                <tr
-                                    key={row.rowIndex}
-                                    className={`hover:bg-gray-50 cursor-pointer transition-all duration-500 ${updatedRows.has(row.rowIndex)
-                                        ? 'bg-green-100 border-l-4 border-green-500 animate-pulse'
-                                        : ''
-                                        }`}
-                                    onClick={() => setSelectedRow(row)}
-                                >
-                                    <td className="px-4 py-4 whitespace-nowrap text-sm font-medium text-gray-900">
-                                        {row.rowIndex + 1}
-                                    </td>
-                                    <td className="px-4 py-4 whitespace-nowrap">
-                                        <div className="flex items-center">
-                                            {getStatusIcon(row.status)}
-                                            <span className={`ml-2 px-2 py-1 text-xs font-medium rounded-full ${getStatusColor(row.status)}`}>
-                                                {row.status.replace('_', ' ')}
-                                            </span>
-                                        </div>
-                                    </td>
-                                    {showOriginal && (
-                                        <td className="px-4 py-4 text-sm text-gray-900 max-w-xs">
-                                            <div className="truncate" title={row.original.address}>
-                                                {row.original.address}
-                                            </div>
-                                            <div className="text-xs text-gray-500">
-                                                {row.original.city}, {row.original.state}
+                            {filteredData.map((row) => {
+                                const rowKey = row.recordId || `row-${row.rowIndex}`
+                                const isUpdated = row.recordId ? updatedRows.has(row.recordId) : false
+                                const linkStatus = getLinkStatusBadge(row.locationLinkStatus)
+                                const linkUrl = row.locationLinkToken ? `${baseLocationUrl}/location?token=${row.locationLinkToken}` : ''
+
+                                return (
+                                    <tr
+                                        key={rowKey}
+                                        className={`hover:bg-gray-50 cursor-pointer transition-all duration-500 ${isUpdated ? 'bg-green-50 border-l-4 border-green-500' : ''}`}
+                                        onClick={() => setSelectedRow(row)}
+                                    >
+                                        <td className="px-4 py-4 whitespace-nowrap text-sm text-gray-900">
+                                            {row.recordId ? (
+                                                <input
+                                                    type="checkbox"
+                                                    checked={selectedForLinks.has(row.recordId)}
+                                                    onChange={(e) => {
+                                                        e.stopPropagation()
+                                                        handleLinkSelectionToggle(row.recordId)
+                                                    }}
+                                                    onClick={(e) => e.stopPropagation()}
+                                                    className="rounded border-gray-300 text-orange-600 focus:ring-orange-500"
+                                                />
+                                            ) : (
+                                                <span className="text-xs text-gray-400">N/A</span>
+                                            )}
+                                        </td>
+                                        <td className="px-4 py-4 whitespace-nowrap text-sm font-medium text-gray-900">
+                                            {row.rowIndex + 1}
+                                        </td>
+                                        <td className="px-4 py-4 whitespace-nowrap">
+                                            <div className="flex items-center">
+                                                {getStatusIcon(row.status)}
+                                                <span className={`ml-2 px-2 py-1 text-xs font-medium rounded-full ${getStatusColor(row.status)}`}>
+                                                    {row.status.replace('_', ' ')}
+                                                </span>
                                             </div>
                                         </td>
-                                    )}
-                                    <td className="px-4 py-4 text-sm text-gray-900 max-w-xs">
-                                        <div className="truncate font-medium" title={row.cleaned.address}>
-                                            {row.cleaned.address}
-                                        </div>
-                                        <div className="text-xs text-gray-500 truncate" title={row.geocoding.formattedAddress}>
-                                            {row.geocoding.formattedAddress}
-                                        </div>
-                                    </td>
-                                    <td className="px-4 py-4 text-sm text-gray-900">
-                                        <div>{row.cleaned.city}</div>
-                                        <div className="text-xs text-gray-500">{row.cleaned.state}</div>
-                                    </td>
-                                    <td className="px-4 py-4 text-sm text-gray-900">
-                                        <div>{row.cleaned.phone}</div>
-                                        <div className="text-xs text-gray-500">{row.cleaned.email}</div>
-                                    </td>
-                                    <td className="px-4 py-4 text-sm text-gray-900">
-                                        {row.geocoding.latitude && row.geocoding.longitude ? (
-                                            <div>
-                                                <div className="font-mono text-xs">
-                                                    {row.geocoding.latitude.toFixed(6)}
+                                        {showOriginal && (
+                                            <td className="px-4 py-4 text-sm text-gray-900 max-w-xs">
+                                                <div className="truncate" title={row.original.address}>
+                                                    {row.original.address}
                                                 </div>
-                                                <div className="font-mono text-xs">
-                                                    {row.geocoding.longitude.toFixed(6)}
+                                                <div className="text-xs text-gray-500">
+                                                    {row.original.city}, {row.original.state}
+                                                </div>
+                                            </td>
+                                        )}
+                                        <td className="px-4 py-4 text-sm text-gray-900 max-w-xs">
+                                            <div className="truncate font-medium" title={row.cleaned.address}>
+                                                {row.cleaned.address}
+                                            </div>
+                                            <div className="text-xs text-gray-500 truncate" title={row.geocoding.formattedAddress}>
+                                                {row.geocoding.formattedAddress}
+                                            </div>
+                                        </td>
+                                        <td className="px-4 py-4 text-sm text-gray-900">
+                                            <div>{row.cleaned.city}</div>
+                                            <div className="text-xs text-gray-500">{row.cleaned.state}</div>
+                                        </td>
+                                        <td className="px-4 py-4 text-sm text-gray-900">
+                                            <div>{row.cleaned.phone}</div>
+                                            <div className="text-xs text-gray-500">{row.cleaned.email}</div>
+                                        </td>
+                                        <td className="px-4 py-4 text-sm text-gray-900">
+                                            {row.locationLinkToken ? (
+                                                <div className="space-y-1">
+                                                    <div className="flex flex-wrap items-center gap-2">
+                                                        <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${linkStatus.className}`}>
+                                                            {linkStatus.label}
+                                                        </span>
+                                                        {row.lastLocationUpdate && (
+                                                            <span className="text-xs text-gray-500">
+                                                                Actualizado: {formatDateTime(row.lastLocationUpdate)}
+                                                            </span>
+                                                        )}
+                                                    </div>
+                                                    <div className="flex items-center gap-2">
+                                                        <span className="text-xs text-gray-600 break-all max-w-[220px] md:max-w-xs">
+                                                            {linkUrl}
+                                                        </span>
+                                                        <Button
+                                                            onClick={(e) => {
+                                                                e.stopPropagation()
+                                                                handleCopyLink(row)
+                                                            }}
+                                                            variant="ghost"
+                                                            size="icon"
+                                                            className="h-7 w-7 text-orange-600 hover:text-orange-700 hover:bg-orange-50"
+                                                            title="Copiar enlace"
+                                                        >
+                                                            <Copy className="w-3.5 h-3.5" />
+                                                        </Button>
+                                                    </div>
+                                                    {copiedLinkId === (row.recordId || row.locationLinkToken) && (
+                                                        <span className="text-xs text-green-600">¡Enlace copiado!</span>
+                                                    )}
+                                                    {row.locationLinkExpiresAt && (
+                                                        <div className="text-[11px] text-gray-400">
+                                                            Expira: {formatDateTime(row.locationLinkExpiresAt)}
+                                                        </div>
+                                                    )}
+                                                </div>
+                                            ) : (
+                                                <span className="text-xs text-gray-400">Sin enlace generado</span>
+                                            )}
+                                        </td>
+                                        <td className="px-4 py-4 text-sm text-gray-900">
+                                            {row.geocoding.latitude && row.geocoding.longitude ? (
+                                                <div>
+                                                    <div className="font-mono text-xs">
+                                                        {row.geocoding.latitude.toFixed(6)}
+                                                    </div>
+                                                    <div className="font-mono text-xs">
+                                                        {row.geocoding.longitude.toFixed(6)}
+                                                    </div>
+                                                </div>
+                                            ) : (
+                                                <span className="text-xs text-gray-500">Sin coordenadas</span>
+                                            )}
+                                        </td>
+                                        <td className="px-4 py-4 text-sm text-gray-900">
+                                            <div className="flex items-center">
+                                                <MapPin className="w-4 h-4 text-blue-500 mr-2" />
+                                                <div>
+                                                    <div className="font-medium">
+                                                        {(row.geocoding.confidence * 100).toFixed(0)}%
+                                                    </div>
+                                                    <div className="text-xs text-gray-500">
+                                                        {row.geocoding.confidenceDescription}
+                                                    </div>
                                                 </div>
                                             </div>
-                                        ) : (
-                                            <span className="text-gray-400">No disponible</span>
-                                        )}
-                                    </td>
-                                    <td className="px-4 py-4 text-sm text-gray-900">
-                                        <div className="font-bold">
-                                            {Math.round(row.geocoding.confidence * 100)}%
-                                        </div>
-                                        <div className="text-xs text-gray-500">
-                                            {row.geocoding.locationType}
-                                        </div>
-                                    </td>
-                                    <td className="px-4 py-4 text-sm text-gray-900">
-                                        <div className="font-bold text-purple-700">
+                                        </td>
+                                        <td className="px-4 py-4 text-sm text-gray-900">
                                             {row.cleaned.aiConfidence}%
-                                        </div>
-                                        <div className="text-xs text-gray-500">
-                                            AI Assessment
-                                        </div>
-                                    </td>
-                                    <td className="px-4 py-4">
-                                        {row.geocoding.staticMapUrl ? (
-                                            <img
-                                                src={row.geocoding.staticMapUrl}
-                                                alt="Map"
-                                                className="w-16 h-12 object-cover rounded border"
-                                            />
-                                        ) : (
-                                            <div className="w-16 h-12 bg-gray-100 rounded border flex items-center justify-center">
-                                                <span className="text-xs text-gray-400">No mapa</span>
-                                            </div>
-                                        )}
-                                    </td>
-                                </tr>
-                            ))}
+                                        </td>
+                                        <td className="px-4 py-4 text-sm text-gray-900">
+                                            {row.geocoding.staticMapUrl ? (
+                                                <img
+                                                    src={row.geocoding.staticMapUrl}
+                                                    alt={`Mapa de ${row.cleaned.address}`}
+                                                    className="rounded-lg shadow-sm"
+                                                />
+                                            ) : (
+                                                <span className="text-xs text-gray-500">Mapa no disponible</span>
+                                            )}
+                                        </td>
+                                    </tr>
+                                )
+                            })}
                         </tbody>
                     </table>
                 </div>
@@ -631,6 +977,36 @@ export default function DataDashboard({ data, statistics, onBack }: DataDashboar
                                         </div>
                                     )}
                                 </Card>
+
+                                {selectedRow.locationLinkToken && (
+                                    <Card className="p-4 md:col-span-2">
+                                        <h4 className="font-semibold text-orange-600 mb-3">Enlace de Ubicación Compartido</h4>
+                                        <div className="space-y-3 text-sm">
+                                            <div>
+                                                <strong>Estado:</strong>{' '}
+                                                <span className="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-orange-50 text-orange-700">
+                                                    {selectedRow.locationLinkStatus === 'submitted' ? 'Ubicación confirmada' : selectedRow.locationLinkStatus || 'Enviado'}
+                                                </span>
+                                            </div>
+                                            <div className="break-all">
+                                                <strong>Enlace:</strong> {`${baseLocationUrl}/location?token=${selectedRow.locationLinkToken}`}
+                                            </div>
+                                            {selectedRow.locationLinkExpiresAt && (
+                                                <div>
+                                                    <strong>Expira:</strong> {formatDateTime(selectedRow.locationLinkExpiresAt)}
+                                                </div>
+                                            )}
+                                            <Button
+                                                onClick={() => handleCopyLink(selectedRow)}
+                                                variant="outline"
+                                                size="sm"
+                                                className="border-orange-200 text-orange-700 hover:bg-orange-50"
+                                            >
+                                                <Copy className="w-4 h-4 mr-2" /> Copiar enlace
+                                            </Button>
+                                        </div>
+                                    </Card>
+                                )}
                             </div>
                         </div>
                     </div>
