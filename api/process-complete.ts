@@ -71,104 +71,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     console.log('[UNIFIED_PROCESS] Starting complete processing pipeline...')
 
-    // Step 1: Extract fields from CSV
-    console.log('[UNIFIED_PROCESS] Step 1/3: Extracting fields...')
-    const lines = csvData.trim().split('\n')
-
-    console.log('[DEBUG] Total lines in CSV:', lines.length)
-    if (lines.length < 2) {
-      console.log('[DEBUG] ERROR: CSV must have at least 2 lines (header + data)')
-      return res.status(400).json({ error: 'CSV must have at least a header row and one data row' })
-    }
-
-    const parseCSVLine = (line: string): string[] => {
-      if (!line || typeof line !== 'string') {
-        console.log('[DEBUG] parseCSVLine received invalid input:', line)
-        return []
-      }
-
-      const result: string[] = []
-      let current = ''
-      let inQuotes = false
-
-      try {
-        for (let i = 0; i < line.length; i++) {
-          const char = line[i]
-          if (char === '"') {
-            inQuotes = !inQuotes
-          } else if (char === ',' && !inQuotes) {
-            result.push(current.trim())
-            current = ''
-          } else {
-            current += char
-          }
-        }
-        result.push(current.trim())
-        return result
-      } catch (error) {
-        console.log('[DEBUG] Error in parseCSVLine:', error)
-        return []
-      }
-    }
-
-    const headers = parseCSVLine(lines[0])
-    console.log('[DEBUG] Headers found:', headers)
-
-    // Try multiple patterns for more flexible column detection
-    const findColumnIndex = (patterns: string[]) => {
-      for (const pattern of patterns) {
-        const index = headers.findIndex((h: string) =>
-          h.toLowerCase().includes(pattern.toLowerCase())
-        )
-        if (index !== -1) return index
-      }
-      return -1
-    }
-
-    const addressIndex = findColumnIndex(['Buyer Address1', 'address', 'direccion', 'addr'])
-    const cityIndex = findColumnIndex(['Buyer City', 'city', 'ciudad', 'localidad'])
-    const stateIndex = findColumnIndex(['Buyer State', 'state', 'estado', 'provincia', 'region'])
-    const phoneIndex = findColumnIndex(['Buyer Phone', 'phone', 'telefono', 'tel', 'celular'])
-
-    console.log('[DEBUG] Column indices:', { addressIndex, cityIndex, stateIndex, phoneIndex })
-
-    if (addressIndex === -1 || cityIndex === -1 || stateIndex === -1 || phoneIndex === -1) {
-      console.log('[DEBUG] ERROR: Required columns not found')
-      console.log('[DEBUG] Available headers:', headers)
-      console.log('[DEBUG] Tried patterns: address/direccion, city/ciudad, state/estado, phone/telefono')
-      return res.status(400).json({
-        error: 'Required columns not found in CSV',
-        availableHeaders: headers,
-        requiredHeaders: ['Address/Direccion', 'City/Ciudad', 'State/Estado', 'Phone/Telefono'],
-        foundIndices: { addressIndex, cityIndex, stateIndex, phoneIndex },
-        suggestions: 'Make sure your CSV has columns for address, city, state/province, and phone number'
-      })
-    }
-
-    const extractedData = lines.slice(1).map((line: string, lineIndex: number) => {
-      try {
-        const values = parseCSVLine(line)
-        console.log(`[DEBUG] Line ${lineIndex + 2} parsed values count:`, values ? values.length : 'undefined')
-        console.log(`[DEBUG] Line ${lineIndex + 2} values:`, values)
-
-        return {
-          address: values && values[addressIndex] ? values[addressIndex] : '',
-          city: values && values[cityIndex] ? values[cityIndex] : '',
-          state: values && values[stateIndex] ? values[stateIndex] : '',
-          phone: values && values[phoneIndex] ? values[phoneIndex] : ''
-        }
-      } catch (error) {
-        console.log(`[DEBUG] Error parsing line ${lineIndex + 2}:`, error)
-        return {
-          address: '',
-          city: '',
-          state: '',
-          phone: ''
-        }
-      }
-    }).filter((row: any) => row && (row.address || row.city || row.state || row.phone))
-
-    console.log(`[UNIFIED_PROCESS] Extracted ${extractedData.length} rows`)
+    // Step 1: Delegate all extraction (including originals) to LLM
+    console.log('[UNIFIED_PROCESS] Step 1/3: Delegating all field extraction to LLM (originals + cleaned)')
 
     // Step 2: Clean with OpenAI
     console.log('[UNIFIED_PROCESS] Step 2/3: Cleaning with OpenAI...')
@@ -177,12 +81,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       return res.status(500).json({ error: 'OpenAI API key not configured' })
     }
 
-    const csvForCleaning = [
-      'Address,City,State,Phone',
-      ...extractedData.map((row: any) =>
-        `"${row.address || ''}","${row.city || ''}","${row.state || ''}","${row.phone || ''}"`
-      )
-    ].join('\n')
+    // Send RAW CSV to LLM; prompt is now flexible to discover columns per row
+    const csvForCleaning = csvData
     console.log('[DEBUG] CSV for cleaning preview:', csvForCleaning.substring(0, 200))
 
     // Dynamically import the cleaning module and call OpenAI
@@ -215,12 +115,18 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const cleanedData = cleanedLines.slice(1).map((line: string) => {
       const values = parseCleanCSVLine(line)
       return {
-        address: values[0] || '',
-        city: values[1] || '',
-        state: values[2] || '',
-        phone: values[3] || '',
-        email: values[4] || '',
-        aiConfidence: parseInt(values[5] || '0') || 0
+        // Original fields (AI-extracted, uncleaned)
+        originalAddress: values[0] || '',
+        originalCity: values[1] || '',
+        originalState: values[2] || '',
+        originalPhone: values[3] || '',
+        // Cleaned fields
+        address: values[4] || '',
+        city: values[5] || '',
+        state: values[6] || '',
+        phone: values[7] || '',
+        email: values[8] || '',
+        aiConfidence: parseInt(values[9] || '0') || 0
       }
     })
     console.log('[DEBUG] Sample cleaned data:', cleanedData.slice(0, 2))
@@ -294,7 +200,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     for (let i = 0; i < cleanedData.length; i++) {
       const cleaned = cleanedData[i]
-      const original = extractedData[i]
+      // Use AI-extracted ORIGINAL fields (uncleaned)
+      const original = {
+        address: cleaned.originalAddress,
+        city: cleaned.originalCity,
+        state: cleaned.originalState,
+        phone: cleaned.originalPhone
+      }
       try {
         const geo = await geocode(cleaned.address, cleaned.city, cleaned.state)
         const confidence = geo?.best?.confidence_score || 0

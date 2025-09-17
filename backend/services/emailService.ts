@@ -7,12 +7,28 @@ export class EmailService {
     private transporter: nodemailer.Transporter
 
     constructor() {
-        // Initialize nodemailer transporter
+        // Initialize nodemailer transporter with debugging
+        console.log('🔍 Email service config check:', {
+            EMAIL_USER: process.env.EMAIL_USER ? '✅ Set' : '❌ Missing',
+            EMAIL_PASSWORD: process.env.EMAIL_PASSWORD ? '✅ Set' : '❌ Missing'
+        })
+
         this.transporter = nodemailer.createTransport({
-            service: 'gmail', // You can change this to other services
+            service: 'gmail', // Options: 'gmail', 'outlook', 'yahoo', 'hotmail'
             auth: {
                 user: process.env.EMAIL_USER,
                 pass: process.env.EMAIL_PASSWORD // App password for Gmail
+            },
+            debug: true, // Enable debug logging
+            logger: true // Enable logger
+        })
+
+        // Verify transporter configuration
+        this.transporter.verify((error, success) => {
+            if (error) {
+                console.error('❌ Email transporter verification failed:', error)
+            } else {
+                console.log('✅ Email transporter verified successfully')
             }
         })
     }
@@ -86,11 +102,12 @@ Si no solicitaste este servicio, puedes ignorar este mensaje.
                 `.trim()
             }
 
-            await this.transporter.sendMail(mailOptions)
-            console.log(`Email sent to ${email} for address confirmation`)
+            console.log(`📧 Attempting to send email to: ${email}`)
+            const result = await this.transporter.sendMail(mailOptions)
+            console.log(`✅ Email sent successfully to ${email}:`, result.messageId)
             return true
         } catch (error) {
-            console.error('Error sending email:', error)
+            console.error(`❌ Error sending email to ${email}:`, error)
             return false
         }
     }
@@ -239,10 +256,12 @@ Si no esperabas este mensaje, puedes ignorarlo de forma segura.
                 `.trim()
             }
 
-            await this.transporter.sendMail(mailOptions)
+            console.log(`📧 Attempting to send location request email to: ${email}`)
+            const result = await this.transporter.sendMail(mailOptions)
+            console.log(`✅ Location request email sent successfully to ${email}:`, result.messageId)
             return true
         } catch (error) {
-            console.error('Error sending location request email:', error)
+            console.error(`❌ Error sending location request email to ${email}:`, error)
             return false
         }
     }

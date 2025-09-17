@@ -12,8 +12,15 @@ export async function cleanParaguayAddresses(apiKey, csvData) {
             Authorization: `Bearer ${apiKey}`,
         },
         body: JSON.stringify({
-            model: 'gpt-4o-mini',
-            messages: [{ role: 'user', content: prompt }],
+            model: 'gpt-4o',
+            messages: [
+                {
+                    role: 'system',
+                    content:
+                        'You are a meticulous CSV transformer. You MUST: 1) output exactly one RFC-4180 CSV code block with header Address,City,State,Phone,Email,AI_Confidence; 2) when an email is present in any field (especially Address), extract it to the Email column and remove it from Address; 3) keep Phone and Email separate; 4) leave fields blank if unknown; 5) never add commentary outside the CSV code block.'
+                },
+                { role: 'user', content: prompt }
+            ],
             temperature: 0,
             top_p: 1,
             // Set a generous cap to avoid truncation on bigger batches
@@ -43,12 +50,12 @@ export async function cleanParaguayAddresses(apiKey, csvData) {
 
     // Sanity checks
     const header = csv.split('\n', 1)[0].trim();
-    const expectedHeader = 'Address,City,State,Phone,Email,AI_Confidence';
+    const expectedHeader = 'Original_Address,Original_City,Original_State,Original_Phone,Address,City,State,Phone,Email,AI_Confidence';
     if (header !== expectedHeader) {
         throw new Error(`Unexpected header. Got "${header}", expected "${expectedHeader}"`);
     }
 
-    // Optional: quick structural check for 6 columns on non-empty rows.
+    // Optional: quick structural check for 10 columns on non-empty rows.
     // NOTE: This is a lightweight check; prefer a real CSV parser downstream.
     const lines = csv.split('\n').slice(1).filter(Boolean);
     const bad = lines.find(line => {
@@ -59,7 +66,7 @@ export async function cleanParaguayAddresses(apiKey, csvData) {
             if (ch === '"') inQuotes = !inQuotes;
             else if (ch === ',' && !inQuotes) commas++;
         }
-        return commas !== 5; // 6 columns => 5 commas
+        return commas !== 9; // 10 columns => 9 commas
     });
     if (bad) {
         console.warn('Row with unexpected column structure detected:', bad);

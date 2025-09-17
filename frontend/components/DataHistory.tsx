@@ -15,7 +15,8 @@ import {
     Trash2,
     RefreshCw
 } from 'lucide-react'
-import { DataService, CSVDataset, AddressRecord } from '../services/dataService'
+import { DataService } from '../services/dataService'
+import type { CSVDataset, AddressRecord } from '../services/dataService'
 import { useAuth } from '../contexts/AuthContext'
 
 interface DataHistoryProps {

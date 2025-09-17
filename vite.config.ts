@@ -11,6 +11,9 @@ export default defineConfig({
       "@": path.resolve(__dirname, "./frontend"),
     },
   },
+  optimizeDeps: {
+    include: ['firebase/auth', 'firebase/firestore', 'firebase/app']
+  },
   server: {
     proxy: {
       "/api": {

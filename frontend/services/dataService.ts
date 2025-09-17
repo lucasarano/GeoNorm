@@ -46,6 +46,13 @@ export interface AddressRecord {
     status: 'processed' | 'pending_confirmation' | 'confirmed' | 'rejected'
     needsConfirmation: boolean
 
+    // Location link workflow
+    locationLinkToken?: string
+    locationLinkStatus?: 'pending' | 'sent' | 'submitted' | 'expired'
+    locationLinkCreatedAt?: Timestamp
+    locationLinkExpiresAt?: Timestamp
+    lastLocationUpdate?: Timestamp
+
     // Timestamps
     processedAt: Timestamp
     updatedAt: Timestamp
@@ -132,10 +139,11 @@ export class DataService {
         return docRef.id
     }
 
-    static async bulkSaveAddressRecords(addressRecords: Omit<AddressRecord, 'id'>[]): Promise<void> {
+    static async bulkSaveAddressRecords(addressRecords: Omit<AddressRecord, 'id'>[]): Promise<string[]> {
         // Note: In a production app, you'd want to use batch writes for better performance
         const promises = addressRecords.map(record => this.saveAddressRecord(record))
-        await Promise.all(promises)
+        const ids = await Promise.all(promises)
+        return ids
     }
 
     static async updateAddressStatus(

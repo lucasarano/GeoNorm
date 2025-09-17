@@ -7,6 +7,7 @@ import { useAuth } from '../contexts/AuthContext'
 
 interface ProcessedRow {
     rowIndex: number
+    recordId?: string
     original: {
         address: string
         city: string
@@ -188,7 +189,12 @@ export default function UnifiedProcessor({ onProcessingComplete }: UnifiedProces
                         needsConfirmation: row.status === 'low_confidence'
                     }))
 
-                    await DataService.bulkSaveAddressRecords(addressRecords)
+                    const recordIds = await DataService.bulkSaveAddressRecords(addressRecords)
+
+                    result.results = result.results.map((row, index) => ({
+                        ...row,
+                        recordId: recordIds[index]
+                    }))
 
                     setStepDetails('Datos guardados exitosamente')
                 } catch (error) {

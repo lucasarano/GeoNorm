@@ -28,7 +28,7 @@ function App() {
     const path = window.location.pathname
     const params = new URLSearchParams(window.location.search)
 
-    if (path === '/location' || params.has('orderID')) {
+    if (path === '/location' || params.has('orderID') || params.has('token')) {
       return 'location-collection'
     }
 
@@ -58,7 +58,8 @@ function App() {
   if (currentView === 'location-collection') {
     const params = new URLSearchParams(window.location.search)
     const orderID = params.get('orderID') || undefined
-    return <LocationCollection orderID={orderID} />
+    const token = params.get('token') || undefined
+    return <LocationCollection orderID={orderID} token={token} />
   }
 
   if (currentView === 'sms-test') {
@@ -98,6 +99,11 @@ function App() {
             onSelectDataset={(dataset, addresses) => {
               // Convert Firebase data to the format expected by DataDashboard
               const convertedResults = addresses.map(addr => ({
+                recordId: addr.id,
+                locationLinkToken: addr.locationLinkToken || undefined,
+                locationLinkStatus: addr.locationLinkStatus || undefined,
+                locationLinkExpiresAt: addr.locationLinkExpiresAt?.toDate?.()?.toISOString(),
+                lastLocationUpdate: addr.lastLocationUpdate?.toDate?.()?.toISOString(),
                 rowIndex: addr.rowIndex,
                 original: {
                   address: addr.originalAddress,
