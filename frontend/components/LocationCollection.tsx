@@ -1,13 +1,16 @@
-import React, { useState, useCallback, useMemo, useEffect } from 'react'
+import { useState, useCallback, useMemo, useEffect, useRef } from 'react'
 import { Card } from './shared/ui/card'
 import { Button } from './shared/ui/button'
+import { Input } from './shared/ui/input'
+import { Label } from './shared/ui/label'
 import {
     MapPin,
     Navigation,
     CheckCircle,
     AlertCircle,
     Loader2,
-    Smartphone
+    Smartphone,
+    Target
 } from 'lucide-react'
 
 interface LocationData {
@@ -20,6 +23,8 @@ interface LocationCollectionProps {
     orderID?: string
     token?: string
 }
+
+// Removed old confirmation modes - now using unified approach
 
 export default function LocationCollection({ orderID, token }: LocationCollectionProps) {
     const [location, setLocation] = useState<LocationData | null>(null)
@@ -36,6 +41,20 @@ export default function LocationCollection({ orderID, token }: LocationCollectio
         cleanedAddress?: string
         status?: string
     } | null>(null)
+
+    // Unified confirmation states
+    const [addressFields, setAddressFields] = useState({
+        street: '',
+        city: '',
+        state: ''
+    })
+    // GPS is available alongside address editing (not mutually exclusive)
+    const [useGPS] = useState(true)
+    const [adjustedLocation, setAdjustedLocation] = useState<LocationData | null>(null)
+    const [mapLoaded, setMapLoaded] = useState(false)
+    const [map, setMap] = useState<any | null>(null)
+    const [marker, setMarker] = useState<any | null>(null)
+    const mapContainerRef = useRef<HTMLDivElement | null>(null)
 
     // Get orderID from URL params if not provided as prop
     const actualOrderID = useMemo(() => {
@@ -143,19 +162,43 @@ export default function LocationCollection({ orderID, token }: LocationCollectio
     }, [isSupported])
 
     const handleSubmitLocation = useCallback(async () => {
-        if (!location) return
-
         setSubmitting(true)
         setSubmitError(null)
 
         try {
+            const hasAddress = Boolean(addressFields.street.trim() && addressFields.city.trim() && addressFields.state.trim())
+            const locationToSubmit = adjustedLocation || location
+            const hasLocation = Boolean(locationToSubmit)
+
+            if (!hasAddress && !hasLocation) {
+                throw new Error('Completa la dirección y/o comparte tu ubicación')
+            }
+
             const payload: Record<string, any> = {
-                latitude: location.lat,
-                longitude: location.lng,
-                accuracy: location.accuracy,
                 orderID: actualOrderID,
                 userAgent: navigator.userAgent,
                 timestamp: new Date().toISOString(),
+                confirmationType: hasAddress && hasLocation ? 'both' : hasAddress ? 'address' : 'gps',
+            }
+
+            // Include address if present
+            if (hasAddress) {
+                payload.addressFields = {
+                    street: addressFields.street.trim(),
+                    city: addressFields.city.trim(),
+                    state: addressFields.state.trim()
+                }
+                payload.manualAddress = `${addressFields.street.trim()}, ${addressFields.city.trim()}, ${addressFields.state.trim()}`
+            }
+
+            // Include GPS if present
+            if (hasLocation && locationToSubmit) {
+                payload.latitude = locationToSubmit.lat
+                payload.longitude = locationToSubmit.lng
+                payload.accuracy = locationToSubmit.accuracy
+                if (adjustedLocation) {
+                    payload.mapAdjusted = true
+                }
             }
 
             if (actualToken) {
@@ -181,29 +224,145 @@ export default function LocationCollection({ orderID, token }: LocationCollectio
                 }
             } else {
                 const errorText = await response.text()
-                throw new Error(errorText || 'Error enviando ubicación')
+                throw new Error(errorText || 'Error enviando confirmación')
             }
-        } catch (err) {
-            setSubmitError('Error enviando ubicación. Por favor intenta nuevamente.')
+        } catch (err: any) {
+            setSubmitError(err.message || 'Error enviando confirmación. Por favor intenta nuevamente.')
             console.error('Submit error:', err)
         } finally {
             setSubmitting(false)
         }
-    }, [location, actualOrderID, actualToken])
+    }, [location, adjustedLocation, addressFields, useGPS, actualOrderID, actualToken])
 
     const handleStartOver = useCallback(() => {
         setSubmitted(false)
         setSubmitError(null)
         setLocation(null)
+        setAdjustedLocation(null)
+        setAddressFields({ street: '', city: '', state: '' })
         setError(null)
+        setMap(null)
+        setMarker(null)
     }, [])
 
-    // Auto-request location on component mount
-    useEffect(() => {
-        if (isSupported && !location && !loading && !error && (!actualToken || !metadataLoading)) {
-            getCurrentLocation()
+    // Initialize Google Maps
+    const initializeMap = useCallback((container: HTMLElement, center: LocationData) => {
+        if (!window.google || !window.google.maps) {
+            console.error('Google Maps API not loaded')
+            return
         }
-    }, [isSupported, location, loading, error, getCurrentLocation, metadataLoading, actualToken])
+
+        const mapInstance = new window.google.maps.Map(container, {
+            center: { lat: center.lat, lng: center.lng },
+            zoom: 16,
+            mapTypeId: window.google.maps.MapTypeId.ROADMAP,
+            streetViewControl: false,
+            mapTypeControl: false,
+            fullscreenControl: false,
+        })
+
+        // Create custom marker element
+        const markerElement = document.createElement('div')
+        markerElement.innerHTML = `
+            <svg width="40" height="40" viewBox="0 0 40 40" xmlns="http://www.w3.org/2000/svg">
+                <circle cx="20" cy="20" r="18" fill="#ef4444" stroke="white" stroke-width="2"/>
+                <circle cx="20" cy="20" r="6" fill="white"/>
+            </svg>
+        `
+        markerElement.style.cursor = 'pointer'
+        markerElement.title = 'Arrastra para ajustar la ubicación'
+
+        const markerInstance = new window.google.maps.marker.AdvancedMarkerElement({
+            position: { lat: center.lat, lng: center.lng },
+            map: mapInstance,
+            content: markerElement,
+            gmpDraggable: true,
+        })
+
+        markerInstance.addListener('dragend', () => {
+            const position = markerInstance.position
+            if (position) {
+                setAdjustedLocation({
+                    lat: typeof position.lat === 'function' ? position.lat() : position.lat,
+                    lng: typeof position.lng === 'function' ? position.lng() : position.lng,
+                    accuracy: center.accuracy
+                })
+            }
+        })
+
+        setMap(mapInstance)
+        setMarker(markerInstance)
+        setMapLoaded(true)
+    }, [])
+
+    // Load Google Maps API
+    const loadGoogleMapsAPI = useCallback(() => {
+        if (window.google && window.google.maps) {
+            return Promise.resolve()
+        }
+
+        return new Promise<void>((resolve, reject) => {
+            const existing = document.getElementById('google-maps-js') as HTMLScriptElement | null
+            if (existing) {
+                existing.addEventListener('load', () => resolve())
+                existing.addEventListener('error', () => reject(new Error('Failed to load Google Maps API')))
+                return
+            }
+
+            const script = document.createElement('script')
+            script.id = 'google-maps-js'
+            script.src = `https://maps.googleapis.com/maps/api/js?key=${import.meta.env.VITE_GOOGLE_MAPS_API_KEY}&libraries=places,marker&loading=async`
+            script.async = true
+            script.defer = true
+            script.onload = () => resolve()
+            script.onerror = () => reject(new Error('Failed to load Google Maps API'))
+            document.head.appendChild(script)
+        })
+    }, [])
+
+    // Initialize address fields from metadata
+    useEffect(() => {
+        if (requestMetadata?.cleanedAddress && !addressFields.street && !addressFields.city && !addressFields.state) {
+            // Try to parse the cleaned address into components
+            const addressParts = requestMetadata.cleanedAddress.split(',').map(part => part.trim())
+            setAddressFields({
+                street: addressParts[0] || '',
+                city: addressParts[1] || '',
+                state: addressParts[2] || addressParts[addressParts.length - 1] || ''
+            })
+        }
+    }, [requestMetadata?.cleanedAddress, addressFields])
+
+    // Optional: Auto-request location on first use (disabled by default). Keep manual fetch via button.
+
+    // Initialize map when location is available
+    useEffect(() => {
+        if (location && !mapLoaded) {
+            loadGoogleMapsAPI().then(() => {
+                const container = mapContainerRef.current
+                if (container) {
+                    initializeMap(container, location)
+                }
+            }).catch((error) => {
+                console.error('Failed to load Google Maps:', error)
+                setError('Error cargando el mapa. Verifica tu conexión a internet.')
+            })
+        }
+    }, [location, mapLoaded, loadGoogleMapsAPI, initializeMap])
+
+    // Component unmount cleanup
+    useEffect(() => {
+        return () => {
+            // Clean up on component unmount
+            if (marker) {
+                try {
+                    marker.map = null
+                } catch (error) {
+                    console.warn('Error cleaning up marker on unmount:', error)
+                }
+            }
+        }
+    }, [marker])
 
     if (actualToken && metadataLoading && !requestMetadata) {
         return (
@@ -298,7 +457,7 @@ export default function LocationCollection({ orderID, token }: LocationCollectio
                         Confirma tu Ubicación de Entrega
                     </h1>
                     <p className="text-gray-600">
-                        Necesitamos tu ubicación exacta usando el GPS de tu dispositivo para completar la entrega.
+                        Puedes editar la dirección o usar tu ubicación GPS actual.
                     </p>
                     {(actualOrderID || requestMetadata?.cleanedAddress || requestMetadata?.customerName) && (
                         <div className="mt-4 p-3 bg-blue-50 rounded-lg text-left space-y-2">
@@ -317,55 +476,227 @@ export default function LocationCollection({ orderID, token }: LocationCollectio
                                     <strong>Order ID:</strong> {actualOrderID}
                                 </p>
                             )}
-                            {requestMetadata?.status && requestMetadata.status !== 'submitted' && (
-                                <p className="text-xs text-blue-600 uppercase tracking-wide">
-                                    Estado: {requestMetadata.status === 'pending' ? 'Pendiente de confirmación' : requestMetadata.status}
-                                </p>
-                            )}
-                        </div>
-                    )}
-                    {metadataError && requestMetadata && (
-                        <div className="mt-4 p-3 bg-red-50 rounded-lg text-sm text-red-600">
-                            {metadataError}
                         </div>
                     )}
                 </div>
 
-                {/* Map Preview */}
-                {location && (
-                    <div className="mb-6">
-                        <div className="bg-gray-100 rounded-lg p-4 text-center">
-                            <MapPin className="w-6 h-6 text-green-600 mx-auto mb-2" />
-                            <p className="text-sm text-gray-700 mb-2">Ubicación encontrada:</p>
-                            <p className="font-mono text-xs text-gray-600">
-                                {location.lat.toFixed(6)}, {location.lng.toFixed(6)}
-                            </p>
-                            {location.accuracy && (
-                                <p className="text-xs text-gray-500 mt-1">
-                                    Precisión: ±{Math.round(location.accuracy)}m
+                {/* Unified Address Form */}
+                <div className="space-y-6 mb-6">
+                    {/* Address Fields Section */}
+                    <div className="space-y-4">
+                        <Label className="text-sm font-medium text-gray-900">
+                            Dirección de Entrega
+                        </Label>
+
+                        <div className="space-y-3">
+                            <div>
+                                <Label htmlFor="street" className="text-xs text-gray-600 mb-1 block">
+                                    Calle y Número
+                                </Label>
+                                <Input
+                                    id="street"
+                                    value={addressFields.street}
+                                    onChange={(e) => setAddressFields(prev => ({ ...prev, street: e.target.value }))}
+                                    placeholder="Ej: Av. Mariscal López 1234"
+                                    className="w-full"
+                                />
+                            </div>
+
+                            <div className="grid grid-cols-2 gap-3">
+                                <div>
+                                    <Label htmlFor="city" className="text-xs text-gray-600 mb-1 block">
+                                        Ciudad
+                                    </Label>
+                                    <Input
+                                        id="city"
+                                        value={addressFields.city}
+                                        onChange={(e) => setAddressFields(prev => ({ ...prev, city: e.target.value }))}
+                                        placeholder="Ej: Asunción"
+                                        className="w-full"
+                                    />
+                                </div>
+
+                                <div>
+                                    <Label htmlFor="state" className="text-xs text-gray-600 mb-1 block">
+                                        Departamento
+                                    </Label>
+                                    <Input
+                                        id="state"
+                                        value={addressFields.state}
+                                        onChange={(e) => setAddressFields(prev => ({ ...prev, state: e.target.value }))}
+                                        placeholder="Ej: Central"
+                                        className="w-full"
+                                    />
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    {/* GPS Availability Note */}
+                    {!isSupported && (
+                        <div className="p-3 bg-yellow-50 border border-yellow-200 rounded-lg mb-3">
+                            <div className="flex items-center text-yellow-700">
+                                <AlertCircle className="w-4 h-4 mr-2" />
+                                <span className="text-xs">GPS no disponible en tu navegador</span>
+                            </div>
+                        </div>
+                    )}
+                </div>
+
+                {/* GPS Section */}
+                {true && (
+                    <div className="space-y-4 mb-6 border-t pt-4">
+                        <div className="flex items-center justify-between">
+                            <h3 className="text-sm font-medium text-gray-900">Ubicación GPS</h3>
+                            {loading && (
+                                <div className="flex items-center text-blue-600">
+                                    <Loader2 className="w-4 h-4 mr-1 animate-spin" />
+                                    <span className="text-xs">Buscando...</span>
+                                </div>
+                            )}
+                        </div>
+
+                        {/* GPS Location Display */}
+                        {location ? (
+                            <div className="bg-green-50 border border-green-200 rounded-lg p-4">
+                                <div className="flex items-center text-green-700 mb-2">
+                                    <CheckCircle className="w-5 h-5 mr-2" />
+                                    <span className="text-sm font-medium">Ubicación encontrada</span>
+                                </div>
+                                <p className="font-mono text-xs text-gray-600 mb-2">
+                                    {location.lat.toFixed(6)}, {location.lng.toFixed(6)}
                                 </p>
+                                {location.accuracy && (
+                                    <p className="text-xs text-gray-500">
+                                        Precisión: ±{Math.round(location.accuracy)}m
+                                    </p>
+                                )}
+                            </div>
+                        ) : error ? (
+                            <div className="bg-red-50 border border-red-200 rounded-lg p-4">
+                                <div className="flex items-center text-red-700 mb-2">
+                                    <AlertCircle className="w-5 h-5 mr-2" />
+                                    <span className="text-sm font-medium">Error obteniendo ubicación</span>
+                                </div>
+                                <p className="text-xs text-red-600">{error}</p>
+                            </div>
+                        ) : (
+                            <div className="bg-gray-50 border border-gray-200 rounded-lg p-4">
+                                <p className="text-sm text-gray-600">
+                                    Necesitamos acceso a tu ubicación para confirmar la dirección de entrega.
+                                </p>
+                            </div>
+                        )}
+
+                        {/* GPS Action Buttons */}
+                        {!location && (
+                            <Button
+                                onClick={getCurrentLocation}
+                                disabled={loading || !isSupported}
+                                className="w-full bg-green-600 hover:bg-green-700 text-white py-3"
+                            >
+                                {loading ? (
+                                    <>
+                                        <Loader2 className="w-5 h-5 mr-2 animate-spin" />
+                                        Buscando tu ubicación...
+                                    </>
+                                ) : (
+                                    <>
+                                        <Navigation className="w-5 h-5 mr-2" />
+                                        Obtener mi Ubicación
+                                    </>
+                                )}
+                            </Button>
+                        )}
+                    </div>
+                )}
+
+                {/* Map Section - only show when location is found */}
+                {location && (
+                    <div className="space-y-4 mb-6 border-t pt-4">
+                        <div className="flex items-center justify-between">
+                            <h3 className="text-sm font-medium text-gray-900">Ajustar Ubicación en Mapa</h3>
+                        </div>
+
+                        <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
+                            <div className="flex items-center text-blue-700 mb-2">
+                                <Target className="w-5 h-5 mr-2" />
+                                <span className="text-sm font-medium">Mapa Interactivo</span>
+                            </div>
+                            <p className="text-xs text-blue-600 mb-3">
+                                Arrastra el pin rojo para ajustar la ubicación exacta si es necesario
+                            </p>
+
+                            {/* Map Container */}
+                            <div
+                                ref={mapContainerRef}
+                                className="bg-gray-200 rounded-lg h-64 w-full"
+                                style={{ minHeight: '256px' }}
+                            >
+                                {!mapLoaded && (
+                                    <div className="h-full flex items-center justify-center">
+                                        <div className="text-center text-gray-500">
+                                            <Loader2 className="w-6 h-6 mx-auto mb-2 animate-spin" />
+                                            <p className="text-sm">Cargando mapa...</p>
+                                        </div>
+                                    </div>
+                                )}
+                            </div>
+
+                            {adjustedLocation && (
+                                <div className="mt-3 p-3 bg-green-50 border border-green-200 rounded-lg">
+                                    <p className="text-xs text-green-700 mb-1">
+                                        <strong>Ubicación ajustada:</strong>
+                                    </p>
+                                    <p className="font-mono text-xs text-green-600">
+                                        {adjustedLocation.lat.toFixed(6)}, {adjustedLocation.lng.toFixed(6)}
+                                    </p>
+                                </div>
                             )}
                         </div>
                     </div>
                 )}
 
-                {/* Status Messages */}
+                {/* Unified Submit Button */}
+                <div className="space-y-4 mb-6">
+                    <Button
+                        onClick={handleSubmitLocation}
+                        disabled={submitting || (!addressFields.street.trim() && !addressFields.city.trim() && !addressFields.state.trim() && !location)}
+                        className="w-full bg-blue-600 hover:bg-blue-700 text-white py-4 text-lg font-medium"
+                    >
+                        {submitting ? (
+                            <>
+                                <Loader2 className="w-5 h-5 mr-2 animate-spin" />
+                                Confirmando...
+                            </>
+                        ) : (
+                            <>
+                                <CheckCircle className="w-5 h-5 mr-2" />
+                                Confirmar cambios
+                            </>
+                        )}
+                    </Button>
+
+                    {/* Optional: Refresh GPS button when GPS is enabled */}
+                    {location && (
+                        <Button
+                            onClick={getCurrentLocation}
+                            disabled={loading}
+                            variant="outline"
+                            className="w-full"
+                        >
+                            <Navigation className="w-4 h-4 mr-2" />
+                            Actualizar Ubicación GPS
+                        </Button>
+                    )}
+                </div>
+
+                {/* Error Messages */}
                 {error && (
                     <div className="mb-6 p-4 bg-red-50 border border-red-200 rounded-lg">
                         <div className="flex items-center text-red-700">
                             <AlertCircle className="w-5 h-5 mr-2" />
                             <span className="text-sm">{error}</span>
-                        </div>
-                    </div>
-                )}
-
-                {location && !error && (
-                    <div className="mb-6 p-4 bg-green-50 border border-green-200 rounded-lg">
-                        <div className="flex items-center text-green-700">
-                            <CheckCircle className="w-5 h-5 mr-2" />
-                            <span className="text-sm">
-                                ¡Te encontramos! Por favor revisa la ubicación y confirma.
-                            </span>
                         </div>
                     </div>
                 )}
@@ -379,77 +710,11 @@ export default function LocationCollection({ orderID, token }: LocationCollectio
                     </div>
                 )}
 
-                {!isSupported && (
-                    <div className="mb-6 p-4 bg-yellow-50 border border-yellow-200 rounded-lg">
-                        <div className="flex items-center text-yellow-700">
-                            <AlertCircle className="w-5 h-5 mr-2" />
-                            <span className="text-sm">
-                                Tu navegador no soporta servicios de ubicación.
-                            </span>
-                        </div>
-                    </div>
-                )}
-
-                {/* Action Buttons */}
-                <div className="space-y-4">
-                    {!location ? (
-                        <Button
-                            onClick={getCurrentLocation}
-                            disabled={loading || !isSupported}
-                            className="w-full bg-blue-600 hover:bg-blue-700 text-white py-3"
-                        >
-                            {loading ? (
-                                <>
-                                    <Loader2 className="w-5 h-5 mr-2 animate-spin" />
-                                    Buscando tu ubicación...
-                                </>
-                            ) : (
-                                <>
-                                    <Navigation className="w-5 h-5 mr-2" />
-                                    Encontrar mi Ubicación Exacta
-                                </>
-                            )}
-                        </Button>
-                    ) : (
-                        <>
-                            <Button
-                                onClick={handleSubmitLocation}
-                                disabled={submitting}
-                                className="w-full bg-green-600 hover:bg-green-700 text-white py-3"
-                            >
-                                {submitting ? (
-                                    <>
-                                        <Loader2 className="w-5 h-5 mr-2 animate-spin" />
-                                        Confirmando...
-                                    </>
-                                ) : (
-                                    <>
-                                        <CheckCircle className="w-5 h-5 mr-2" />
-                                        Confirmar y Enviar Ubicación
-                                    </>
-                                )}
-                            </Button>
-
-                            <Button
-                                onClick={getCurrentLocation}
-                                disabled={loading}
-                                variant="outline"
-                                className="w-full"
-                            >
-                                <Navigation className="w-4 h-4 mr-2" />
-                                Buscar Nuevamente
-                            </Button>
-                        </>
-                    )}
-                </div>
-
                 {/* Footer */}
                 <div className="mt-8 pt-6 border-t border-gray-200">
                     <div className="flex items-center justify-center text-gray-500">
                         <Smartphone className="w-4 h-4 mr-2" />
-                        <span className="text-xs">
-                            Asegúrate de tener GPS habilitado
-                        </span>
+                        <span className="text-xs">Edita tu dirección y/o comparte tu ubicación para confirmar.</span>
                     </div>
                 </div>
             </Card>

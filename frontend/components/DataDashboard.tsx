@@ -18,7 +18,8 @@ import {
     Phone,
     Link,
     Copy,
-    Loader2
+    Loader2,
+    Mail
 } from 'lucide-react'
 import { useAuth } from '../contexts/AuthContext'
 
@@ -86,6 +87,9 @@ export default function DataDashboard({ data, statistics, onBack }: DataDashboar
     const [selectedForLinks, setSelectedForLinks] = useState<Set<string>>(new Set())
     const [generatingLinks, setGeneratingLinks] = useState(false)
     const [linkError, setLinkError] = useState<string | null>(null)
+    const [sendingEmails, setSendingEmails] = useState(false)
+    const [emailResults, setEmailResults] = useState<any[]>([])
+    const [showEmailResults, setShowEmailResults] = useState(false)
     const [copiedLinkId, setCopiedLinkId] = useState<string | null>(null)
     const selectAllLinksRef = useRef<HTMLInputElement | null>(null)
     const baseLocationUrl = typeof window !== 'undefined' ? window.location.origin : ''
@@ -153,64 +157,71 @@ export default function DataDashboard({ data, statistics, onBack }: DataDashboar
         }
     }, [smsEligibleRows, selectedForSMS.size])
 
-    // Real-time polling for address updates
+    // Real-time SSE for address updates
     useEffect(() => {
         if (!currentUser) return
 
-        const pollForUpdates = async () => {
+        console.log('Setting up SSE connection for user:', currentUser.uid)
+        const eventSource = new EventSource(`/api/address-updates/stream?userId=${currentUser.uid}`)
+
+        eventSource.onmessage = (event) => {
             try {
-                const response = await fetch(`/api/address-updates?since=${lastUpdateTime}&userId=${currentUser.uid}`)
-                if (response.ok) {
-                    const updates = await response.json()
-                    if (Array.isArray(updates) && updates.length > 0) {
-                        const updateMap = new Map(updates.map((u: any) => [u.addressId, u]))
+                const message = JSON.parse(event.data)
 
-                        setRows(prev => prev.map(row => {
-                            if (!row.recordId) return row
-                            const update = updateMap.get(row.recordId)
-                            if (!update) return row
+                if (message.type === 'connected') {
+                    console.log('SSE connected:', message.message)
+                } else if (message.type === 'address_update') {
+                    console.log('Received address update:', message)
 
-                            return {
-                                ...row,
-                                geocoding: {
-                                    ...row.geocoding,
-                                    latitude: update.coordinates?.lat ?? row.geocoding.latitude,
-                                    longitude: update.coordinates?.lng ?? row.geocoding.longitude,
-                                    formattedAddress: update.formattedAddress || row.geocoding.formattedAddress,
-                                    confidence: update.confidence ?? row.geocoding.confidence,
-                                    confidenceDescription: update.confidenceDescription || row.geocoding.confidenceDescription,
-                                    locationType: update.locationType || row.geocoding.locationType,
-                                    staticMapUrl: row.geocoding.staticMapUrl
-                                },
-                                status: update.status || row.status,
-                                locationLinkStatus: update.locationLinkStatus || row.locationLinkStatus,
-                                locationLinkToken: update.locationLinkToken ?? row.locationLinkToken,
-                                locationLinkExpiresAt: update.locationLinkExpiresAt ?? row.locationLinkExpiresAt,
-                                lastLocationUpdate: update.lastLocationUpdate || row.lastLocationUpdate
-                            }
-                        }))
+                    const { addressId, data } = message
 
-                        const updatedIds = new Set(
-                            updates
-                                .map((u: any) => u.addressId)
-                                .filter((id: string | undefined) => typeof id === 'string')
-                        ) as Set<string>
-                        setUpdatedRows(updatedIds)
-                        setLastUpdateTime(Date.now())
+                    setRows(prev => prev.map(row => {
+                        if (!row.recordId || row.recordId !== addressId) return row
 
-                        setTimeout(() => {
-                            setUpdatedRows(new Set())
-                        }, 3000)
-                    }
+                        const updatedRow = {
+                            ...row,
+                            geocoding: {
+                                ...row.geocoding,
+                                latitude: data.coordinates?.lat ?? row.geocoding.latitude,
+                                longitude: data.coordinates?.lng ?? row.geocoding.longitude,
+                                formattedAddress: data.confirmedAddress || row.geocoding.formattedAddress,
+                                confidence: data.confirmationType === 'gps' ? 0.95 : 0.85,
+                                confidenceDescription: data.confirmationType === 'gps'
+                                    ? 'Ubicación confirmada por GPS'
+                                    : 'Dirección confirmada por el cliente',
+                                locationType: 'USER_CONFIRMED',
+                                staticMapUrl: row.geocoding.staticMapUrl
+                            },
+                            status: 'confirmed',
+                            locationLinkStatus: 'submitted',
+                            lastLocationUpdate: data.timestamp
+                        }
+
+                        return updatedRow
+                    }))
+
+                    // Highlight the updated row
+                    setUpdatedRows(new Set([addressId]))
+                    setTimeout(() => {
+                        setUpdatedRows(new Set())
+                    }, 3000)
+                } else if (message.type === 'ping') {
+                    // Keep-alive ping, no action needed
                 }
             } catch (error) {
-                console.error('Error polling for updates:', error)
+                console.error('Error parsing SSE message:', error)
             }
         }
 
-        const interval = setInterval(pollForUpdates, 5000)
-        return () => clearInterval(interval)
-    }, [currentUser, lastUpdateTime])
+        eventSource.onerror = (error) => {
+            console.error('SSE connection error:', error)
+        }
+
+        return () => {
+            console.log('Closing SSE connection')
+            eventSource.close()
+        }
+    }, [currentUser])
 
     const handleSMSSelectionToggle = (rowIndex: number) => {
         const newSelection = new Set(selectedForSMS)
@@ -283,6 +294,56 @@ export default function DataDashboard({ data, statistics, onBack }: DataDashboar
 
     const handleClearLinkSelection = () => {
         setSelectedForLinks(new Set())
+    }
+
+    const handleSendEmailLinks = async () => {
+        if (!currentUser) {
+            alert('Debes iniciar sesión para enviar enlaces por email')
+            return
+        }
+
+        const selectedIds = Array.from(selectedForLinks)
+
+        if (selectedIds.length === 0) {
+            alert('Selecciona al menos un registro para enviar por email')
+            return
+        }
+
+        setSendingEmails(true)
+        setLinkError(null)
+
+        try {
+            const response = await fetch('/api/send-location-links-email', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    userId: currentUser.uid,
+                    addressIds: selectedIds
+                })
+            })
+
+            if (!response.ok) {
+                const errorText = await response.text()
+                throw new Error(errorText || 'Error enviando emails')
+            }
+
+            const payload = await response.json()
+            setEmailResults(payload.results || [])
+            setShowEmailResults(true)
+
+            // Clear selection
+            setSelectedForLinks(new Set())
+
+            console.log(`Emails enviados: ${payload.successCount}/${payload.totalProcessed}`)
+
+        } catch (error: any) {
+            console.error('Error sending emails:', error)
+            setLinkError(error.message || 'Error al enviar emails')
+        } finally {
+            setSendingEmails(false)
+        }
     }
 
     const handleGenerateLinks = async () => {
@@ -645,6 +706,18 @@ export default function DataDashboard({ data, statistics, onBack }: DataDashboar
                                 {generatingLinks ? 'Generando enlaces...' : `Enlace GPS (${selectedForLinks.size})`}
                             </Button>
                             <Button
+                                onClick={handleSendEmailLinks}
+                                disabled={selectedForLinks.size === 0 || sendingEmails}
+                                className="bg-gradient-to-r from-blue-500 to-purple-500 hover:from-blue-600 hover:to-purple-600 text-white"
+                            >
+                                {sendingEmails ? (
+                                    <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                                ) : (
+                                    <Mail className="w-4 h-4 mr-2" />
+                                )}
+                                {sendingEmails ? 'Enviando emails...' : `Enviar por Email (${selectedForLinks.size})`}
+                            </Button>
+                            <Button
                                 onClick={handleSelectAllLinks}
                                 variant="outline"
                                 size="sm"
@@ -731,7 +804,10 @@ export default function DataDashboard({ data, statistics, onBack }: DataDashboar
                                     Ciudad/Estado
                                 </th>
                                 <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                                    Teléfono/Email
+                                    Teléfono
+                                </th>
+                                <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                                    Email
                                 </th>
                                 <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                                     Enlace Ubicación
@@ -813,8 +889,10 @@ export default function DataDashboard({ data, statistics, onBack }: DataDashboar
                                             <div className="text-xs text-gray-500">{row.cleaned.state}</div>
                                         </td>
                                         <td className="px-4 py-4 text-sm text-gray-900">
-                                            <div>{row.cleaned.phone}</div>
-                                            <div className="text-xs text-gray-500">{row.cleaned.email}</div>
+                                            {row.cleaned.phone || <span className="text-gray-400 italic">Sin teléfono</span>}
+                                        </td>
+                                        <td className="px-4 py-4 text-sm text-gray-900">
+                                            {row.cleaned.email || <span className="text-gray-400 italic">Sin email</span>}
                                         </td>
                                         <td className="px-4 py-4 text-sm text-gray-900">
                                             {row.locationLinkToken ? (
@@ -1238,3 +1316,4 @@ export default function DataDashboard({ data, statistics, onBack }: DataDashboar
         </div>
     )
 }
+

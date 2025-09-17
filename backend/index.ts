@@ -1,7 +1,8 @@
 import dotenv from 'dotenv'
 
-// Load environment variables FIRST
+// Load environment variables FIRST - try both .env and .env.local
 dotenv.config()
+dotenv.config({ path: '.env.local' })
 
 import express from 'express'
 import cors from 'cors'
@@ -14,6 +15,41 @@ import { emailService } from './services/emailService'
 
 const app = express()
 const PORT = process.env.PORT || 3001
+
+// Real-time updates infrastructure
+interface SSEClient {
+    userId: string
+    response: express.Response
+}
+
+const sseClients: SSEClient[] = []
+
+// Function to notify all clients about address updates
+function notifyAddressUpdate(userId: string, addressId: string, updateData: any) {
+    const userClients = sseClients.filter(client => client.userId === userId)
+
+    const updateMessage = {
+        type: 'address_update',
+        addressId,
+        data: {
+            ...updateData,
+            timestamp: new Date().toISOString()
+        }
+    }
+
+    userClients.forEach(client => {
+        try {
+            client.response.write(`data: ${JSON.stringify(updateMessage)}\n\n`)
+        } catch (error) {
+            console.error('Error sending SSE update:', error)
+            // Remove disconnected client
+            const index = sseClients.indexOf(client)
+            if (index > -1) {
+                sseClients.splice(index, 1)
+            }
+        }
+    })
+}
 
 // Minimal server for extract -> clean -> geocode flow only
 
@@ -439,10 +475,10 @@ app.post('/api/process-complete', express.raw({ type: 'text/csv', limit: '10mb' 
 
         console.log('[UNIFIED_PROCESS] Starting complete processing pipeline...')
 
-        // Step 1: Extract fields from CSV
-        console.log('[UNIFIED_PROCESS] Step 1/3: Extracting fields...')
-        const lines = csvData.trim().split('\n')
+        // Step 1: Delegate all extraction (including originals) to LLM
+        console.log('[UNIFIED_PROCESS] Step 1/3: Delegating all field extraction to LLM (originals + cleaned)')
 
+        // Lightweight CSV parser kept for parsing cleaned lines later
         const parseCSVLine = (line: string): string[] => {
             const result: string[] = []
             let current = ''
@@ -463,28 +499,6 @@ app.post('/api/process-complete', express.raw({ type: 'text/csv', limit: '10mb' 
             return result
         }
 
-        const headers = parseCSVLine(lines[0])
-        const addressIndex = headers.findIndex((h: string) => h.includes('Buyer Address1'))
-        const cityIndex = headers.findIndex((h: string) => h.includes('Buyer City'))
-        const stateIndex = headers.findIndex((h: string) => h.includes('Buyer State'))
-        const phoneIndex = headers.findIndex((h: string) => h.includes('Buyer Phone'))
-
-        if (addressIndex === -1 || cityIndex === -1 || stateIndex === -1 || phoneIndex === -1) {
-            return res.status(400).json({ error: 'Required columns not found in CSV' })
-        }
-
-        const extractedData = lines.slice(1).map((line: string) => {
-            const values = parseCSVLine(line)
-            return {
-                address: values[addressIndex] || '',
-                city: values[cityIndex] || '',
-                state: values[stateIndex] || '',
-                phone: values[phoneIndex] || ''
-            }
-        }).filter((row: any) => row.address || row.city || row.state || row.phone)
-
-        console.log(`[UNIFIED_PROCESS] Extracted ${extractedData.length} rows`)
-
         // Step 2: Clean with OpenAI
         console.log('[UNIFIED_PROCESS] Step 2/3: Cleaning with OpenAI...')
         const apiKey = process.env.OPENAI_API_KEY
@@ -492,12 +506,8 @@ app.post('/api/process-complete', express.raw({ type: 'text/csv', limit: '10mb' 
             return res.status(500).json({ error: 'OpenAI API key not configured' })
         }
 
-        const csvForCleaning = [
-            'Address,City,State,Phone',
-            ...extractedData.map((row: any) =>
-                `"${row.address}","${row.city}","${row.state}","${row.phone}"`
-            )
-        ].join('\n')
+        // Send RAW CSV to the cleaner; prompt handles arbitrary columns
+        const csvForCleaning = csvData
 
         // @ts-ignore - JS module without TypeScript types
         const cleanerModule: any = await import('./cleanParaguayAddresses.js')
@@ -507,12 +517,18 @@ app.post('/api/process-complete', express.raw({ type: 'text/csv', limit: '10mb' 
         const cleanedData = cleanedLines.slice(1).map((line: string) => {
             const values = parseCSVLine(line)
             return {
-                address: values[0] || '',
-                city: values[1] || '',
-                state: values[2] || '',
-                phone: values[3] || '',
-                email: values[4] || '',
-                aiConfidence: parseInt(values[5]) || 0
+                // Original fields (AI-extracted, uncleaned)
+                originalAddress: values[0] || '',
+                originalCity: values[1] || '',
+                originalState: values[2] || '',
+                originalPhone: values[3] || '',
+                // Cleaned fields
+                address: values[4] || '',
+                city: values[5] || '',
+                state: values[6] || '',
+                phone: values[7] || '',
+                email: values[8] || '',
+                aiConfidence: parseInt(values[9]) || 0
             }
         })
 
@@ -532,7 +548,13 @@ app.post('/api/process-complete', express.raw({ type: 'text/csv', limit: '10mb' 
 
         for (let i = 0; i < cleanedData.length; i++) {
             const cleaned = cleanedData[i]
-            const original = extractedData[i]
+            // Use AI-extracted ORIGINAL fields (uncleaned)
+            const original = {
+                address: cleaned.originalAddress,
+                city: cleaned.originalCity,
+                state: cleaned.originalState,
+                phone: cleaned.originalPhone
+            }
 
             try {
                 const components: Record<string, string> = { country: 'PY' }
@@ -845,6 +867,173 @@ app.post('/api/address-records/location-links', async (req, res) => {
     }
 })
 
+// Send location links via email
+app.post('/api/send-location-links-email', async (req, res) => {
+    try {
+        const { addressIds, userId } = req.body || {}
+
+        if (!Array.isArray(addressIds) || addressIds.length === 0) {
+            return res.status(400).json({ error: 'addressIds array is required' })
+        }
+
+        if (!userId) {
+            return res.status(400).json({ error: 'userId is required' })
+        }
+
+        console.log(`[EMAIL_LINKS] Processing ${addressIds.length} addresses for user ${userId}`)
+        console.log(`[EMAIL_LINKS] Address IDs:`, addressIds)
+
+        const results: Array<{
+            addressId: string,
+            success: boolean,
+            email?: string,
+            error?: string
+        }> = []
+
+        for (const addressId of addressIds) {
+            try {
+                const addressRef = doc(db, 'address_records', addressId)
+                const addressSnap = await getDoc(addressRef)
+
+                if (!addressSnap.exists()) {
+                    console.warn(`[EMAIL_LINKS] Address record not found: ${addressId}`)
+                    results.push({ addressId, success: false, error: 'Address not found' })
+                    continue
+                }
+
+                const addressData: any = addressSnap.data()
+                if (addressData.userId !== userId) {
+                    console.warn(`[EMAIL_LINKS] User mismatch for address ${addressId}`)
+                    results.push({ addressId, success: false, error: 'Access denied' })
+                    continue
+                }
+
+                if (!addressData.cleanedEmail) {
+                    console.warn(`[EMAIL_LINKS] No email found for address ${addressId}`)
+                    console.warn(`[EMAIL_LINKS] Address data:`, JSON.stringify(addressData, null, 2))
+                    results.push({ addressId, success: false, error: 'No email address' })
+                    continue
+                }
+
+                // Generate or reuse location link
+                let token = addressData.locationLinkToken
+                if (!token) {
+                    token = randomUUID()
+                    const expiration = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000) // 7 days
+                    const locationLinksCollection = collection(db, 'location_links')
+                    const linkRef = doc(locationLinksCollection, token)
+
+                    await setDoc(linkRef, {
+                        token,
+                        addressId,
+                        userId,
+                        createdAt: serverTimestamp(),
+                        expiresAt: Timestamp.fromDate(expiration),
+                        status: 'sent'
+                    })
+
+                    await updateDoc(addressRef, {
+                        locationLinkToken: token,
+                        locationLinkStatus: 'sent',
+                        locationLinkCreatedAt: serverTimestamp(),
+                        locationLinkExpiresAt: Timestamp.fromDate(expiration),
+                        updatedAt: serverTimestamp()
+                    })
+                }
+
+                const baseUrl = process.env.FRONTEND_URL || 'http://localhost:5173'
+                const locationUrl = `${baseUrl}/location?token=${token}`
+                const customerName = 'Cliente' // Could be extracted from user data
+
+                console.log(`[EMAIL_LINKS] Attempting to send email to: ${addressData.cleanedEmail}`)
+                console.log(`[EMAIL_LINKS] Location URL: ${locationUrl}`)
+
+                const success = await emailService.sendLocationRequest(
+                    addressData.cleanedEmail,
+                    customerName,
+                    locationUrl
+                )
+
+                console.log(`[EMAIL_LINKS] Email send result for ${addressData.cleanedEmail}: ${success}`)
+
+                results.push({
+                    addressId,
+                    success,
+                    email: addressData.cleanedEmail,
+                    error: success ? undefined : 'Email sending failed'
+                })
+
+            } catch (innerError) {
+                console.error('Error processing address for email', addressId, innerError)
+                results.push({
+                    addressId,
+                    success: false,
+                    error: 'Processing error'
+                })
+            }
+        }
+
+        const successCount = results.filter(r => r.success).length
+        const failureCount = results.filter(r => !r.success).length
+
+        console.log(`[EMAIL_LINKS] Results: ${successCount} sent, ${failureCount} failed`)
+
+        res.json({
+            totalProcessed: addressIds.length,
+            successCount,
+            failureCount,
+            results
+        })
+
+    } catch (error) {
+        console.error('Error sending location links via email:', error)
+        res.status(500).json({ error: 'Failed to send location links via email' })
+    }
+})
+
+// Debug endpoint to check email configuration and address data
+app.get('/api/debug-email-setup/:userId', async (req, res) => {
+    try {
+        const { userId } = req.params
+
+        // Check environment variables
+        const emailConfig = {
+            EMAIL_USER: process.env.EMAIL_USER ? '✅ Set' : '❌ Missing',
+            EMAIL_PASSWORD: process.env.EMAIL_PASSWORD ? '✅ Set' : '❌ Missing'
+        }
+
+        // Check if user has addresses with emails
+        const addressQuery = query(
+            collection(db, 'address_records'),
+            where('userId', '==', userId)
+        )
+
+        const addressSnapshot = await getDocs(addressQuery)
+        const addresses = addressSnapshot.docs.map(doc => ({
+            id: doc.id,
+            ...doc.data()
+        }))
+
+        const addressesWithEmail = addresses.filter((addr: any) => addr.cleanedEmail)
+
+        res.json({
+            emailConfig,
+            totalAddresses: addresses.length,
+            addressesWithEmail: addressesWithEmail.length,
+            sampleAddresses: addresses.slice(0, 3).map((addr: any) => ({
+                id: addr.id || 'no-id',
+                hasEmail: !!addr.cleanedEmail,
+                email: addr.cleanedEmail || 'none',
+                hasOriginalAddress: !!addr.originalAddress,
+                hasCleanedAddress: !!addr.cleanedAddress
+            }))
+        })
+    } catch (error) {
+        console.error('Debug email setup error:', error)
+        res.status(500).json({ error: 'Debug failed', details: error.message })
+    }
+})
+
 app.get('/api/location-link/:token', async (req, res) => {
     try {
         const { token } = req.params
@@ -904,18 +1093,26 @@ app.get('/api/location-link/:token', async (req, res) => {
 app.post('/api/location-link/:token/submit', async (req, res) => {
     try {
         const { token } = req.params
-        const { latitude, longitude, accuracy } = req.body || {}
+        const {
+            latitude,
+            longitude,
+            accuracy,
+            confirmationType,
+            manualAddress,
+            addressFields,
+            mapAdjusted
+        } = req.body || {}
 
         if (!token) {
             return res.status(400).json({ error: 'Token is required' })
         }
 
-        if (typeof latitude !== 'number' && typeof latitude !== 'string') {
-            return res.status(400).json({ error: 'Latitude is required' })
-        }
-
-        if (typeof longitude !== 'number' && typeof longitude !== 'string') {
-            return res.status(400).json({ error: 'Longitude is required' })
+        if (!db) {
+            console.error('Firebase database not initialized - check environment variables')
+            return res.status(500).json({
+                error: 'Database not available. Please check Firebase configuration in environment variables.',
+                details: 'Missing FIREBASE_API_KEY, FIREBASE_AUTH_DOMAIN, FIREBASE_PROJECT_ID, FIREBASE_STORAGE_BUCKET, FIREBASE_MESSAGING_SENDER_ID, or FIREBASE_APP_ID'
+            })
         }
 
         const linkRef = doc(db, 'location_links', token)
@@ -933,30 +1130,81 @@ app.post('/api/location-link/:token/submit', async (req, res) => {
             return res.status(404).json({ error: 'Address record not found' })
         }
 
-        const numericLatitude = typeof latitude === 'string' ? parseFloat(latitude) : latitude
-        const numericLongitude = typeof longitude === 'string' ? parseFloat(longitude) : longitude
-        const numericAccuracy = accuracy ? (typeof accuracy === 'string' ? parseFloat(accuracy) : accuracy) : null
-
-        await updateDoc(addressRef, {
-            coordinates: {
-                lat: numericLatitude,
-                lng: numericLongitude
-            },
+        // Prepare update data based on confirmation type
+        const updateData: any = {
             lastLocationUpdate: serverTimestamp(),
             locationLinkStatus: 'submitted',
             updatedAt: serverTimestamp(),
-            status: 'confirmed'
-        })
+            status: 'confirmed',
+            confirmationType: confirmationType || 'gps'
+        }
 
-        await updateDoc(linkRef, {
+        const linkUpdateData: any = {
             status: 'submitted',
             submittedAt: serverTimestamp(),
-            latitude: numericLatitude,
-            longitude: numericLongitude,
-            accuracy: numericAccuracy
+            confirmationType: confirmationType || 'gps'
+        }
+
+        if (confirmationType === 'address' && (manualAddress || addressFields)) {
+            // Manual address confirmation
+            let confirmedAddress = manualAddress
+
+            if (addressFields && addressFields.street && addressFields.city && addressFields.state) {
+                confirmedAddress = `${addressFields.street}, ${addressFields.city}, ${addressFields.state}`
+                // Store structured address fields
+                updateData.addressFields = {
+                    street: addressFields.street.trim(),
+                    city: addressFields.city.trim(),
+                    state: addressFields.state.trim()
+                }
+                linkUpdateData.addressFields = updateData.addressFields
+            }
+
+            updateData.confirmedAddress = confirmedAddress ? confirmedAddress.trim() : ''
+            updateData.confirmationMethod = 'manual_address'
+            linkUpdateData.confirmedAddress = updateData.confirmedAddress
+        } else if (latitude && longitude) {
+            // GPS or map-adjusted location
+            const numericLatitude = typeof latitude === 'string' ? parseFloat(latitude) : latitude
+            const numericLongitude = typeof longitude === 'string' ? parseFloat(longitude) : longitude
+            const numericAccuracy = accuracy ? (typeof accuracy === 'string' ? parseFloat(accuracy) : accuracy) : null
+
+            if (isNaN(numericLatitude) || isNaN(numericLongitude)) {
+                return res.status(400).json({ error: 'Invalid latitude or longitude' })
+            }
+
+            updateData.coordinates = {
+                lat: numericLatitude,
+                lng: numericLongitude
+            }
+
+            if (numericAccuracy) {
+                updateData.coordinates.accuracy = numericAccuracy
+            }
+
+            updateData.confirmationMethod = mapAdjusted ? 'map_adjusted' : 'gps'
+
+            linkUpdateData.latitude = numericLatitude
+            linkUpdateData.longitude = numericLongitude
+            linkUpdateData.accuracy = numericAccuracy
+        } else {
+            return res.status(400).json({
+                error: 'Either coordinates (latitude/longitude) or address information is required'
+            })
+        }
+
+        await updateDoc(addressRef, updateData)
+        await updateDoc(linkRef, linkUpdateData)
+
+        // Notify real-time listeners about the update
+        notifyAddressUpdate(linkData.userId, linkData.addressId, updateData)
+
+        res.json({
+            success: true,
+            message: 'Location confirmation submitted successfully',
+            confirmationType: confirmationType || 'gps'
         })
 
-        res.json({ success: true })
     } catch (error) {
         console.error('Error submitting location for token:', error)
         res.status(500).json({ error: 'Failed to submit location' })
@@ -1179,6 +1427,57 @@ app.get('/api/address-updates', async (req, res) => {
         console.error('Error fetching address updates:', error)
         res.status(500).json({ error: 'Failed to fetch address updates' })
     }
+})
+
+// Server-Sent Events endpoint for real-time updates
+app.get('/api/address-updates/stream', (req, res) => {
+    const { userId } = req.query as { userId?: string }
+
+    if (!userId) {
+        return res.status(400).json({ error: 'userId is required' })
+    }
+
+    // Set SSE headers
+    res.writeHead(200, {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        'Connection': 'keep-alive',
+        'Access-Control-Allow-Origin': '*',
+        'Access-Control-Allow-Headers': 'Cache-Control'
+    })
+
+    // Send initial connection message
+    res.write(`data: ${JSON.stringify({ type: 'connected', message: 'Real-time updates connected' })}\n\n`)
+
+    // Add client to the list
+    const client: SSEClient = { userId, response: res }
+    sseClients.push(client)
+
+    // Handle client disconnect
+    req.on('close', () => {
+        const index = sseClients.indexOf(client)
+        if (index > -1) {
+            sseClients.splice(index, 1)
+        }
+        console.log(`SSE client disconnected for user: ${userId}`)
+    })
+
+    // Keep connection alive
+    const keepAlive = setInterval(() => {
+        try {
+            res.write(`data: ${JSON.stringify({ type: 'ping' })}\n\n`)
+        } catch (error) {
+            clearInterval(keepAlive)
+            const index = sseClients.indexOf(client)
+            if (index > -1) {
+                sseClients.splice(index, 1)
+            }
+        }
+    }, 30000) // Ping every 30 seconds
+
+    req.on('close', () => {
+        clearInterval(keepAlive)
+    })
 })
 
 app.listen(PORT, () => {

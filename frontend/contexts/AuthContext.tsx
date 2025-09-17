@@ -1,6 +1,5 @@
 import React, { createContext, useContext, useEffect, useState } from 'react'
-import { 
-  User,
+import {
   createUserWithEmailAndPassword,
   signInWithEmailAndPassword,
   signInWithPopup,
@@ -10,6 +9,9 @@ import {
 } from 'firebase/auth'
 import { doc, setDoc, getDoc } from 'firebase/firestore'
 import { auth, googleProvider, db } from '../lib/firebase'
+
+// Use the User type from the auth instance
+type User = import('firebase/auth').User
 
 interface AuthContextType {
   currentUser: User | null
@@ -36,7 +38,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const signup = async (email: string, password: string, name: string) => {
     const { user } = await createUserWithEmailAndPassword(auth, email, password)
-    
+
     // Update user profile with display name
     await updateProfile(user, {
       displayName: name
@@ -61,10 +63,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const loginWithGoogle = async () => {
     const { user } = await signInWithPopup(auth, googleProvider)
-    
+
     // Check if user document exists
     const userDoc = await getDoc(doc(db, 'users', user.uid))
-    
+
     if (!userDoc.exists()) {
       // Create user document in Firestore for new Google users
       await setDoc(doc(db, 'users', user.uid), {

@@ -1,14 +1,17 @@
-import { 
-  collection, 
-  addDoc, 
-  query, 
-  where, 
-  orderBy, 
+import {
+  collection,
+  addDoc,
+  query,
+  where,
+  orderBy,
   limit,
-  getDocs 
+  getDocs
 } from 'firebase/firestore'
 import { db } from '../config/firebase.js'
 import { serverTimestamp } from 'firebase/firestore'
+
+// Check if Firebase is available
+const isFirebaseAvailable = db !== null
 
 export interface AddressRecord {
   id?: string
@@ -30,6 +33,11 @@ class FirebaseAddressService {
   private addressesCollection = collection(db, 'addresses')
 
   async saveAddressRecord(record: Omit<AddressRecord, 'id'>): Promise<string> {
+    if (!isFirebaseAvailable) {
+      console.log('⚠️  Firebase not available - skipping address save')
+      return 'mock-id-' + Date.now()
+    }
+
     const docRef = await addDoc(this.addressesCollection, {
       ...record,
       processedAt: serverTimestamp()
@@ -38,17 +46,22 @@ class FirebaseAddressService {
   }
 
   async getUserAddresses(userId: string, limitCount: number = 100): Promise<AddressRecord[]> {
+    if (!isFirebaseAvailable) {
+      console.log('⚠️  Firebase not available - returning empty address list')
+      return []
+    }
+
     const q = query(
       this.addressesCollection,
       where('userId', '==', userId),
       orderBy('processedAt', 'desc'),
       limit(limitCount)
     )
-    
+
     const querySnapshot = await getDocs(q)
-    return querySnapshot.docs.map(doc => ({ 
-      id: doc.id, 
-      ...doc.data() 
+    return querySnapshot.docs.map(doc => ({
+      id: doc.id,
+      ...doc.data()
     } as AddressRecord))
   }
 
@@ -59,7 +72,7 @@ class FirebaseAddressService {
     guess: number
   }> {
     const addresses = await this.getUserAddresses(userId, 1000)
-    
+
     return {
       total: addresses.length,
       accurate: addresses.filter(a => (a.confidence || 0) >= 0.8).length,
@@ -69,13 +82,13 @@ class FirebaseAddressService {
   }
 
   async saveBatchAddresses(records: Omit<AddressRecord, 'id'>[]): Promise<string[]> {
-    const batch = records.map(record => 
+    const batch = records.map(record =>
       addDoc(this.addressesCollection, {
         ...record,
         processedAt: serverTimestamp()
       })
     )
-    
+
     const results = await Promise.all(batch)
     return results.map(doc => doc.id)
   }
