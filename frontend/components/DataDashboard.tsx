@@ -172,6 +172,8 @@ export default function DataDashboard({ data, statistics, onBack }: DataDashboar
                     console.log('SSE connected:', message.message)
                 } else if (message.type === 'address_update') {
                     console.log('Received address update:', message)
+                    console.log('Address fields in update:', message.data?.addressFields)
+                    console.log('Confirmed address:', message.data?.confirmedAddress)
 
                     const { addressId, data } = message
 
@@ -180,20 +182,31 @@ export default function DataDashboard({ data, statistics, onBack }: DataDashboar
 
                         const updatedRow = {
                             ...row,
+                            // Update cleaned address fields if provided
+                            ...(data.addressFields && {
+                                cleaned: {
+                                    ...row.cleaned,
+                                    address: data.addressFields.street || row.cleaned.address,
+                                    city: data.addressFields.city || row.cleaned.city,
+                                    state: data.addressFields.state || row.cleaned.state,
+                                }
+                            }),
                             geocoding: {
                                 ...row.geocoding,
                                 latitude: data.coordinates?.lat ?? row.geocoding.latitude,
                                 longitude: data.coordinates?.lng ?? row.geocoding.longitude,
                                 formattedAddress: data.confirmedAddress || row.geocoding.formattedAddress,
-                                confidence: data.confirmationType === 'gps' ? 0.95 : 0.85,
+                                confidence: data.confirmationType === 'gps' ? 0.95 : data.confirmationType === 'both' ? 0.98 : 0.85,
                                 confidenceDescription: data.confirmationType === 'gps'
                                     ? 'Ubicación confirmada por GPS'
-                                    : 'Dirección confirmada por el cliente',
+                                    : data.confirmationType === 'both'
+                                        ? 'Dirección y GPS confirmados por el cliente'
+                                        : 'Dirección confirmada por el cliente',
                                 locationType: 'USER_CONFIRMED',
                                 staticMapUrl: row.geocoding.staticMapUrl
                             },
-                            status: 'confirmed',
-                            locationLinkStatus: 'submitted',
+                            status: 'high_confidence' as const,
+                            locationLinkStatus: 'submitted' as const,
                             lastLocationUpdate: data.timestamp
                         }
 
@@ -205,6 +218,27 @@ export default function DataDashboard({ data, statistics, onBack }: DataDashboar
                     setTimeout(() => {
                         setUpdatedRows(new Set())
                     }, 3000)
+                } else if (message.type === 'link_generated' || message.type === 'email_sent') {
+                    console.log('Received link/email update:', message)
+
+                    const { addressId, data } = message
+
+                    setRows(prev => prev.map(row => {
+                        if (!row.recordId || row.recordId !== addressId) return row
+
+                        return {
+                            ...row,
+                            locationLinkStatus: data.locationLinkStatus || row.locationLinkStatus,
+                            locationLinkToken: data.locationLinkToken || row.locationLinkToken,
+                            locationLinkExpiresAt: data.locationLinkExpiresAt || row.locationLinkExpiresAt
+                        }
+                    }))
+
+                    // Highlight the updated row briefly
+                    setUpdatedRows(new Set([addressId]))
+                    setTimeout(() => {
+                        setUpdatedRows(new Set())
+                    }, 2000)
                 } else if (message.type === 'ping') {
                     // Keep-alive ping, no action needed
                 }

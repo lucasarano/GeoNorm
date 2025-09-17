@@ -848,6 +848,14 @@ app.post('/api/address-records/location-links', async (req, res) => {
                     updatedAt: serverTimestamp()
                 })
 
+                // Notify real-time listeners about the link generation
+                notifyAddressUpdate(userId, addressId, {
+                    locationLinkToken: token,
+                    locationLinkStatus: 'sent',
+                    locationLinkExpiresAt: expiration.toISOString(),
+                    type: 'link_generated'
+                })
+
                 results.push({
                     addressId,
                     token,
@@ -955,6 +963,16 @@ app.post('/api/send-location-links-email', async (req, res) => {
                 )
 
                 console.log(`[EMAIL_LINKS] Email send result for ${addressData.cleanedEmail}: ${success}`)
+
+                if (success) {
+                    // Notify real-time listeners about the email being sent
+                    notifyAddressUpdate(userId, addressId, {
+                        locationLinkToken: token,
+                        locationLinkStatus: 'sent',
+                        email: addressData.cleanedEmail,
+                        type: 'email_sent'
+                    })
+                }
 
                 results.push({
                     addressId,
@@ -1145,7 +1163,7 @@ app.post('/api/location-link/:token/submit', async (req, res) => {
             confirmationType: confirmationType || 'gps'
         }
 
-        if (confirmationType === 'address' && (manualAddress || addressFields)) {
+        if ((confirmationType === 'address' || confirmationType === 'both') && (manualAddress || addressFields)) {
             // Manual address confirmation
             let confirmedAddress = manualAddress
 
@@ -1163,7 +1181,9 @@ app.post('/api/location-link/:token/submit', async (req, res) => {
             updateData.confirmedAddress = confirmedAddress ? confirmedAddress.trim() : ''
             updateData.confirmationMethod = 'manual_address'
             linkUpdateData.confirmedAddress = updateData.confirmedAddress
-        } else if (latitude && longitude) {
+        }
+
+        if ((confirmationType === 'gps' || confirmationType === 'both') && latitude && longitude) {
             // GPS or map-adjusted location
             const numericLatitude = typeof latitude === 'string' ? parseFloat(latitude) : latitude
             const numericLongitude = typeof longitude === 'string' ? parseFloat(longitude) : longitude
@@ -1187,7 +1207,10 @@ app.post('/api/location-link/:token/submit', async (req, res) => {
             linkUpdateData.latitude = numericLatitude
             linkUpdateData.longitude = numericLongitude
             linkUpdateData.accuracy = numericAccuracy
-        } else {
+        }
+
+        // Validate that we have at least one type of data
+        if (confirmationType !== 'address' && confirmationType !== 'gps' && confirmationType !== 'both') {
             return res.status(400).json({
                 error: 'Either coordinates (latitude/longitude) or address information is required'
             })
@@ -1197,7 +1220,12 @@ app.post('/api/location-link/:token/submit', async (req, res) => {
         await updateDoc(linkRef, linkUpdateData)
 
         // Notify real-time listeners about the update
-        notifyAddressUpdate(linkData.userId, linkData.addressId, updateData)
+        const notificationData = {
+            ...updateData,
+            addressId: linkData.addressId,
+            timestamp: new Date().toISOString()
+        }
+        notifyAddressUpdate(linkData.userId, linkData.addressId, notificationData)
 
         res.json({
             success: true,
@@ -1205,7 +1233,7 @@ app.post('/api/location-link/:token/submit', async (req, res) => {
             confirmationType: confirmationType || 'gps'
         })
 
-    } catch (error) {
+    } catch (error: any) {
         console.error('Error submitting location for token:', error)
         res.status(500).json({ error: 'Failed to submit location' })
     }
