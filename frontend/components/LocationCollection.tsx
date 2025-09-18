@@ -796,12 +796,15 @@ export default function LocationCollection({ orderID, token }: LocationCollectio
 
                                 {/* Map Container */}
                                 <div
-                                    ref={mapContainerRef}
-                                    className="bg-gray-200 rounded-lg h-64 w-full"
+                                    className="relative h-64 w-full"
                                     style={{ minHeight: '256px' }}
                                 >
+                                    <div
+                                        ref={mapContainerRef}
+                                        className="bg-gray-200 rounded-lg h-full w-full"
+                                    />
                                     {!mapLoaded && (
-                                        <div className="h-full flex items-center justify-center">
+                                        <div className="pointer-events-none absolute inset-0 flex items-center justify-center rounded-lg bg-gray-200">
                                             <div className="text-center text-gray-500">
                                                 <Loader2 className="w-6 h-6 mx-auto mb-2 animate-spin" />
                                                 <p className="text-sm">Cargando mapa...</p>
