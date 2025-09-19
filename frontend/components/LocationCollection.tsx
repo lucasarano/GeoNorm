@@ -2,17 +2,7 @@ import { useState, useCallback, useMemo, useEffect, useRef, Component } from 're
 import type { ErrorInfo, ReactNode } from 'react'
 import { Card } from './shared/ui/card'
 import { Button } from './shared/ui/button'
-import { Input } from './shared/ui/input'
-import { Label } from './shared/ui/label'
-import {
-    MapPin,
-    Navigation,
-    CheckCircle,
-    AlertCircle,
-    Loader2,
-    Smartphone,
-    Target
-} from 'lucide-react'
+import { MapPin, CheckCircle, AlertCircle, Loader2, Target } from 'lucide-react'
 
 interface LocationData {
     lat: number
@@ -79,20 +69,13 @@ export default function LocationCollection({ orderID, token }: LocationCollectio
         status?: string
     } | null>(null)
 
-    // Unified confirmation states
-    const [addressFields, setAddressFields] = useState({
-        street: '',
-        city: '',
-        state: ''
-    })
-    // GPS is available alongside address editing (not mutually exclusive)
-    const [useGPS] = useState(true)
     const [adjustedLocation, setAdjustedLocation] = useState<LocationData | null>(null)
     const [mapLoaded, setMapLoaded] = useState(false)
     const mapRef = useRef<any>(null)
     const markerRef = useRef<any>(null)
     const mapContainerRef = useRef<HTMLDivElement | null>(null)
     const cleanupRef = useRef<boolean>(false)
+    const hasRequestedLocationRef = useRef<boolean>(false)
 
     // Get orderID from URL params if not provided as prop
     const actualOrderID = useMemo(() => {
@@ -153,40 +136,6 @@ export default function LocationCollection({ orderID, token }: LocationCollectio
         fetchMetadata()
     }, [actualToken, location])
 
-    // Reverse geocode to fill city/state from coordinates
-    const reverseGeocode = useCallback(async (lat: number, lng: number) => {
-        try {
-            const response = await fetch(`https://maps.googleapis.com/maps/api/geocode/json?latlng=${lat},${lng}&key=${import.meta.env.VITE_GOOGLE_MAPS_API_KEY}`)
-            const data = await response.json()
-
-            if (data.status === 'OK' && data.results.length > 0) {
-                const result = data.results[0]
-                const components = result.address_components
-
-                let city = ''
-                let state = ''
-
-                for (const component of components) {
-                    if (component.types.includes('locality')) {
-                        city = component.long_name
-                    } else if (component.types.includes('administrative_area_level_1')) {
-                        state = component.long_name
-                    }
-                }
-
-                // Only update empty fields to avoid overwriting user edits
-                if (city && !addressFields.city) {
-                    setAddressFields(prev => ({ ...prev, city }))
-                }
-                if (state && !addressFields.state) {
-                    setAddressFields(prev => ({ ...prev, state }))
-                }
-            }
-        } catch (error) {
-            console.warn('Error reverse geocoding:', error)
-        }
-    }, [addressFields.city, addressFields.state])
-
     const getCurrentLocation = useCallback(() => {
         if (!isSupported) {
             setError('Tu navegador no soporta servicios de ubicación')
@@ -212,8 +161,6 @@ export default function LocationCollection({ orderID, token }: LocationCollectio
                 setLocation(newLocation)
                 setLoading(false)
 
-                // Reverse geocode to fill city/state if empty
-                reverseGeocode(newLocation.lat, newLocation.lng)
             },
             (err) => {
                 let errorMessage = 'Error obteniendo ubicación'
@@ -235,46 +182,41 @@ export default function LocationCollection({ orderID, token }: LocationCollectio
             },
             options
         )
-    }, [isSupported, reverseGeocode])
+    }, [isSupported])
+
+    useEffect(() => {
+        if (!location && !hasRequestedLocationRef.current) {
+            hasRequestedLocationRef.current = true
+            getCurrentLocation()
+        }
+    }, [location, getCurrentLocation])
 
     const handleSubmitLocation = useCallback(async () => {
         setSubmitting(true)
         setSubmitError(null)
 
         try {
-            const hasAddress = Boolean(addressFields.street.trim() && addressFields.city.trim() && addressFields.state.trim())
             const locationToSubmit = adjustedLocation || location
-            const hasLocation = Boolean(locationToSubmit)
 
-            if (!hasAddress && !hasLocation) {
-                throw new Error('Completa la dirección y/o comparte tu ubicación')
+            if (!locationToSubmit) {
+                throw new Error('No pudimos obtener tu ubicación. Ajusta el marcador e inténtalo nuevamente.')
             }
 
             const payload: Record<string, any> = {
                 orderID: actualOrderID,
                 userAgent: navigator.userAgent,
                 timestamp: new Date().toISOString(),
-                confirmationType: hasAddress && hasLocation ? 'both' : hasAddress ? 'address' : 'gps',
+                confirmationType: 'gps',
+                latitude: locationToSubmit.lat,
+                longitude: locationToSubmit.lng,
             }
 
-            // Include address if present
-            if (hasAddress) {
-                payload.addressFields = {
-                    street: addressFields.street.trim(),
-                    city: addressFields.city.trim(),
-                    state: addressFields.state.trim()
-                }
-                payload.manualAddress = `${addressFields.street.trim()}, ${addressFields.city.trim()}, ${addressFields.state.trim()}`
-            }
-
-            // Include GPS if present
-            if (hasLocation && locationToSubmit) {
-                payload.latitude = locationToSubmit.lat
-                payload.longitude = locationToSubmit.lng
+            if (typeof locationToSubmit.accuracy === 'number') {
                 payload.accuracy = locationToSubmit.accuracy
-                if (adjustedLocation) {
-                    payload.mapAdjusted = true
-                }
+            }
+
+            if (adjustedLocation) {
+                payload.mapAdjusted = true
             }
 
             if (actualToken) {
@@ -308,30 +250,7 @@ export default function LocationCollection({ orderID, token }: LocationCollectio
         } finally {
             setSubmitting(false)
         }
-    }, [location, adjustedLocation, addressFields, useGPS, actualOrderID, actualToken])
-
-    const handleStartOver = useCallback(() => {
-        setSubmitted(false)
-        setSubmitError(null)
-        setLocation(null)
-        setAdjustedLocation(null)
-        setAddressFields({ street: '', city: '', state: '' })
-        setError(null)
-        setMapLoaded(false)
-
-        // Clean up map and marker references
-        if (markerRef.current) {
-            try {
-                markerRef.current.map = null
-                markerRef.current = null
-            } catch (error) {
-                console.warn('Error cleaning marker:', error)
-            }
-        }
-        if (mapRef.current) {
-            mapRef.current = null
-        }
-    }, [])
+    }, [adjustedLocation, location, actualOrderID, actualToken])
 
     // Initialize Google Maps with AdvancedMarkerElement
     const initializeMap = useCallback((container: HTMLElement, center: LocationData) => {
@@ -448,27 +367,6 @@ export default function LocationCollection({ orderID, token }: LocationCollectio
         })
     }, [])
 
-    // Initialize address fields from metadata
-    useEffect(() => {
-        if (requestMetadata?.cleanedAddress) {
-            // Only populate if fields are empty to avoid overwriting user edits
-            const isEmpty = !addressFields.street && !addressFields.city && !addressFields.state
-            if (isEmpty) {
-                // Try to parse the cleaned address into components
-                const parts = requestMetadata.cleanedAddress.split(',').map(p => p.trim()).filter(Boolean)
-                console.log('Parsing address:', requestMetadata.cleanedAddress, 'into parts:', parts)
-
-                setAddressFields({
-                    street: parts[0] || '',
-                    city: parts.length >= 2 ? parts[1] : '',
-                    state: parts.length >= 3 ? parts[2] : ''
-                })
-            }
-        }
-    }, [requestMetadata?.cleanedAddress])
-
-    // Optional: Auto-request location on first use (disabled by default). Keep manual fetch via button.
-
     // Initialize map when location is available
     useEffect(() => {
         if (location && !mapLoaded) {
@@ -483,6 +381,19 @@ export default function LocationCollection({ orderID, token }: LocationCollectio
             })
         }
     }, [location, mapLoaded, loadGoogleMapsAPI, initializeMap])
+
+    useEffect(() => {
+        if (!mapLoaded || !location || !markerRef.current || !mapRef.current || adjustedLocation) {
+            return
+        }
+
+        try {
+            mapRef.current.setCenter({ lat: location.lat, lng: location.lng })
+            markerRef.current.position = { lat: location.lat, lng: location.lng }
+        } catch (updateError) {
+            console.warn('Error actualizando la posición del marcador:', updateError)
+        }
+    }, [location, mapLoaded, adjustedLocation])
 
     // Component cleanup - prevent React DOM conflicts
     useEffect(() => {
@@ -557,6 +468,8 @@ export default function LocationCollection({ orderID, token }: LocationCollectio
         )
     }
 
+    const displayedLocation = adjustedLocation || location
+
     if (submitted) {
         return (
             <div className="min-h-screen bg-gradient-to-br from-green-50 via-emerald-50 to-teal-50 flex items-center justify-center p-4">
@@ -565,47 +478,29 @@ export default function LocationCollection({ orderID, token }: LocationCollectio
                         <CheckCircle className="w-8 h-8 text-green-600" />
                     </div>
                     <h2 className="text-2xl font-bold text-gray-900 mb-4">
-                        ¡Ubicación Recibida!
+                        ¡Gracias por tu ayuda!
                     </h2>
-                    <div className="bg-gray-50 rounded-lg p-4 mb-6 text-left">
-                        <p className="text-sm text-gray-600 mb-2">
-                            <strong>Latitud:</strong> {location ? location.lat.toFixed(6) : '—'}
-                        </p>
-                        <p className="text-sm text-gray-600 mb-2">
-                            <strong>Longitud:</strong> {location ? location.lng.toFixed(6) : '—'}
-                        </p>
-                        {location?.accuracy ? (
-                            <p className="text-sm text-gray-600">
-                                <strong>Precisión:</strong> ±{Math.round(location.accuracy)}m
-                            </p>
-                        ) : (
-                            requestMetadata?.status === 'submitted' && (
-                                <p className="text-sm text-gray-600">
-                                    <strong>Precisión:</strong> Confirmada por el cliente
-                                </p>
-                            )
-                        )}
-                        {actualOrderID && (
-                            <p className="text-sm text-gray-600 mt-2">
-                                <strong>Order ID:</strong> {actualOrderID}
-                            </p>
-                        )}
-                        {requestMetadata?.cleanedAddress && (
-                            <p className="text-sm text-gray-600 mt-2">
-                                <strong>Dirección confirmada:</strong> {requestMetadata.cleanedAddress}
-                            </p>
-                        )}
-                    </div>
-                    <p className="text-gray-600 mb-6">
-                        Gracias por compartir tu ubicación. Tu entrega será procesada pronto.
+                    <p className="text-gray-600 mb-4">
+                        Gracias por ayudarnos a hacer la entrega más eficiente.
                     </p>
-                    <Button
-                        onClick={handleStartOver}
-                        variant="outline"
-                        className="w-full"
-                    >
-                        Compartir Otra Ubicación
-                    </Button>
+                    {displayedLocation && (
+                        <div className="bg-gray-50 rounded-lg p-4 mb-6 text-left">
+                            <p className="text-sm font-semibold text-gray-800 mb-2">
+                                Ubicación enviada
+                            </p>
+                            <p className="font-mono text-xs text-gray-600">
+                                {displayedLocation.lat.toFixed(6)}, {displayedLocation.lng.toFixed(6)}
+                            </p>
+                            {typeof displayedLocation.accuracy === 'number' && (
+                                <p className="text-xs text-gray-500 mt-1">
+                                    Precisión aproximada: ±{Math.round(displayedLocation.accuracy)}m
+                                </p>
+                            )}
+                        </div>
+                    )}
+                    <p className="text-sm text-gray-500">
+                        Puedes cerrar esta ventana cuando quieras.
+                    </p>
                 </Card>
             </div>
         )
@@ -613,280 +508,125 @@ export default function LocationCollection({ orderID, token }: LocationCollectio
 
     return (
         <div className="min-h-screen bg-gradient-to-br from-blue-50 via-indigo-50 to-purple-50 flex items-center justify-center p-4">
-            <Card className="w-full max-w-md p-8 bg-white/90 backdrop-blur-sm shadow-xl">
-                {/* Header */}
-                <div className="text-center mb-8">
-                    <div className="w-16 h-16 bg-blue-100 rounded-full flex items-center justify-center mx-auto mb-4">
-                        <MapPin className="w-8 h-8 text-blue-600" />
-                    </div>
-                    <h1 className="text-2xl font-bold text-gray-900 mb-2">
-                        Confirma tu Ubicación de Entrega
-                    </h1>
-                    <p className="text-gray-600">
-                        Puedes editar la dirección o usar tu ubicación GPS actual.
-                    </p>
-                    {(actualOrderID || requestMetadata?.cleanedAddress || requestMetadata?.customerName) && (
-                        <div className="mt-4 p-3 bg-blue-50 rounded-lg text-left space-y-2">
-                            {requestMetadata?.customerName && (
-                                <p className="text-sm text-blue-700">
-                                    <strong>Nombre:</strong> {requestMetadata.customerName}
-                                </p>
-                            )}
-                            {requestMetadata?.cleanedAddress && (
-                                <p className="text-sm text-blue-700">
-                                    <strong>Dirección procesada:</strong> {requestMetadata.cleanedAddress}
-                                </p>
-                            )}
-                            {actualOrderID && (
-                                <p className="text-sm text-blue-700">
-                                    <strong>Order ID:</strong> {actualOrderID}
-                                </p>
-                            )}
+            <Card className="w-full max-w-md overflow-hidden bg-white/90 backdrop-blur-sm shadow-xl">
+                <div className="p-8 space-y-6">
+                    <div className="text-center space-y-3">
+                        <div className="w-16 h-16 bg-blue-100 rounded-full flex items-center justify-center mx-auto">
+                            <MapPin className="w-8 h-8 text-blue-600" />
                         </div>
-                    )}
-                </div>
-
-                {/* Unified Address Form */}
-                <div className="space-y-6 mb-6">
-                    {/* Address Fields Section */}
-                    <div className="space-y-4">
-                        <Label className="text-sm font-medium text-gray-900">
-                            Dirección de Entrega
-                        </Label>
-
-                        <div className="space-y-3">
-                            <div>
-                                <Label htmlFor="street" className="text-xs text-gray-600 mb-1 block">
-                                    Calle y Número
-                                </Label>
-                                <Input
-                                    id="street"
-                                    value={addressFields.street}
-                                    onChange={(e) => setAddressFields(prev => ({ ...prev, street: e.target.value }))}
-                                    placeholder="Ej: Av. Mariscal López 1234"
-                                    className="w-full"
-                                />
-                            </div>
-
-                            <div className="grid grid-cols-2 gap-3">
-                                <div>
-                                    <Label htmlFor="city" className="text-xs text-gray-600 mb-1 block">
-                                        Ciudad
-                                    </Label>
-                                    <Input
-                                        id="city"
-                                        value={addressFields.city}
-                                        onChange={(e) => setAddressFields(prev => ({ ...prev, city: e.target.value }))}
-                                        placeholder="Ej: Asunción"
-                                        className="w-full"
-                                    />
-                                </div>
-
-                                <div>
-                                    <Label htmlFor="state" className="text-xs text-gray-600 mb-1 block">
-                                        Departamento
-                                    </Label>
-                                    <Input
-                                        id="state"
-                                        value={addressFields.state}
-                                        onChange={(e) => setAddressFields(prev => ({ ...prev, state: e.target.value }))}
-                                        placeholder="Ej: Central"
-                                        className="w-full"
-                                    />
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-
-                    {/* GPS Availability Note */}
-                    {!isSupported && (
-                        <div className="p-3 bg-yellow-50 border border-yellow-200 rounded-lg mb-3">
-                            <div className="flex items-center text-yellow-700">
-                                <AlertCircle className="w-4 h-4 mr-2" />
-                                <span className="text-xs">GPS no disponible en tu navegador</span>
-                            </div>
-                        </div>
-                    )}
-                </div>
-
-                {/* GPS Section */}
-                {true && (
-                    <div className="space-y-4 mb-6 border-t pt-4">
-                        <div className="flex items-center justify-between">
-                            <h3 className="text-sm font-medium text-gray-900">Ubicación GPS</h3>
-                            {loading && (
-                                <div className="flex items-center text-blue-600">
-                                    <Loader2 className="w-4 h-4 mr-1 animate-spin" />
-                                    <span className="text-xs">Buscando...</span>
-                                </div>
-                            )}
-                        </div>
-
-                        {/* GPS Location Display */}
-                        {location ? (
-                            <div className="bg-green-50 border border-green-200 rounded-lg p-4">
-                                <div className="flex items-center text-green-700 mb-2">
-                                    <CheckCircle className="w-5 h-5 mr-2" />
-                                    <span className="text-sm font-medium">Ubicación encontrada</span>
-                                </div>
-                                <p className="font-mono text-xs text-gray-600 mb-2">
-                                    {location.lat.toFixed(6)}, {location.lng.toFixed(6)}
-                                </p>
-                                {location.accuracy && (
-                                    <p className="text-xs text-gray-500">
-                                        Precisión: ±{Math.round(location.accuracy)}m
+                        <h1 className="text-2xl font-bold text-gray-900">
+                            Confirma tu punto de entrega
+                        </h1>
+                        <p className="text-gray-600">
+                            Ajusta el marcador rojo y envía la ubicación exacta de tu entrega.
+                        </p>
+                        {(requestMetadata?.customerName || requestMetadata?.cleanedAddress || actualOrderID) && (
+                            <div className="mt-4 space-y-1 rounded-lg border border-blue-100 bg-blue-50 p-3 text-left text-sm text-blue-700">
+                                {requestMetadata?.customerName && (
+                                    <p>
+                                        <strong className="font-medium">Nombre:</strong> {requestMetadata.customerName}
+                                    </p>
+                                )}
+                                {requestMetadata?.cleanedAddress && (
+                                    <p>
+                                        <strong className="font-medium">Dirección registrada:</strong> {requestMetadata.cleanedAddress}
+                                    </p>
+                                )}
+                                {actualOrderID && (
+                                    <p>
+                                        <strong className="font-medium">ID de pedido:</strong> {actualOrderID}
                                     </p>
                                 )}
                             </div>
-                        ) : error ? (
-                            <div className="bg-red-50 border border-red-200 rounded-lg p-4">
-                                <div className="flex items-center text-red-700 mb-2">
-                                    <AlertCircle className="w-5 h-5 mr-2" />
-                                    <span className="text-sm font-medium">Error obteniendo ubicación</span>
-                                </div>
-                                <p className="text-xs text-red-600">{error}</p>
-                            </div>
-                        ) : (
-                            <div className="bg-gray-50 border border-gray-200 rounded-lg p-4">
-                                <p className="text-sm text-gray-600">
-                                    Necesitamos acceso a tu ubicación para confirmar la dirección de entrega.
-                                </p>
-                            </div>
-                        )}
-
-                        {/* GPS Action Buttons */}
-                        {!location && (
-                            <Button
-                                onClick={getCurrentLocation}
-                                disabled={loading || !isSupported}
-                                className="w-full bg-green-600 hover:bg-green-700 text-white py-3"
-                            >
-                                {loading ? (
-                                    <>
-                                        <Loader2 className="w-5 h-5 mr-2 animate-spin" />
-                                        Buscando tu ubicación...
-                                    </>
-                                ) : (
-                                    <>
-                                        <Navigation className="w-5 h-5 mr-2" />
-                                        Obtener mi Ubicación
-                                    </>
-                                )}
-                            </Button>
                         )}
                     </div>
-                )}
 
-                {/* Map Section - only show when location is found */}
-                {location && (
-                    <div className="space-y-4 mb-6 border-t pt-4">
-                        <div className="flex items-center justify-between">
-                            <h3 className="text-sm font-medium text-gray-900">Ajustar Ubicación en Mapa</h3>
-                        </div>
-
-                        <MapErrorBoundary>
-                            <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
-                                <div className="flex items-center text-blue-700 mb-2">
-                                    <Target className="w-5 h-5 mr-2" />
-                                    <span className="text-sm font-medium">Mapa Interactivo</span>
-                                </div>
-                                <p className="text-xs text-blue-600 mb-3">
-                                    Arrastra el pin rojo para ajustar la ubicación exacta si es necesario
-                                </p>
-
-                                {/* Map Container */}
-                                <div
-                                    className="relative h-64 w-full"
-                                    style={{ minHeight: '256px' }}
-                                >
-                                    <div
-                                        ref={mapContainerRef}
-                                        className="bg-gray-200 rounded-lg h-full w-full"
-                                    />
-                                    {!mapLoaded && (
-                                        <div className="pointer-events-none absolute inset-0 flex items-center justify-center rounded-lg bg-gray-200">
-                                            <div className="text-center text-gray-500">
-                                                <Loader2 className="w-6 h-6 mx-auto mb-2 animate-spin" />
-                                                <p className="text-sm">Cargando mapa...</p>
-                                            </div>
-                                        </div>
-                                    )}
-                                </div>
-
-                                {adjustedLocation && (
-                                    <div className="mt-3 p-3 bg-green-50 border border-green-200 rounded-lg">
-                                        <p className="text-xs text-green-700 mb-1">
-                                            <strong>Ubicación ajustada:</strong>
-                                        </p>
-                                        <p className="font-mono text-xs text-green-600">
-                                            {adjustedLocation.lat.toFixed(6)}, {adjustedLocation.lng.toFixed(6)}
-                                        </p>
+                    <MapErrorBoundary>
+                        <div className="space-y-3">
+                            <div className="relative h-72 w-full overflow-hidden rounded-xl border border-blue-100 bg-blue-50">
+                                <div ref={mapContainerRef} className="h-full w-full" />
+                                {(!location || !mapLoaded) && (
+                                    <div className="absolute inset-0 flex flex-col items-center justify-center bg-white/80 p-6 text-center">
+                                        {loading ? (
+                                            <>
+                                                <Loader2 className="h-6 w-6 animate-spin text-blue-600" />
+                                                <p className="mt-3 text-sm font-medium text-gray-700">Buscando tu ubicación...</p>
+                                            </>
+                                        ) : !location ? (
+                                            <>
+                                                <AlertCircle className="h-6 w-6 text-blue-600" />
+                                                <p className="mt-3 text-sm font-medium text-gray-700">
+                                                    Permite el acceso a tu ubicación para ver el mapa.
+                                                </p>
+                                            </>
+                                        ) : (
+                                            <>
+                                                <Loader2 className="h-6 w-6 animate-spin text-blue-600" />
+                                                <p className="mt-3 text-sm font-medium text-gray-700">Cargando mapa...</p>
+                                            </>
+                                        )}
                                     </div>
                                 )}
                             </div>
-                        </MapErrorBoundary>
-                    </div>
-                )}
 
-                {/* Unified Submit Button */}
-                <div className="space-y-4 mb-6">
+                            <div className="flex items-start space-x-3 rounded-lg border border-blue-100 bg-blue-50 p-3 text-sm text-blue-700">
+                                <Target className="h-5 w-5 flex-shrink-0" />
+                                <span>Mueve el marcador para que apunte exactamente donde quieres recibir tu entrega.</span>
+                            </div>
+                        </div>
+                    </MapErrorBoundary>
+
+                    {error && (
+                        <div className="rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-red-700">
+                            {error}
+                        </div>
+                    )}
+
+                    <div className="rounded-lg border border-gray-200 bg-gray-50 p-4 text-sm text-gray-700">
+                        {displayedLocation ? (
+                            <>
+                                <p className="font-semibold text-gray-900">Coordenadas del marcador</p>
+                                <p className="mt-2 font-mono text-xs text-gray-600">
+                                    {displayedLocation.lat.toFixed(6)}, {displayedLocation.lng.toFixed(6)}
+                                </p>
+                                {typeof displayedLocation.accuracy === 'number' && (
+                                    <p className="mt-1 text-xs text-gray-500">
+                                        Precisión aproximada: ±{Math.round(displayedLocation.accuracy)}m
+                                    </p>
+                                )}
+                                {adjustedLocation && (
+                                    <p className="mt-1 text-xs text-blue-600">Marcador ajustado manualmente.</p>
+                                )}
+                            </>
+                        ) : (
+                            <p>Esperando la ubicación del dispositivo.</p>
+                        )}
+                    </div>
+                </div>
+
+                <div className="border-t border-gray-100 p-6">
                     <Button
                         onClick={handleSubmitLocation}
-                        disabled={submitting || (!addressFields.street.trim() && !addressFields.city.trim() && !addressFields.state.trim() && !location)}
-                        className="w-full bg-blue-600 hover:bg-blue-700 text-white py-4 text-lg font-medium"
+                        disabled={submitting || loading || !displayedLocation}
+                        className="w-full bg-blue-600 py-4 text-lg font-semibold text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-60"
                     >
                         {submitting ? (
                             <>
-                                <Loader2 className="w-5 h-5 mr-2 animate-spin" />
-                                Confirmando...
+                                <Loader2 className="mr-2 h-5 w-5 animate-spin" />
+                                Enviando ubicación...
                             </>
                         ) : (
-                            <>
-                                <CheckCircle className="w-5 h-5 mr-2" />
-                                Confirmar cambios
-                            </>
+                            'Enviar ubicación'
                         )}
                     </Button>
-
-                    {/* Optional: Refresh GPS button when GPS is enabled */}
-                    {location && (
-                        <Button
-                            onClick={getCurrentLocation}
-                            disabled={loading}
-                            variant="outline"
-                            className="w-full"
-                        >
-                            <Navigation className="w-4 h-4 mr-2" />
-                            Actualizar Ubicación GPS
-                        </Button>
+                    {submitError && (
+                        <p className="mt-3 text-center text-sm text-red-600">{submitError}</p>
                     )}
-                </div>
-
-                {/* Error Messages */}
-                {error && (
-                    <div className="mb-6 p-4 bg-red-50 border border-red-200 rounded-lg">
-                        <div className="flex items-center text-red-700">
-                            <AlertCircle className="w-5 h-5 mr-2" />
-                            <span className="text-sm">{error}</span>
-                        </div>
-                    </div>
-                )}
-
-                {submitError && (
-                    <div className="mb-6 p-4 bg-red-50 border border-red-200 rounded-lg">
-                        <div className="flex items-center text-red-700">
-                            <AlertCircle className="w-5 h-5 mr-2" />
-                            <span className="text-sm">{submitError}</span>
-                        </div>
-                    </div>
-                )}
-
-                {/* Footer */}
-                <div className="mt-8 pt-6 border-t border-gray-200">
-                    <div className="flex items-center justify-center text-gray-500">
-                        <Smartphone className="w-4 h-4 mr-2" />
-                        <span className="text-xs">Edita tu dirección y/o comparte tu ubicación para confirmar.</span>
-                    </div>
+                    {!isSupported && (
+                        <p className="mt-3 text-center text-xs text-gray-500">
+                            Tu navegador no soporta geolocalización automática.
+                        </p>
+                    )}
                 </div>
             </Card>
         </div>
