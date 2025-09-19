@@ -53,6 +53,10 @@ class MapErrorBoundary extends Component<{ children: ReactNode }, ErrorBoundaryS
 
 // Removed old confirmation modes - now using unified approach
 
+const debugLog = (...args: any[]) => {
+    console.log('[LocationCollection]', ...args)
+}
+
 export default function LocationCollection({ orderID, token }: LocationCollectionProps) {
     const [location, setLocation] = useState<LocationData | null>(null)
     const [loading, setLoading] = useState(false)
@@ -70,12 +74,14 @@ export default function LocationCollection({ orderID, token }: LocationCollectio
     } | null>(null)
 
     const [adjustedLocation, setAdjustedLocation] = useState<LocationData | null>(null)
+    const [markerPosition, setMarkerPosition] = useState<LocationData | null>(null)
     const [mapLoaded, setMapLoaded] = useState(false)
     const mapRef = useRef<any>(null)
     const markerRef = useRef<any>(null)
     const mapContainerRef = useRef<HTMLDivElement | null>(null)
     const cleanupRef = useRef<boolean>(false)
     const hasRequestedLocationRef = useRef<boolean>(false)
+    const latestAccuracyRef = useRef<number | undefined>(undefined)
 
     // Get orderID from URL params if not provided as prop
     const actualOrderID = useMemo(() => {
@@ -115,11 +121,17 @@ export default function LocationCollection({ orderID, token }: LocationCollectio
                     throw new Error('No pudimos cargar la solicitud de ubicación')
                 }
                 const data = await response.json()
+                debugLog('Fetched request metadata', data)
                 setRequestMetadata(data)
                 if (data?.status === 'submitted') {
                     setSubmitted(true)
                 }
                 if (typeof data?.latitude === 'number' && typeof data?.longitude === 'number' && !location) {
+                    debugLog('Setting location from metadata', {
+                        latitude: data.latitude,
+                        longitude: data.longitude,
+                        accuracy: data.accuracy
+                    })
                     setLocation({
                         lat: data.latitude,
                         lng: data.longitude,
@@ -127,6 +139,7 @@ export default function LocationCollection({ orderID, token }: LocationCollectio
                     })
                 }
             } catch (err: any) {
+                debugLog('Metadata fetch failed', err)
                 setMetadataError(err.message || 'No pudimos cargar la solicitud de ubicación')
             } finally {
                 setMetadataLoading(false)
@@ -135,6 +148,40 @@ export default function LocationCollection({ orderID, token }: LocationCollectio
 
         fetchMetadata()
     }, [actualToken, location])
+
+    useEffect(() => {
+        if (location && !adjustedLocation) {
+            debugLog('Setting marker position from device location', {
+                location
+            })
+            setMarkerPosition(location)
+        }
+
+        if (typeof location?.accuracy === 'number') {
+            debugLog('Updating latest accuracy from device location', location.accuracy)
+            latestAccuracyRef.current = location.accuracy
+        }
+    }, [location, adjustedLocation])
+
+    useEffect(() => {
+        if (adjustedLocation) {
+            debugLog('Applying adjusted marker position', {
+                adjustedLocation
+            })
+            setMarkerPosition(adjustedLocation)
+
+            if (typeof adjustedLocation.accuracy === 'number') {
+                debugLog('Updating latest accuracy from adjusted location', adjustedLocation.accuracy)
+                latestAccuracyRef.current = adjustedLocation.accuracy
+            }
+        }
+    }, [adjustedLocation])
+
+    useEffect(() => {
+        if (markerPosition) {
+            debugLog('markerPosition state changed', markerPosition)
+        }
+    }, [markerPosition])
 
     const getCurrentLocation = useCallback(() => {
         if (!isSupported) {
@@ -158,6 +205,7 @@ export default function LocationCollection({ orderID, token }: LocationCollectio
                     lng: position.coords.longitude,
                     accuracy: position.coords.accuracy
                 }
+                debugLog('Browser geolocation success', newLocation)
                 setLocation(newLocation)
                 setLoading(false)
 
@@ -177,6 +225,10 @@ export default function LocationCollection({ orderID, token }: LocationCollectio
                         break
                 }
 
+                debugLog('Browser geolocation error', {
+                    code: err.code,
+                    message: errorMessage
+                })
                 setError(errorMessage)
                 setLoading(false)
             },
@@ -196,7 +248,7 @@ export default function LocationCollection({ orderID, token }: LocationCollectio
         setSubmitError(null)
 
         try {
-            const locationToSubmit = adjustedLocation || location
+            const locationToSubmit = markerPosition || adjustedLocation || location
 
             if (!locationToSubmit) {
                 throw new Error('No pudimos obtener tu ubicación. Ajusta el marcador e inténtalo nuevamente.')
@@ -223,6 +275,13 @@ export default function LocationCollection({ orderID, token }: LocationCollectio
                 payload.token = actualToken
             }
 
+            debugLog('Submitting marker location', {
+                payload,
+                markerPosition,
+                adjustedLocation,
+                originalLocation: location
+            })
+
             const endpoint = actualToken
                 ? `/api/location-link/${actualToken}/submit`
                 : '/api/save-location'
@@ -236,12 +295,21 @@ export default function LocationCollection({ orderID, token }: LocationCollectio
             })
 
             if (response.ok) {
+                debugLog('Location submission succeeded', {
+                    endpoint,
+                    status: response.status
+                })
                 setSubmitted(true)
                 if (actualToken) {
                     setRequestMetadata(prev => prev ? { ...prev, status: 'submitted' } : prev)
                 }
             } else {
                 const errorText = await response.text()
+                debugLog('Location submission failed', {
+                    endpoint,
+                    status: response.status,
+                    errorText
+                })
                 throw new Error(errorText || 'Error enviando confirmación')
             }
         } catch (err: any) {
@@ -250,16 +318,29 @@ export default function LocationCollection({ orderID, token }: LocationCollectio
         } finally {
             setSubmitting(false)
         }
-    }, [adjustedLocation, location, actualOrderID, actualToken])
+    }, [adjustedLocation, markerPosition, location, actualOrderID, actualToken])
 
     // Initialize Google Maps with AdvancedMarkerElement
     const initializeMap = useCallback((container: HTMLElement, center: LocationData) => {
-        if (!window.google || !window.google.maps || !window.google.maps.Map || !(window.google.maps as any).marker) {
+        debugLog('initializeMap called', {
+            center
+        })
+        console.log('[DEBUG] initializeMap called with center:', center)
+        console.log('[DEBUG] Google Maps API available:', {
+            google: !!window.google,
+            maps: !!(window.google && window.google.maps),
+            Map: !!(window.google && window.google.maps && window.google.maps.Map),
+            marker: !!(window.google && window.google.maps && (window.google.maps as any).marker)
+        })
+
+        if (!window.google || !window.google.maps || !window.google.maps.Map) {
             console.error('Google Maps API not fully loaded')
+            setError('Google Maps API no está disponible')
             return
         }
 
         try {
+            console.log('[DEBUG] Creating map instance...')
             // Don't clear container innerHTML - let Google Maps handle it
             const mapInstance = new window.google.maps.Map(container, {
                 center: { lat: center.lat, lng: center.lng },
@@ -272,72 +353,163 @@ export default function LocationCollection({ orderID, token }: LocationCollectio
                 mapId: 'DEMO_MAP_ID' // Required for AdvancedMarkerElement
             } as any)
 
-            // Create custom marker content
-            const markerContent = document.createElement('div')
-            markerContent.innerHTML = `
-                <svg width="30" height="30" viewBox="0 0 30 30" xmlns="http://www.w3.org/2000/svg">
-                    <circle cx="15" cy="15" r="12" fill="#ef4444" stroke="white" stroke-width="2"/>
-                    <circle cx="15" cy="15" r="4" fill="white"/>
-                </svg>
-            `
-            markerContent.style.cursor = 'pointer'
-            markerContent.title = 'Arrastra para ajustar la ubicación'
+            console.log('[DEBUG] Map instance created successfully')
 
-            // Wait for map to be ready before adding marker
-            if ((window.google.maps as any).event) {
-                (window.google.maps as any).event.addListenerOnce(mapInstance, 'idle', () => {
-                    try {
-                        // Use AdvancedMarkerElement
-                        const { AdvancedMarkerElement } = (window.google.maps as any).marker
-                        const markerInstance = new AdvancedMarkerElement({
-                            map: mapInstance,
-                            position: { lat: center.lat, lng: center.lng },
-                            content: markerContent,
-                            gmpDraggable: true,
-                        })
+            const createMarker = () => {
+                try {
+                    cleanupRef.current = false
+                    debugLog('Creating marker, cleanup guard reset')
 
-                        markerInstance.addListener('dragend', () => {
-                            const position = markerInstance.position
-                            if (position && !cleanupRef.current) {
-                                setAdjustedLocation({
-                                    lat: position.lat,
-                                    lng: position.lng,
-                                    accuracy: center.accuracy
-                                })
-                            }
-                        })
-
-                        markerRef.current = markerInstance
-                        setMapLoaded(true)
-                    } catch (markerError) {
-                        console.error('Error creating AdvancedMarkerElement:', markerError)
-                        setError('Error creando marcador en el mapa')
+                    const svgMarkup = `
+                        <svg width="32" height="32" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg">
+                            <circle cx="16" cy="16" r="13" fill="#2563eb" stroke="white" stroke-width="2"/>
+                            <circle cx="16" cy="16" r="5" fill="white"/>
+                        </svg>
+                    `
+                    const icon = {
+                        url: `data:image/svg+xml;charset=UTF-8,${encodeURIComponent(svgMarkup)}`,
+                        scaledSize: new window.google.maps.Size(32, 32),
+                        anchor: new window.google.maps.Point(16, 16)
                     }
-                })
-            } else {
-                // Fallback if event system not available
-                setMapLoaded(true)
+
+                    const markerInstance = new window.google.maps.Marker({
+                        map: mapInstance,
+                        position: { lat: center.lat, lng: center.lng },
+                        draggable: true,
+                        title: 'Arrastra para ajustar la ubicación',
+                        icon
+                    })
+
+                    const initialAccuracy = typeof latestAccuracyRef.current === 'number'
+                        ? latestAccuracyRef.current
+                        : typeof center.accuracy === 'number'
+                            ? center.accuracy
+                            : undefined
+
+                    const updateFromLatLng = (source: string, latLng: any, finalize = false) => {
+                        if (cleanupRef.current) {
+                            debugLog('updateFromLatLng skipped during cleanup', { source, finalize })
+                            return
+                        }
+                        if (!latLng) {
+                            debugLog('updateFromLatLng skipped - missing latLng', { source, finalize })
+                            return
+                        }
+
+                        const latFn = typeof latLng.lat === 'function' ? latLng.lat() : latLng.lat
+                        const lngFn = typeof latLng.lng === 'function' ? latLng.lng() : latLng.lng
+                        const lat = typeof latFn === 'number' ? latFn : undefined
+                        const lng = typeof lngFn === 'number' ? lngFn : undefined
+
+                        if (typeof lat !== 'number' || typeof lng !== 'number') {
+                            debugLog('updateFromLatLng skipped - invalid coordinates', { source, latFn, lngFn })
+                            return
+                        }
+                        const accuracy = typeof latestAccuracyRef.current === 'number'
+                            ? latestAccuracyRef.current
+                            : typeof center.accuracy === 'number'
+                                ? center.accuracy
+                                : undefined
+
+                        const updated: LocationData = { lat, lng, accuracy }
+
+                        debugLog('Marker position update', { source, updated, finalize })
+
+                        setMarkerPosition(updated)
+
+                        if (finalize) {
+                            setAdjustedLocation(updated)
+                            if (typeof accuracy === 'number') {
+                                latestAccuracyRef.current = accuracy
+                            }
+                        }
+                    }
+
+                    const currentLatLng = markerInstance.getPosition()
+                    if (currentLatLng) {
+                        const accuracy = initialAccuracy
+                        const updated: LocationData = {
+                            lat: currentLatLng.lat(),
+                            lng: currentLatLng.lng(),
+                            accuracy
+                        }
+                        debugLog('Initial marker position set', updated)
+                        setMarkerPosition(updated)
+                        if (typeof accuracy === 'number') {
+                            latestAccuracyRef.current = accuracy
+                        }
+                    }
+
+                    markerInstance.addListener('position_changed', () => {
+                        updateFromLatLng('position_changed', markerInstance.getPosition())
+                    })
+
+                    markerInstance.addListener('dragend', () => {
+                        updateFromLatLng('dragend', markerInstance.getPosition(), true)
+                    })
+
+                    markerInstance.addListener('drag', () => {
+                        updateFromLatLng('drag', markerInstance.getPosition())
+                    })
+
+                    mapInstance.addListener('click', (event: any) => {
+                        if (!event.latLng) {
+                            debugLog('Map click without latLng payload')
+                            return
+                        }
+                        debugLog('Map click reposition', event.latLng.toJSON())
+                        markerInstance.setPosition(event.latLng)
+                        updateFromLatLng('map_click', markerInstance.getPosition(), true)
+                    })
+
+                    markerRef.current = markerInstance
+                    setMapLoaded(true)
+                    debugLog('Marker created successfully')
+                } catch (markerError) {
+                    console.error('Error creating marker:', markerError)
+                    setError('Error creando marcador en el mapa')
+                    setMapLoaded(true)
+                }
             }
 
             mapRef.current = mapInstance
+
+            if ((window.google.maps as any).event) {
+                (window.google.maps as any).event.addListenerOnce(mapInstance, 'idle', createMarker)
+            } else {
+                createMarker()
+            }
         } catch (error) {
             console.error('Error initializing map:', error)
             setError('Error inicializando el mapa')
+            // Set map as loaded even on error to prevent infinite loading
+            setMapLoaded(true)
         }
     }, [])
 
     // Load Google Maps API with modern async pattern
     const loadGoogleMapsAPI = useCallback(() => {
-        if (window.google && window.google.maps && window.google.maps.Map && (window.google.maps as any).marker) {
+        console.log('[DEBUG] loadGoogleMapsAPI called')
+        console.log('[DEBUG] Current Google Maps state:', {
+            google: !!window.google,
+            maps: !!(window.google && window.google.maps),
+            Map: !!(window.google && window.google.maps && window.google.maps.Map),
+            marker: !!(window.google && window.google.maps && (window.google.maps as any).marker)
+        })
+
+        if (window.google && window.google.maps && window.google.maps.Map) {
+            console.log('[DEBUG] Google Maps already loaded')
             return Promise.resolve()
         }
 
         return new Promise<void>((resolve, reject) => {
             const existing = document.getElementById('google-maps-js') as HTMLScriptElement | null
             if (existing) {
+                console.log('[DEBUG] Script already exists, waiting for it to load...')
                 // If script exists, wait for it to load
                 const checkLoaded = () => {
-                    if (window.google && window.google.maps && window.google.maps.Map && (window.google.maps as any).marker) {
+                    if (window.google && window.google.maps && window.google.maps.Map) {
+                        console.log('[DEBUG] Existing script loaded successfully')
                         resolve()
                     } else {
                         setTimeout(checkLoaded, 100)
@@ -347,40 +519,94 @@ export default function LocationCollection({ orderID, token }: LocationCollectio
                 return
             }
 
+            // Get API key with fallback
+            const apiKey = import.meta.env.VITE_GOOGLE_MAPS_API_KEY || 'DEMO_KEY'
+            console.log('[DEBUG] Using API key:', apiKey ? `${apiKey.substring(0, 10)}...` : 'NO KEY')
+
             // Create a unique callback name
             const callbackName = `initGoogleMaps_${Date.now()}`
+            console.log('[DEBUG] Creating callback:', callbackName)
+
                 ; (window as any)[callbackName] = () => {
+                    console.log('[DEBUG] Google Maps callback triggered')
                     delete (window as any)[callbackName]
                     resolve()
                 }
 
             const script = document.createElement('script')
             script.id = 'google-maps-js'
-            script.src = `https://maps.googleapis.com/maps/api/js?key=${import.meta.env.VITE_GOOGLE_MAPS_API_KEY}&v=weekly&loading=async&libraries=places,marker&callback=${callbackName}`
+            script.src = `https://maps.googleapis.com/maps/api/js?key=${apiKey}&v=weekly&loading=async&libraries=places,marker&callback=${callbackName}`
             script.async = true
             script.defer = true
-            script.onerror = () => {
+            script.onerror = (error) => {
+                console.error('[DEBUG] Script load error:', error)
                 delete (window as any)[callbackName]
                 reject(new Error('Failed to load Google Maps API'))
             }
+
+            console.log('[DEBUG] Adding script to head:', script.src)
             document.head.appendChild(script)
         })
     }, [])
 
     // Initialize map when location is available
     useEffect(() => {
+        console.log('[DEBUG] Map initialization useEffect triggered:', {
+            hasLocation: !!location,
+            mapLoaded,
+            hasContainer: !!mapContainerRef.current
+        })
+
         if (location && !mapLoaded) {
-            loadGoogleMapsAPI().then(() => {
-                const container = mapContainerRef.current
-                if (container) {
-                    initializeMap(container, location)
+            // Wait for the container to be available with timeout
+            let retryCount = 0
+            const maxRetries = 50 // 5 seconds max wait time
+
+            const checkContainer = () => {
+                if (mapContainerRef.current) {
+                    console.log('[DEBUG] Container found, starting map initialization process...')
+                    loadGoogleMapsAPI().then(() => {
+                        console.log('[DEBUG] Google Maps API loaded, initializing map...')
+                        const container = mapContainerRef.current
+                        if (container) {
+                            console.log('[DEBUG] Container confirmed, calling initializeMap')
+                            initializeMap(container, location)
+                        } else {
+                            console.error('[DEBUG] Container lost during API loading')
+                            setError('No se pudo encontrar el contenedor del mapa')
+                            setMapLoaded(true) // Prevent infinite loading
+                        }
+                    }).catch((error) => {
+                        console.error('Failed to load Google Maps:', error)
+                        setError('Error cargando el mapa. Verifica tu conexión a internet.')
+                        setMapLoaded(true) // Prevent infinite loading
+                    })
+                } else if (retryCount < maxRetries) {
+                    retryCount++
+                    console.log(`[DEBUG] Container not ready, retrying in 100ms... (${retryCount}/${maxRetries})`)
+                    setTimeout(checkContainer, 100)
+                } else {
+                    console.error('[DEBUG] Container never became available after 5 seconds')
+                    setError('No se pudo cargar el mapa. El contenedor no está disponible.')
+                    setMapLoaded(true) // Prevent infinite loading
                 }
-            }).catch((error) => {
-                console.error('Failed to load Google Maps:', error)
-                setError('Error cargando el mapa. Verifica tu conexión a internet.')
-            })
+            }
+
+            checkContainer()
+        } else if (location && mapLoaded && !mapRef.current) {
+            // Map is marked as loaded but no map instance exists - reset the state
+            console.log('[DEBUG] Map marked as loaded but no map instance found, resetting...')
+            setMapLoaded(false)
         }
     }, [location, mapLoaded, loadGoogleMapsAPI, initializeMap])
+
+    // Additional effect to handle container becoming available later
+    useEffect(() => {
+        if (location && !mapLoaded && mapContainerRef.current && !mapRef.current) {
+            console.log('[DEBUG] Container became available, retrying map initialization...')
+            setMapLoaded(false) // Reset to trigger the main initialization effect
+        }
+    }, [location, mapLoaded])
 
     useEffect(() => {
         if (!mapLoaded || !location || !markerRef.current || !mapRef.current || adjustedLocation) {
@@ -389,7 +615,12 @@ export default function LocationCollection({ orderID, token }: LocationCollectio
 
         try {
             mapRef.current.setCenter({ lat: location.lat, lng: location.lng })
-            markerRef.current.position = { lat: location.lat, lng: location.lng }
+            if (typeof markerRef.current.setPosition === 'function') {
+                markerRef.current.setPosition({ lat: location.lat, lng: location.lng })
+                debugLog('Synced marker with device location', {
+                    location
+                })
+            }
         } catch (updateError) {
             console.warn('Error actualizando la posición del marcador:', updateError)
         }
@@ -397,7 +628,11 @@ export default function LocationCollection({ orderID, token }: LocationCollectio
 
     // Component cleanup - prevent React DOM conflicts
     useEffect(() => {
+        cleanupRef.current = false
+        debugLog('Component mounted, cleanup guard disabled')
+
         return () => {
+            debugLog('Component unmounting, enabling cleanup guard')
             // Mark as cleaning up to prevent state updates
             cleanupRef.current = true
 
@@ -468,7 +703,7 @@ export default function LocationCollection({ orderID, token }: LocationCollectio
         )
     }
 
-    const displayedLocation = adjustedLocation || location
+    const displayedLocation = markerPosition || location
 
     if (submitted) {
         return (
@@ -564,6 +799,21 @@ export default function LocationCollection({ orderID, token }: LocationCollectio
                                                 <Loader2 className="h-6 w-6 animate-spin text-blue-600" />
                                                 <p className="mt-3 text-sm font-medium text-gray-700">Cargando mapa...</p>
                                             </>
+                                        )}
+                                    </div>
+                                )}
+                                {markerPosition && mapLoaded && (
+                                    <div className="absolute bottom-3 left-3 rounded-lg bg-white/90 px-3 py-2 text-[11px] font-medium text-gray-700 shadow-md">
+                                        <div>
+                                            <span className="text-gray-500">Lat:</span> {markerPosition.lat.toFixed(6)}
+                                        </div>
+                                        <div>
+                                            <span className="text-gray-500">Lng:</span> {markerPosition.lng.toFixed(6)}
+                                        </div>
+                                        {adjustedLocation && (
+                                            <div className="mt-1 text-[10px] font-semibold text-blue-600">
+                                                Marcador ajustado
+                                            </div>
                                         )}
                                     </div>
                                 )}
