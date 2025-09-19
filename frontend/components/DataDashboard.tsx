@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useEffect, useRef } from 'react'
+import { useState, useMemo, useEffect } from 'react'
 import { Card } from './shared/ui/card'
 import { Button } from './shared/ui/button'
 import { Input } from './shared/ui/input'
@@ -12,14 +12,10 @@ import {
     XCircle,
     Eye,
     EyeOff,
-    MessageSquare,
     Send,
     Users,
     Phone,
-    Link,
     Copy,
-    Loader2,
-    Mail
 } from 'lucide-react'
 import { useAuth } from '../contexts/AuthContext'
 
@@ -75,24 +71,6 @@ export default function DataDashboard({ data, statistics, onBack }: DataDashboar
     const [statusFilter, setStatusFilter] = useState<string>('all')
     const [showOriginal, setShowOriginal] = useState(true)
     const [selectedRow, setSelectedRow] = useState<ProcessedRow | null>(null)
-    const [showSMSModal, setShowSMSModal] = useState(false)
-    const [selectedForSMS, setSelectedForSMS] = useState<Set<number>>(new Set())
-    const [isSendingSMS, setIsSendingSMS] = useState(false)
-    const [smsResults, setSmsResults] = useState<Array<{
-        rowIndex: number
-        success: boolean
-        error?: string
-    }>>([])
-    const [showSMSResults, setShowSMSResults] = useState(false)
-    const [selectedForLinks, setSelectedForLinks] = useState<Set<string>>(new Set())
-    const [generatingLinks, setGeneratingLinks] = useState(false)
-    const [linkError, setLinkError] = useState<string | null>(null)
-    const [sendingEmails, setSendingEmails] = useState(false)
-    const [emailResults, setEmailResults] = useState<any[]>([])
-    const [showEmailResults, setShowEmailResults] = useState(false)
-    const [copiedLinkId, setCopiedLinkId] = useState<string | null>(null)
-    const selectAllLinksRef = useRef<HTMLInputElement | null>(null)
-    const baseLocationUrl = typeof window !== 'undefined' ? window.location.origin : ''
 
     useEffect(() => {
         setRows(data)
@@ -137,25 +115,8 @@ export default function DataDashboard({ data, statistics, onBack }: DataDashboar
         })
     }, [rows, searchTerm, statusFilter])
 
-    // Get candidates for SMS confirmation (low confidence addresses with phone numbers)
-    const smsEligibleRows = useMemo(() => {
-        return rows.filter(row => {
-            const hasPhone = row.cleaned.phone && row.cleaned.phone.trim() !== ''
-            const lowConfidence = row.geocoding.confidence <= 0.4
-            return hasPhone && lowConfidence
-        })
-    }, [rows])
-
     // Track recently updated rows for animations
     const [updatedRows, setUpdatedRows] = useState<Set<string>>(new Set())
-    const [lastUpdateTime, setLastUpdateTime] = useState<number>(Date.now())
-
-    // Initialize SMS selection with low confidence addresses
-    React.useEffect(() => {
-        if (smsEligibleRows.length > 0 && selectedForSMS.size === 0) {
-            setSelectedForSMS(new Set(smsEligibleRows.map(row => row.rowIndex)))
-        }
-    }, [smsEligibleRows, selectedForSMS.size])
 
     // Real-time SSE for address updates
     useEffect(() => {
@@ -257,266 +218,8 @@ export default function DataDashboard({ data, statistics, onBack }: DataDashboar
         }
     }, [currentUser])
 
-    const handleSMSSelectionToggle = (rowIndex: number) => {
-        const newSelection = new Set(selectedForSMS)
-        if (newSelection.has(rowIndex)) {
-            newSelection.delete(rowIndex)
-        } else {
-            newSelection.add(rowIndex)
-        }
-        setSelectedForSMS(newSelection)
-    }
 
-    const handleSelectAllSMSEligible = () => {
-        setSelectedForSMS(new Set(smsEligibleRows.map(row => row.rowIndex)))
-    }
 
-    const handleDeselectAllSMS = () => {
-        setSelectedForSMS(new Set())
-    }
-
-    const selectableRows = useMemo(() => rows.filter(row => !!row.recordId), [rows])
-
-    const allLinksSelected = useMemo(() => {
-        if (selectableRows.length === 0) return false
-        return selectableRows.every(row => row.recordId && selectedForLinks.has(row.recordId))
-    }, [selectableRows, selectedForLinks])
-
-    const someLinksSelected = useMemo(() => {
-        if (selectableRows.length === 0) return false
-        return selectableRows.some(row => row.recordId && selectedForLinks.has(row.recordId))
-    }, [selectableRows, selectedForLinks])
-
-    useEffect(() => {
-        if (selectAllLinksRef.current) {
-            selectAllLinksRef.current.indeterminate = !allLinksSelected && someLinksSelected
-        }
-    }, [allLinksSelected, someLinksSelected])
-
-    useEffect(() => {
-        setSelectedForLinks(prev => {
-            const validIds = new Set(selectableRows.map(row => row.recordId!))
-            const next = new Set<string>()
-            prev.forEach(id => {
-                if (validIds.has(id)) {
-                    next.add(id)
-                }
-            })
-            if (next.size === prev.size && Array.from(next).every(id => prev.has(id))) {
-                return prev
-            }
-            return next
-        })
-    }, [selectableRows])
-
-    const handleLinkSelectionToggle = (recordId?: string) => {
-        if (!recordId) return
-        setSelectedForLinks(prev => {
-            const next = new Set(prev)
-            if (next.has(recordId)) {
-                next.delete(recordId)
-            } else {
-                next.add(recordId)
-            }
-            return next
-        })
-    }
-
-    const handleSelectAllLinks = () => {
-        setSelectedForLinks(new Set(selectableRows.map(row => row.recordId!)))
-    }
-
-    const handleClearLinkSelection = () => {
-        setSelectedForLinks(new Set())
-    }
-
-    const handleSendEmailLinks = async () => {
-        if (!currentUser) {
-            alert('Debes iniciar sesión para enviar enlaces por email')
-            return
-        }
-
-        const selectedIds = Array.from(selectedForLinks)
-
-        if (selectedIds.length === 0) {
-            alert('Selecciona al menos un registro para enviar por email')
-            return
-        }
-
-        setSendingEmails(true)
-        setLinkError(null)
-
-        try {
-            const response = await fetch('/api/send-location-links-email', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                },
-                body: JSON.stringify({
-                    userId: currentUser.uid,
-                    addressIds: selectedIds
-                })
-            })
-
-            if (!response.ok) {
-                const errorText = await response.text()
-                throw new Error(errorText || 'Error enviando emails')
-            }
-
-            const payload = await response.json()
-            setEmailResults(payload.results || [])
-            setShowEmailResults(true)
-
-            // Clear selection
-            setSelectedForLinks(new Set())
-
-            console.log(`Emails enviados: ${payload.successCount}/${payload.totalProcessed}`)
-
-        } catch (error: any) {
-            console.error('Error sending emails:', error)
-            setLinkError(error.message || 'Error al enviar emails')
-        } finally {
-            setSendingEmails(false)
-        }
-    }
-
-    const handleGenerateLinks = async () => {
-        if (!currentUser) {
-            alert('Debes iniciar sesión para generar enlaces de ubicación')
-            return
-        }
-
-        const selectedIds = Array.from(selectedForLinks)
-
-        if (selectedIds.length === 0) {
-            alert('Selecciona al menos un registro para generar enlaces de ubicación')
-            return
-        }
-
-        setGeneratingLinks(true)
-        setLinkError(null)
-
-        try {
-            const response = await fetch('/api/address-records/location-links', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                },
-                body: JSON.stringify({
-                    userId: currentUser.uid,
-                    addressIds: selectedIds
-                })
-            })
-
-            if (!response.ok) {
-                const errorText = await response.text()
-                throw new Error(errorText || 'Error generando enlaces de ubicación')
-            }
-
-            const payload = await response.json()
-            const links: Array<{
-                addressId: string
-                token: string
-                url: string
-                status: string
-                expiresAt?: string
-            }> = payload.links || []
-
-            const linkMap = new Map(links.map(link => [link.addressId, link]))
-
-            setRows(prev => prev.map(row => {
-                if (!row.recordId) return row
-                const link = linkMap.get(row.recordId)
-                if (!link) return row
-
-                return {
-                    ...row,
-                    locationLinkToken: link.token,
-                    locationLinkStatus: (link.status as ProcessedRow['locationLinkStatus']) || 'sent',
-                    locationLinkExpiresAt: link.expiresAt || row.locationLinkExpiresAt,
-                    lastLocationUpdate: row.lastLocationUpdate
-                }
-            }))
-
-            const updatedIds = new Set(links.map(link => link.addressId)) as Set<string>
-            setUpdatedRows(updatedIds)
-            setSelectedForLinks(new Set())
-
-            setTimeout(() => {
-                setUpdatedRows(new Set())
-            }, 3000)
-        } catch (error: any) {
-            console.error('Error generating location links:', error)
-            setLinkError(error.message || 'Error generando enlaces de ubicación')
-        } finally {
-            setGeneratingLinks(false)
-        }
-    }
-
-    const handleCopyLink = async (row: ProcessedRow) => {
-        if (!row.locationLinkToken) return
-
-        const baseUrl = window.location.origin
-        const linkUrl = `${baseUrl}/location?token=${row.locationLinkToken}`
-
-        try {
-            await navigator.clipboard.writeText(linkUrl)
-            setCopiedLinkId(row.recordId || row.locationLinkToken)
-            setTimeout(() => setCopiedLinkId(null), 2000)
-        } catch (error) {
-            console.error('Error copying link:', error)
-            setLinkError('No se pudo copiar el enlace. Intenta manualmente.')
-        }
-    }
-
-    const handleSendSMS = async () => {
-        const selectedRows = rows.filter(row => selectedForSMS.has(row.rowIndex))
-
-        if (selectedRows.length === 0) {
-            alert('No hay clientes seleccionados para envío de SMS')
-            return
-        }
-
-        setIsSendingSMS(true)
-        setSmsResults([])
-
-        try {
-            const response = await fetch('/api/send-location-confirmations', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                },
-                body: JSON.stringify({
-                    addresses: selectedRows.map(row => ({
-                        rowIndex: row.rowIndex,
-                        originalAddress: row.original.address,
-                        cleanedAddress: row.cleaned.address,
-                        phone: row.cleaned.phone || row.original.phone,
-                        confidence: row.geocoding.confidence,
-                        coordinates: {
-                            lat: row.geocoding.latitude,
-                            lng: row.geocoding.longitude
-                        }
-                    }))
-                })
-            })
-
-            if (!response.ok) {
-                throw new Error('Error enviando SMS de confirmación')
-            }
-
-            const results = await response.json()
-            setSmsResults(results.results || [])
-            setShowSMSResults(true)
-            setShowSMSModal(false)
-
-        } catch (error) {
-            console.error('Error sending SMS:', error)
-            alert('Error enviando SMS. Verifica la configuración de Twilio.')
-        } finally {
-            setIsSendingSMS(false)
-        }
-    }
 
     const getStatusIcon = (status: string) => {
         switch (status) {
@@ -728,57 +431,6 @@ export default function DataDashboard({ data, statistics, onBack }: DataDashboar
                     <div className="flex flex-col md:flex-row items-stretch gap-2 md:justify-end">
                         <div className="flex flex-wrap items-center gap-2 justify-end">
                             <Button
-                                onClick={handleGenerateLinks}
-                                disabled={selectedForLinks.size === 0 || generatingLinks}
-                                className="bg-gradient-to-r from-orange-500 to-pink-500 hover:from-orange-600 hover:to-pink-600 text-white"
-                            >
-                                {generatingLinks ? (
-                                    <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                                ) : (
-                                    <Link className="w-4 h-4 mr-2" />
-                                )}
-                                {generatingLinks ? 'Generando enlaces...' : `Enlace GPS (${selectedForLinks.size})`}
-                            </Button>
-                            <Button
-                                onClick={handleSendEmailLinks}
-                                disabled={selectedForLinks.size === 0 || sendingEmails}
-                                className="bg-gradient-to-r from-blue-500 to-purple-500 hover:from-blue-600 hover:to-purple-600 text-white"
-                            >
-                                {sendingEmails ? (
-                                    <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                                ) : (
-                                    <Mail className="w-4 h-4 mr-2" />
-                                )}
-                                {sendingEmails ? 'Enviando emails...' : `Enviar por Email (${selectedForLinks.size})`}
-                            </Button>
-                            <Button
-                                onClick={handleSelectAllLinks}
-                                variant="outline"
-                                size="sm"
-                                className="border-orange-200 text-orange-700 hover:bg-orange-50"
-                            >
-                                Seleccionar todo
-                            </Button>
-                            <Button
-                                onClick={handleClearLinkSelection}
-                                variant="outline"
-                                size="sm"
-                                className="border-orange-200 text-orange-700 hover:bg-orange-50"
-                            >
-                                Limpiar selección
-                            </Button>
-                        </div>
-                        <div className="flex flex-wrap items-center gap-2 justify-end">
-                            <Button
-                                onClick={() => setShowSMSModal(true)}
-                                disabled={smsEligibleRows.length === 0}
-                                className="bg-gradient-to-r from-blue-500 to-indigo-500 hover:from-blue-600 hover:to-indigo-600 text-white"
-                            >
-                                <MessageSquare className="w-4 h-4 mr-2" />
-                                Confirmar por SMS ({smsEligibleRows.length})
-                            </Button>
-
-                            <Button
                                 onClick={downloadCSV}
                                 className="bg-gradient-to-r from-green-500 to-emerald-500 hover:from-green-600 hover:to-emerald-600 text-white"
                             >
@@ -793,14 +445,6 @@ export default function DataDashboard({ data, statistics, onBack }: DataDashboar
                     <span>
                         Mostrando {filteredData.length} de {rows.length} registros
                     </span>
-                    <div className="flex flex-wrap items-center gap-3 text-xs md:text-sm">
-                        <span className="text-gray-500">
-                            Seleccionados para enlace: {selectedForLinks.size}
-                        </span>
-                        {linkError && (
-                            <span className="text-red-600">{linkError}</span>
-                        )}
-                    </div>
                 </div>
             </Card>
 
@@ -810,16 +454,6 @@ export default function DataDashboard({ data, statistics, onBack }: DataDashboar
                     <table className="min-w-full divide-y divide-gray-200">
                         <thead className="bg-gray-50">
                             <tr>
-                                <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                                    <input
-                                        ref={selectAllLinksRef}
-                                        type="checkbox"
-                                        checked={allLinksSelected && selectableRows.length > 0}
-                                        onChange={() => (allLinksSelected ? handleClearLinkSelection() : handleSelectAllLinks())}
-                                        className="rounded border-gray-300 text-orange-600 focus:ring-orange-500"
-                                        aria-label="Seleccionar todos los registros"
-                                    />
-                                </th>
                                 <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                                     #
                                 </th>
@@ -865,7 +499,7 @@ export default function DataDashboard({ data, statistics, onBack }: DataDashboar
                                 const rowKey = row.recordId || `row-${row.rowIndex}`
                                 const isUpdated = row.recordId ? updatedRows.has(row.recordId) : false
                                 const linkStatus = getLinkStatusBadge(row.locationLinkStatus)
-                                const linkUrl = row.locationLinkToken ? `${baseLocationUrl}/location?token=${row.locationLinkToken}` : ''
+                                const linkUrl = row.locationLinkToken ? `${window.location.origin}/location?token=${row.locationLinkToken}` : ''
 
                                 return (
                                     <tr
@@ -874,20 +508,6 @@ export default function DataDashboard({ data, statistics, onBack }: DataDashboar
                                         onClick={() => setSelectedRow(row)}
                                     >
                                         <td className="px-4 py-4 whitespace-nowrap text-sm text-gray-900">
-                                            {row.recordId ? (
-                                                <input
-                                                    type="checkbox"
-                                                    checked={selectedForLinks.has(row.recordId)}
-                                                    onChange={(e) => {
-                                                        e.stopPropagation()
-                                                        handleLinkSelectionToggle(row.recordId)
-                                                    }}
-                                                    onClick={(e) => e.stopPropagation()}
-                                                    className="rounded border-gray-300 text-orange-600 focus:ring-orange-500"
-                                                />
-                                            ) : (
-                                                <span className="text-xs text-gray-400">N/A</span>
-                                            )}
                                         </td>
                                         <td className="px-4 py-4 whitespace-nowrap text-sm font-medium text-gray-900">
                                             {row.rowIndex + 1}
@@ -948,7 +568,7 @@ export default function DataDashboard({ data, statistics, onBack }: DataDashboar
                                                         <Button
                                                             onClick={(e) => {
                                                                 e.stopPropagation()
-                                                                handleCopyLink(row)
+                                                                // Copy link functionality removed
                                                             }}
                                                             variant="ghost"
                                                             size="icon"
@@ -958,9 +578,6 @@ export default function DataDashboard({ data, statistics, onBack }: DataDashboar
                                                             <Copy className="w-3.5 h-3.5" />
                                                         </Button>
                                                     </div>
-                                                    {copiedLinkId === (row.recordId || row.locationLinkToken) && (
-                                                        <span className="text-xs text-green-600">¡Enlace copiado!</span>
-                                                    )}
                                                     {row.locationLinkExpiresAt && (
                                                         <div className="text-[11px] text-gray-400">
                                                             Expira: {formatDateTime(row.locationLinkExpiresAt)}
@@ -1101,7 +718,7 @@ export default function DataDashboard({ data, statistics, onBack }: DataDashboar
                                                 </span>
                                             </div>
                                             <div className="break-all">
-                                                <strong>Enlace:</strong> {`${baseLocationUrl}/location?token=${selectedRow.locationLinkToken}`}
+                                                <strong>Enlace:</strong> {`${window.location.origin}/location?token=${selectedRow.locationLinkToken}`}
                                             </div>
                                             {selectedRow.locationLinkExpiresAt && (
                                                 <div>
@@ -1109,7 +726,9 @@ export default function DataDashboard({ data, statistics, onBack }: DataDashboar
                                                 </div>
                                             )}
                                             <Button
-                                                onClick={() => handleCopyLink(selectedRow)}
+                                                onClick={() => {
+                                                    // Copy link functionality removed
+                                                }}
                                                 variant="outline"
                                                 size="sm"
                                                 className="border-orange-200 text-orange-700 hover:bg-orange-50"
@@ -1125,8 +744,8 @@ export default function DataDashboard({ data, statistics, onBack }: DataDashboar
                 </div>
             )}
 
-            {/* SMS Confirmation Modal */}
-            {showSMSModal && (
+            {/* SMS Confirmation Modal - REMOVED */}
+            {false && (
                 <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
                     <div className="bg-white rounded-lg max-w-4xl w-full mx-4 max-h-[90vh] overflow-y-auto">
                         <div className="p-6">
@@ -1275,8 +894,8 @@ export default function DataDashboard({ data, statistics, onBack }: DataDashboar
                 </div>
             )}
 
-            {/* SMS Results Modal */}
-            {showSMSResults && (
+            {/* SMS Results Modal - REMOVED */}
+            {false && (
                 <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
                     <div className="bg-white rounded-lg max-w-2xl w-full mx-4 max-h-[90vh] overflow-y-auto">
                         <div className="p-6">
