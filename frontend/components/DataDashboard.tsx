@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect } from 'react'
+import { useState, useMemo, useEffect, useRef } from 'react'
 import { Card } from './shared/ui/card'
 import { Button } from './shared/ui/button'
 import { Input } from './shared/ui/input'
@@ -16,6 +16,9 @@ import {
     Users,
     Phone,
     Copy,
+    Link,
+    Loader2,
+    Mail
 } from 'lucide-react'
 import { useAuth } from '../contexts/AuthContext'
 
@@ -71,6 +74,14 @@ export default function DataDashboard({ data, statistics, onBack }: DataDashboar
     const [statusFilter, setStatusFilter] = useState<string>('all')
     const [showOriginal, setShowOriginal] = useState(true)
     const [selectedRow, setSelectedRow] = useState<ProcessedRow | null>(null)
+    const [selectedForLinks, setSelectedForLinks] = useState<Set<string>>(new Set())
+    const [generatingLinks, setGeneratingLinks] = useState(false)
+    const [linkError, setLinkError] = useState<string | null>(null)
+    const [sendingEmails, setSendingEmails] = useState(false)
+    const [emailResults, setEmailResults] = useState<any[]>([])
+    const [showEmailResults, setShowEmailResults] = useState(false)
+    const [copiedLinkId, setCopiedLinkId] = useState<string | null>(null)
+    const selectAllLinksRef = useRef<HTMLInputElement | null>(null)
 
     useEffect(() => {
         setRows(data)
@@ -218,8 +229,199 @@ export default function DataDashboard({ data, statistics, onBack }: DataDashboar
         }
     }, [currentUser])
 
+    const selectableRows = useMemo(() => rows.filter(row => !!row.recordId), [rows])
 
+    const allLinksSelected = useMemo(() => {
+        if (selectableRows.length === 0) return false
+        return selectableRows.every(row => row.recordId && selectedForLinks.has(row.recordId))
+    }, [selectableRows, selectedForLinks])
 
+    const someLinksSelected = useMemo(() => {
+        if (selectableRows.length === 0) return false
+        return selectableRows.some(row => row.recordId && selectedForLinks.has(row.recordId))
+    }, [selectableRows, selectedForLinks])
+
+    useEffect(() => {
+        if (selectAllLinksRef.current) {
+            selectAllLinksRef.current.indeterminate = !allLinksSelected && someLinksSelected
+        }
+    }, [allLinksSelected, someLinksSelected])
+
+    useEffect(() => {
+        setSelectedForLinks(prev => {
+            const validIds = new Set(selectableRows.map(row => row.recordId!))
+            const next = new Set<string>()
+            prev.forEach(id => {
+                if (validIds.has(id)) {
+                    next.add(id)
+                }
+            })
+            if (next.size === prev.size && Array.from(next).every(id => prev.has(id))) {
+                return prev
+            }
+            return next
+        })
+    }, [selectableRows])
+
+    const handleLinkSelectionToggle = (recordId?: string) => {
+        if (!recordId) return
+        setSelectedForLinks(prev => {
+            const next = new Set(prev)
+            if (next.has(recordId)) {
+                next.delete(recordId)
+            } else {
+                next.add(recordId)
+            }
+            return next
+        })
+    }
+
+    const handleSelectAllLinks = () => {
+        setSelectedForLinks(new Set(selectableRows.map(row => row.recordId!)))
+    }
+
+    const handleClearLinkSelection = () => {
+        setSelectedForLinks(new Set())
+    }
+
+    const handleSendEmailLinks = async () => {
+        if (!currentUser) {
+            alert('Debes iniciar sesión para enviar enlaces por email')
+            return
+        }
+
+        const selectedIds = Array.from(selectedForLinks)
+
+        if (selectedIds.length === 0) {
+            alert('Selecciona al menos un registro para enviar por email')
+            return
+        }
+
+        setSendingEmails(true)
+        setLinkError(null)
+
+        try {
+            const response = await fetch('/api/send-location-links-email', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    userId: currentUser.uid,
+                    addressIds: selectedIds
+                })
+            })
+
+            if (!response.ok) {
+                const errorText = await response.text()
+                throw new Error(errorText || 'Error enviando emails')
+            }
+
+            const payload = await response.json()
+            setEmailResults(payload.results || [])
+            setShowEmailResults(true)
+
+            // Clear selection
+            setSelectedForLinks(new Set())
+
+            console.log(`Emails enviados: ${payload.successCount}/${payload.totalProcessed}`)
+
+        } catch (error: any) {
+            console.error('Error sending emails:', error)
+            setLinkError(error.message || 'Error al enviar emails')
+        } finally {
+            setSendingEmails(false)
+        }
+    }
+
+    const handleGenerateLinks = async () => {
+        if (!currentUser) {
+            alert('Debes iniciar sesión para generar enlaces de ubicación')
+            return
+        }
+
+        const selectedIds = Array.from(selectedForLinks)
+
+        if (selectedIds.length === 0) {
+            alert('Selecciona al menos un registro para generar enlaces de ubicación')
+            return
+        }
+
+        setGeneratingLinks(true)
+        setLinkError(null)
+
+        try {
+            const response = await fetch('/api/address-records/location-links', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    userId: currentUser.uid,
+                    addressIds: selectedIds
+                })
+            })
+
+            if (!response.ok) {
+                const errorText = await response.text()
+                throw new Error(errorText || 'Error generando enlaces de ubicación')
+            }
+
+            const payload = await response.json()
+            const links: Array<{
+                addressId: string
+                token: string
+                url: string
+                status: string
+                expiresAt?: string
+            }> = payload.links || []
+
+            const linkMap = new Map(links.map(link => [link.addressId, link]))
+
+            setRows(prev => prev.map(row => {
+                if (!row.recordId) return row
+                const link = linkMap.get(row.recordId)
+                if (!link) return row
+
+                return {
+                    ...row,
+                    locationLinkToken: link.token,
+                    locationLinkStatus: (link.status as ProcessedRow['locationLinkStatus']) || 'sent',
+                    locationLinkExpiresAt: link.expiresAt || row.locationLinkExpiresAt,
+                    lastLocationUpdate: row.lastLocationUpdate
+                }
+            }))
+
+            const updatedIds = new Set(links.map(link => link.addressId)) as Set<string>
+            setUpdatedRows(updatedIds)
+            setSelectedForLinks(new Set())
+
+            setTimeout(() => {
+                setUpdatedRows(new Set())
+            }, 3000)
+        } catch (error: any) {
+            console.error('Error generating location links:', error)
+            setLinkError(error.message || 'Error generando enlaces de ubicación')
+        } finally {
+            setGeneratingLinks(false)
+        }
+    }
+
+    const handleCopyLink = async (row: ProcessedRow) => {
+        if (!row.locationLinkToken) return
+
+        const baseUrl = window.location.origin
+        const linkUrl = `${baseUrl}/location?token=${row.locationLinkToken}`
+
+        try {
+            await navigator.clipboard.writeText(linkUrl)
+            setCopiedLinkId(row.recordId || row.locationLinkToken)
+            setTimeout(() => setCopiedLinkId(null), 2000)
+        } catch (error) {
+            console.error('Error copying link:', error)
+            setLinkError('No se pudo copiar el enlace. Intenta manualmente.')
+        }
+    }
 
     const getStatusIcon = (status: string) => {
         switch (status) {
@@ -234,6 +436,28 @@ export default function DataDashboard({ data, statistics, onBack }: DataDashboar
             default:
                 return null
         }
+    }
+
+    const getLinkStatusIcon = (row: ProcessedRow) => {
+        if (row.locationLinkStatus === 'submitted') {
+            return <CheckCircle className="w-4 h-4 text-green-500" />
+        } else if (row.locationLinkStatus === 'sent') {
+            return <Send className="w-4 h-4 text-blue-500" />
+        } else if (row.locationLinkStatus === 'expired') {
+            return <XCircle className="w-4 h-4 text-red-500" />
+        }
+        return null
+    }
+
+    const getLinkStatusText = (row: ProcessedRow) => {
+        if (row.locationLinkStatus === 'submitted') {
+            return 'Coordenadas recibidas'
+        } else if (row.locationLinkStatus === 'sent') {
+            return 'Enlace enviado'
+        } else if (row.locationLinkStatus === 'expired') {
+            return 'Enlace expirado'
+        }
+        return ''
     }
 
     const getStatusColor = (status: string) => {
@@ -431,6 +655,48 @@ export default function DataDashboard({ data, statistics, onBack }: DataDashboar
                     <div className="flex flex-col md:flex-row items-stretch gap-2 md:justify-end">
                         <div className="flex flex-wrap items-center gap-2 justify-end">
                             <Button
+                                onClick={handleSelectAllLinks}
+                                variant="outline"
+                                size="sm"
+                                className="border-orange-200 text-orange-700 hover:bg-orange-50"
+                            >
+                                Seleccionar todo
+                            </Button>
+                            <Button
+                                onClick={handleClearLinkSelection}
+                                variant="outline"
+                                size="sm"
+                                className="border-orange-200 text-orange-700 hover:bg-orange-50"
+                            >
+                                Limpiar selección
+                            </Button>
+                        </div>
+                        <div className="flex flex-wrap items-center gap-2 justify-end">
+                            <Button
+                                onClick={handleGenerateLinks}
+                                disabled={selectedForLinks.size === 0 || generatingLinks}
+                                className="bg-gradient-to-r from-orange-500 to-pink-500 hover:from-orange-600 hover:to-pink-600 text-white"
+                            >
+                                {generatingLinks ? (
+                                    <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                                ) : (
+                                    <Link className="w-4 h-4 mr-2" />
+                                )}
+                                {generatingLinks ? 'Generando enlaces...' : `Enlace GPS (${selectedForLinks.size})`}
+                            </Button>
+                            <Button
+                                onClick={handleSendEmailLinks}
+                                disabled={selectedForLinks.size === 0 || sendingEmails}
+                                className="bg-gradient-to-r from-blue-500 to-purple-500 hover:from-blue-600 hover:to-purple-600 text-white"
+                            >
+                                {sendingEmails ? (
+                                    <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                                ) : (
+                                    <Mail className="w-4 h-4 mr-2" />
+                                )}
+                                {sendingEmails ? 'Enviando emails...' : `Enviar por Email (${selectedForLinks.size})`}
+                            </Button>
+                            <Button
                                 onClick={downloadCSV}
                                 className="bg-gradient-to-r from-green-500 to-emerald-500 hover:from-green-600 hover:to-emerald-600 text-white"
                             >
@@ -445,6 +711,14 @@ export default function DataDashboard({ data, statistics, onBack }: DataDashboar
                     <span>
                         Mostrando {filteredData.length} de {rows.length} registros
                     </span>
+                    <div className="flex flex-wrap items-center gap-3 text-xs md:text-sm">
+                        <span className="text-gray-500">
+                            Seleccionados para enlace: {selectedForLinks.size}
+                        </span>
+                        {linkError && (
+                            <span className="text-red-600">{linkError}</span>
+                        )}
+                    </div>
                 </div>
             </Card>
 
@@ -455,10 +729,23 @@ export default function DataDashboard({ data, statistics, onBack }: DataDashboar
                         <thead className="bg-gray-50">
                             <tr>
                                 <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                                    <input
+                                        ref={selectAllLinksRef}
+                                        type="checkbox"
+                                        checked={allLinksSelected && selectableRows.length > 0}
+                                        onChange={() => (allLinksSelected ? handleClearLinkSelection() : handleSelectAllLinks())}
+                                        className="rounded border-gray-300 text-orange-600 focus:ring-orange-500"
+                                        aria-label="Seleccionar todos los registros"
+                                    />
+                                </th>
+                                <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                                     #
                                 </th>
                                 <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                                     Estado
+                                </th>
+                                <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                                    Enlace
                                 </th>
                                 {showOriginal && (
                                     <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
@@ -508,6 +795,20 @@ export default function DataDashboard({ data, statistics, onBack }: DataDashboar
                                         onClick={() => setSelectedRow(row)}
                                     >
                                         <td className="px-4 py-4 whitespace-nowrap text-sm text-gray-900">
+                                            {row.recordId ? (
+                                                <input
+                                                    type="checkbox"
+                                                    checked={selectedForLinks.has(row.recordId)}
+                                                    onChange={(e) => {
+                                                        e.stopPropagation()
+                                                        handleLinkSelectionToggle(row.recordId)
+                                                    }}
+                                                    onClick={(e) => e.stopPropagation()}
+                                                    className="rounded border-gray-300 text-orange-600 focus:ring-orange-500"
+                                                />
+                                            ) : (
+                                                <span className="text-xs text-gray-400">N/A</span>
+                                            )}
                                         </td>
                                         <td className="px-4 py-4 whitespace-nowrap text-sm font-medium text-gray-900">
                                             {row.rowIndex + 1}
@@ -519,6 +820,18 @@ export default function DataDashboard({ data, statistics, onBack }: DataDashboar
                                                     {row.status.replace('_', ' ')}
                                                 </span>
                                             </div>
+                                        </td>
+                                        <td className="px-4 py-4 whitespace-nowrap">
+                                            {row.locationLinkStatus ? (
+                                                <div className="flex items-center">
+                                                    {getLinkStatusIcon(row)}
+                                                    <span className="ml-2 text-xs text-gray-600">
+                                                        {getLinkStatusText(row)}
+                                                    </span>
+                                                </div>
+                                            ) : (
+                                                <span className="text-xs text-gray-400">Sin enlace</span>
+                                            )}
                                         </td>
                                         {showOriginal && (
                                             <td className="px-4 py-4 text-sm text-gray-900 max-w-xs">
@@ -568,7 +881,7 @@ export default function DataDashboard({ data, statistics, onBack }: DataDashboar
                                                         <Button
                                                             onClick={(e) => {
                                                                 e.stopPropagation()
-                                                                // Copy link functionality removed
+                                                                handleCopyLink(row)
                                                             }}
                                                             variant="ghost"
                                                             size="icon"
@@ -578,6 +891,9 @@ export default function DataDashboard({ data, statistics, onBack }: DataDashboar
                                                             <Copy className="w-3.5 h-3.5" />
                                                         </Button>
                                                     </div>
+                                                    {copiedLinkId === (row.recordId || row.locationLinkToken) && (
+                                                        <span className="text-xs text-green-600">¡Enlace copiado!</span>
+                                                    )}
                                                     {row.locationLinkExpiresAt && (
                                                         <div className="text-[11px] text-gray-400">
                                                             Expira: {formatDateTime(row.locationLinkExpiresAt)}
@@ -612,6 +928,11 @@ export default function DataDashboard({ data, statistics, onBack }: DataDashboar
                                                     <div className="text-xs text-gray-500">
                                                         {row.geocoding.confidenceDescription}
                                                     </div>
+                                                    {row.locationLinkStatus === 'sent' && (
+                                                        <div className="text-xs text-blue-600 mt-1">
+                                                            ⏳ Enlace enviado, esperando coordenadas
+                                                        </div>
+                                                    )}
                                                 </div>
                                             </div>
                                         </td>
@@ -726,9 +1047,7 @@ export default function DataDashboard({ data, statistics, onBack }: DataDashboar
                                                 </div>
                                             )}
                                             <Button
-                                                onClick={() => {
-                                                    // Copy link functionality removed
-                                                }}
+                                                onClick={() => handleCopyLink(selectedRow)}
                                                 variant="outline"
                                                 size="sm"
                                                 className="border-orange-200 text-orange-700 hover:bg-orange-50"
@@ -949,6 +1268,79 @@ export default function DataDashboard({ data, statistics, onBack }: DataDashboar
                                         <div className="flex items-center justify-between">
                                             <span className="font-medium">
                                                 Fila {result.rowIndex + 1}
+                                            </span>
+                                            {result.success ? (
+                                                <CheckCircle className="w-4 h-4 text-green-500" />
+                                            ) : (
+                                                <XCircle className="w-4 h-4 text-red-500" />
+                                            )}
+                                        </div>
+                                        {result.error && (
+                                            <p className="text-sm text-red-600 mt-1">{result.error}</p>
+                                        )}
+                                    </div>
+                                ))}
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {/* Email Results Modal */}
+            {showEmailResults && (
+                <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+                    <div className="bg-white rounded-lg max-w-2xl w-full mx-4 max-h-[90vh] overflow-y-auto">
+                        <div className="p-6">
+                            <div className="flex justify-between items-center mb-6">
+                                <h3 className="text-xl font-bold text-gray-900">
+                                    Resultados del Envío de Emails
+                                </h3>
+                                <Button
+                                    onClick={() => setShowEmailResults(false)}
+                                    variant="outline"
+                                    size="sm"
+                                >
+                                    Cerrar
+                                </Button>
+                            </div>
+
+                            <div className="grid grid-cols-2 gap-4 mb-6">
+                                <div className="bg-green-50 p-4 rounded-lg border border-green-200">
+                                    <div className="flex items-center">
+                                        <CheckCircle className="w-5 h-5 text-green-500 mr-2" />
+                                        <div>
+                                            <p className="text-sm text-green-600">Exitosos</p>
+                                            <p className="text-2xl font-bold text-green-700">
+                                                {emailResults.filter((r: any) => r.success).length}
+                                            </p>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div className="bg-red-50 p-4 rounded-lg border border-red-200">
+                                    <div className="flex items-center">
+                                        <XCircle className="w-5 h-5 text-red-500 mr-2" />
+                                        <div>
+                                            <p className="text-sm text-red-600">Fallidos</p>
+                                            <p className="text-2xl font-bold text-red-700">
+                                                {emailResults.filter((r: any) => !r.success).length}
+                                            </p>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div className="space-y-2 max-h-64 overflow-y-auto">
+                                {emailResults.map((result: any, index: number) => (
+                                    <div
+                                        key={index}
+                                        className={`p-3 rounded-lg border ${result.success
+                                            ? 'bg-green-50 border-green-200'
+                                            : 'bg-red-50 border-red-200'
+                                            }`}
+                                    >
+                                        <div className="flex items-center justify-between">
+                                            <span className="font-medium">
+                                                {result.customerName || `Cliente ${index + 1}`}
                                             </span>
                                             {result.success ? (
                                                 <CheckCircle className="w-4 h-4 text-green-500" />
