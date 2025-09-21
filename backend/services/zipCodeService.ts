@@ -75,7 +75,7 @@ class ZipCodeService {
       let result = await source.read();
       
       while (!result.done) {
-        const feature = result.value as PostalZone;
+        const feature = result.value as unknown as PostalZone;
         this.postalZones.push(feature);
         result = await source.read();
       }
