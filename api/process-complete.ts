@@ -1,7 +1,7 @@
 import { VercelRequest, VercelResponse } from '@vercel/node'
 import dotenv from 'dotenv'
 import { randomUUID } from 'crypto'
-import { zipCodeService } from '../backend/services/zipCodeService'
+import { zipCodeService } from '../backend/services/zipCodeService.js'
 import { userService } from '../backend/services/firebaseUserService'
 
 // Load environment variables
