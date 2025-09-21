@@ -25,6 +25,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const contentType = req.headers['content-type'] || ''
     console.log('[DEBUG] Request method:', req.method)
     console.log('[DEBUG] Content-Type:', contentType)
+    // Batch metadata (optional headers from client)
+    const batchIndex = req.headers['x-geonorm-batch-index']
+    const batchStart = req.headers['x-geonorm-batch-start']
+    const batchEnd = req.headers['x-geonorm-batch-end']
+    const batchTotal = req.headers['x-geonorm-batch-totalrows']
+    if (batchIndex !== undefined) {
+      console.log(`[BATCH][META] index=${batchIndex} start=${batchStart} end=${batchEnd} totalRows=${batchTotal}`)
+    }
     console.log('[DEBUG] Body type:', typeof req.body)
     console.log('[DEBUG] Body has length:', req.body && typeof (req.body as any).length === 'number')
 
@@ -58,7 +66,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     console.log('[DEBUG] Processed csvData type:', typeof csvData)
     console.log('[DEBUG] Processed csvData length:', csvData ? csvData.length : 'undefined')
     if (csvData) {
-      console.log('[DEBUG] csvData preview:', csvData.substring(0, 200))
+      const preview = csvData.substring(0, 200)
+      const lineCount = csvData.split('\n').length
+      console.log(`[DEBUG] csvData preview (first 200 chars): ${preview}`)
+      console.log(`[DEBUG] csvData line count: ${lineCount}`)
     }
 
     if (!csvData) {
@@ -85,7 +96,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     // Send RAW CSV to LLM; prompt is now flexible to discover columns per row
     const csvForCleaning = csvData
-    console.log('[DEBUG] CSV for cleaning preview:', csvForCleaning.substring(0, 200))
+    console.log('[CLEAN][INPUT] header first line:', csvForCleaning.split('\n')[0])
+    console.log('[CLEAN][INPUT] first 3 lines:', csvForCleaning.split('\n').slice(1, 4))
 
     // Dynamically import the cleaning module and call OpenAI
     // @ts-ignore - JS module without TypeScript types
@@ -114,25 +126,42 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }
 
     const cleanedLines = cleanedCsv.trim().split('\n')
-    const cleanedData = cleanedLines.slice(1).map((line: string) => {
-      const values = parseCleanCSVLine(line)
-      return {
-        // Original fields (AI-extracted, uncleaned)
-        originalAddress: values[0] || '',
-        originalCity: values[1] || '',
-        originalState: values[2] || '',
-        originalPhone: values[3] || '',
-        // Cleaned fields
-        address: values[4] || '',
-        city: values[5] || '',
-        state: values[6] || '',
-        phone: values[7] || '',
-        email: values[8] || '',
-        aiConfidence: parseInt(values[9] || '0') || 0
-      }
-    })
-    console.log('[DEBUG] Sample cleaned data:', cleanedData.slice(0, 2))
-    console.log(`[UNIFIED_PROCESS] Cleaned ${cleanedData.length} rows`)
+    console.log('[CLEAN][OUTPUT] total lines:', cleanedLines.length)
+    console.log('[CLEAN][OUTPUT] header:', cleanedLines[0])
+    console.log('[CLEAN][OUTPUT] first 3 data lines:', cleanedLines.slice(1, 4))
+    const cleanedData = cleanedLines.slice(1)
+      .filter((line: string) => line && line.trim().length > 0)
+      .map((line: string) => {
+        const values = parseCleanCSVLine(line)
+        return {
+          // Original fields (AI-extracted, uncleaned)
+          originalAddress: values[0] || '',
+          originalCity: values[1] || '',
+          originalState: values[2] || '',
+          originalPhone: values[3] || '',
+          // Cleaned fields
+          address: values[4] || '',
+          city: values[5] || '',
+          state: values[6] || '',
+          phone: values[7] || '',
+          email: values[8] || '',
+          aiConfidence: parseInt(values[9] || '0') || 0
+        }
+      })
+
+    // Prepare original CSV rows for per-row fallback when LLM skipped rows
+    const rawAllLines = csvForCleaning.trim().split('\n')
+    const rawHeader = parseCleanCSVLine(rawAllLines[0] || '')
+    const rawLower = rawHeader.map(h => (h || '').toLowerCase())
+    const idxOf = (keys: string[]) => rawLower.findIndex(h => keys.some(k => h.includes(k)))
+    const idxAddress = idxOf(['address', 'direc', 'buyer address1', 'direccion'])
+    const idxCity = idxOf(['city', 'ciudad', 'localidad'])
+    const idxState = idxOf(['state', 'estado', 'provincia', 'department'])
+    const idxPhone = idxOf(['phone', 'tel'])
+    const idxEmail = idxOf(['email', 'correo'])
+    const rawDataRows = rawAllLines.slice(1).filter(l => l && l.trim().length > 0).map(parseCleanCSVLine)
+
+    console.log('[DEBUG] Cleaned rows:', cleanedData.length, 'Raw rows:', rawDataRows.length)
 
     // Step 3: Real geocoding results via Google Maps
     console.log('[UNIFIED_PROCESS] Step 3/3: Geocoding addresses...')
@@ -202,6 +231,19 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     for (let i = 0; i < cleanedData.length; i++) {
       const cleaned = cleanedData[i]
+      // Per-row fallback: if cleaned row is empty, backfill from raw data and set aiConfidence=0
+      if ((!cleaned.address || cleaned.address.trim() === '') && rawDataRows[i]) {
+        const raw = rawDataRows[i]
+        cleaned.address = idxAddress >= 0 ? (raw[idxAddress] || '') : ''
+        cleaned.city = idxCity >= 0 ? (raw[idxCity] || '') : ''
+        cleaned.state = idxState >= 0 ? (raw[idxState] || '') : ''
+        cleaned.phone = idxPhone >= 0 ? (raw[idxPhone] || '') : ''
+        cleaned.email = idxEmail >= 0 ? (raw[idxEmail] || '') : ''
+        cleaned.aiConfidence = 0
+        console.warn(`[ROW_FALLBACK] Filled cleaned fields for row ${i} from raw CSV`)
+      }
+
+      console.log(`[GEOCODE][ROW ${i}] original='${cleaned.originalAddress}' cleaned='${cleaned.address}' city='${cleaned.city}' state='${cleaned.state}'`)
       // Use AI-extracted ORIGINAL fields (uncleaned)
       const original = {
         address: cleaned.originalAddress,
@@ -211,6 +253,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       }
       try {
         const geo = await geocode(cleaned.address, cleaned.city, cleaned.state)
+        console.log(`[GEOCODE][ROW ${i}] status=${geo?.status} best=${geo?.best ? 'yes' : 'no'} rawCount=${geo?.rawCount}`)
         const geoConfidence = geo?.best?.confidence_score || 0
         const aiConfidence = (cleaned.aiConfidence || 0) / 100
         // Combined confidence calculation: ((8*ai) * (2*geo))/10

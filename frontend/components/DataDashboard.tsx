@@ -13,8 +13,6 @@ import {
     Eye,
     EyeOff,
     Send,
-    Users,
-    Phone,
     Copy,
     Link,
     Loader2,
@@ -65,6 +63,11 @@ interface ProcessedRow {
         updatedAt: string
     }
     userUpdatedGoogleMapsLink?: string | null
+    // Location link properties
+    locationLinkToken?: string
+    locationLinkStatus?: 'sent' | 'submitted' | 'expired' | 'pending'
+    locationLinkExpiresAt?: string
+    lastLocationUpdate?: string
 }
 
 interface DataDashboardProps {
@@ -268,16 +271,22 @@ export default function DataDashboard({ data, statistics, onBack }: DataDashboar
         }
     }, [currentUser])
 
-    const selectableRows = useMemo(() => rows.filter(row => !!row.recordId), [rows])
+    const selectableRows = useMemo(() => rows.filter(row => !!row.recordId || row.rowIndex !== undefined), [rows])
 
     const allLinksSelected = useMemo(() => {
         if (selectableRows.length === 0) return false
-        return selectableRows.every(row => row.recordId && selectedForLinks.has(row.recordId))
+        return selectableRows.every(row => {
+            const id = row.recordId || `row-${row.rowIndex}`
+            return selectedForLinks.has(id)
+        })
     }, [selectableRows, selectedForLinks])
 
     const someLinksSelected = useMemo(() => {
         if (selectableRows.length === 0) return false
-        return selectableRows.some(row => row.recordId && selectedForLinks.has(row.recordId))
+        return selectableRows.some(row => {
+            const id = row.recordId || `row-${row.rowIndex}`
+            return selectedForLinks.has(id)
+        })
     }, [selectableRows, selectedForLinks])
 
     useEffect(() => {
@@ -288,7 +297,7 @@ export default function DataDashboard({ data, statistics, onBack }: DataDashboar
 
     useEffect(() => {
         setSelectedForLinks(prev => {
-            const validIds = new Set(selectableRows.map(row => row.recordId!))
+            const validIds = new Set(selectableRows.map(row => row.recordId || `row-${row.rowIndex}`))
             const next = new Set<string>()
             prev.forEach(id => {
                 if (validIds.has(id)) {
@@ -316,7 +325,7 @@ export default function DataDashboard({ data, statistics, onBack }: DataDashboar
     }
 
     const handleSelectAllLinks = () => {
-        setSelectedForLinks(new Set(selectableRows.map(row => row.recordId!)))
+        setSelectedForLinks(new Set(selectableRows.map(row => row.recordId || `row-${row.rowIndex}`)))
     }
 
     const handleClearLinkSelection = () => {
@@ -329,10 +338,11 @@ export default function DataDashboard({ data, statistics, onBack }: DataDashboar
             return
         }
 
-        const selectedIds = Array.from(selectedForLinks)
+        // Filter to only include recordIds (not row-based IDs)
+        const selectedIds = Array.from(selectedForLinks).filter(id => !id.startsWith('row-'))
 
         if (selectedIds.length === 0) {
-            alert('Selecciona al menos un registro para enviar por email')
+            alert('Selecciona al menos un registro guardado para enviar por email')
             return
         }
 
@@ -379,10 +389,11 @@ export default function DataDashboard({ data, statistics, onBack }: DataDashboar
             return
         }
 
-        const selectedIds = Array.from(selectedForLinks)
+        // Filter to only include recordIds (not row-based IDs)
+        const selectedIds = Array.from(selectedForLinks).filter(id => !id.startsWith('row-'))
 
         if (selectedIds.length === 0) {
-            alert('Selecciona al menos un registro para generar enlaces de ubicación')
+            alert('Selecciona al menos un registro guardado para generar enlaces de ubicación')
             return
         }
 
@@ -514,20 +525,6 @@ export default function DataDashboard({ data, statistics, onBack }: DataDashboar
         }
     }
 
-    const getLinkStatusBadge = (status?: ProcessedRow['locationLinkStatus']) => {
-        switch (status) {
-            case 'submitted':
-                return { label: 'Ubicación recibida', className: 'bg-green-100 text-green-800' }
-            case 'sent':
-                return { label: 'Enlace enviado', className: 'bg-blue-100 text-blue-800' }
-            case 'pending':
-                return { label: 'Pendiente de envío', className: 'bg-yellow-100 text-yellow-800' }
-            case 'expired':
-                return { label: 'Enlace vencido', className: 'bg-gray-200 text-gray-600' }
-            default:
-                return { label: 'Sin enlace', className: 'bg-gray-200 text-gray-600' }
-        }
-    }
 
     const formatDateTime = (isoString?: string) => {
         if (!isoString) return ''
@@ -601,6 +598,10 @@ export default function DataDashboard({ data, statistics, onBack }: DataDashboar
         URL.revokeObjectURL(url)
     }
 
+    // Percent helpers for summary cards
+    const totalRowsCount = (statistics && statistics.totalRows) || rows.length || 0
+    const pct = (n: number) => totalRowsCount ? Math.round((n / totalRowsCount) * 100) : 0
+
     return (
         <div className="space-y-6">
             {/* Header */}
@@ -627,6 +628,7 @@ export default function DataDashboard({ data, statistics, onBack }: DataDashboar
                             <div>
                                 <p className="text-sm text-green-600">Alta Confianza</p>
                                 <p className="text-2xl font-bold text-green-700">{statistics.highConfidence}</p>
+                                <p className="text-xs text-green-600">{pct(statistics.highConfidence)}%</p>
                             </div>
                         </div>
                     </div>
@@ -636,6 +638,7 @@ export default function DataDashboard({ data, statistics, onBack }: DataDashboar
                             <div>
                                 <p className="text-sm text-yellow-600">Confianza Media</p>
                                 <p className="text-2xl font-bold text-yellow-700">{statistics.mediumConfidence}</p>
+                                <p className="text-xs text-yellow-600">{pct(statistics.mediumConfidence)}%</p>
                             </div>
                         </div>
                     </div>
@@ -645,6 +648,7 @@ export default function DataDashboard({ data, statistics, onBack }: DataDashboar
                             <div>
                                 <p className="text-sm text-orange-600">Baja Confianza</p>
                                 <p className="text-2xl font-bold text-orange-700">{statistics.lowConfidence}</p>
+                                <p className="text-xs text-orange-600">{pct(statistics.lowConfidence)}%</p>
                             </div>
                         </div>
                     </div>
@@ -790,7 +794,7 @@ export default function DataDashboard({ data, statistics, onBack }: DataDashboar
                                     />
                                 </th>
                                 <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                                    #
+                                    # de Guia
                                 </th>
                                 <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                                     Confianza 
@@ -839,8 +843,6 @@ export default function DataDashboard({ data, statistics, onBack }: DataDashboar
                             {filteredData.map((row) => {
                                 const rowKey = row.recordId || `row-${row.rowIndex}`
                                 const isUpdated = row.recordId ? updatedRows.has(row.recordId) : false
-                                const linkStatus = getLinkStatusBadge(row.locationLinkStatus)
-                                const linkUrl = row.locationLinkToken ? `${window.location.origin}/location?token=${row.locationLinkToken}` : ''
 
                                 return (
                                     <tr
@@ -849,20 +851,16 @@ export default function DataDashboard({ data, statistics, onBack }: DataDashboar
                                         onClick={() => setSelectedRow(row)}
                                     >
                                         <td className="px-4 py-4 whitespace-nowrap text-sm text-gray-900">
-                                            {row.recordId ? (
-                                                <input
-                                                    type="checkbox"
-                                                    checked={selectedForLinks.has(row.recordId)}
-                                                    onChange={(e) => {
-                                                        e.stopPropagation()
-                                                        handleLinkSelectionToggle(row.recordId)
-                                                    }}
-                                                    onClick={(e) => e.stopPropagation()}
-                                                    className="rounded border-gray-300 text-orange-600 focus:ring-orange-500"
-                                                />
-                                            ) : (
-                                                <span className="text-xs text-gray-400">N/A</span>
-                                            )}
+                                            <input
+                                                type="checkbox"
+                                                checked={selectedForLinks.has(row.recordId || `row-${row.rowIndex}`)}
+                                                onChange={(e) => {
+                                                    e.stopPropagation()
+                                                    handleLinkSelectionToggle(row.recordId || `row-${row.rowIndex}`)
+                                                }}
+                                                onClick={(e) => e.stopPropagation()}
+                                                className="rounded border-gray-300 text-orange-600 focus:ring-orange-500"
+                                            />
                                         </td>
                                         <td className="px-4 py-4 whitespace-nowrap text-sm font-medium text-gray-900">
                                             {row.rowIndex + 1}
@@ -939,14 +937,6 @@ export default function DataDashboard({ data, statistics, onBack }: DataDashboar
                                                     <div className="text-xs text-gray-500">
                                                         {row.zipCode.district}
                                                     </div>
-                                                    <div className={`text-xs px-1.5 py-0.5 rounded ${
-                                                        row.zipCode.confidence === 'high' ? 'bg-green-100 text-green-800' :
-                                                        row.zipCode.confidence === 'medium' ? 'bg-yellow-100 text-yellow-800' :
-                                                        row.zipCode.confidence === 'low' ? 'bg-orange-100 text-orange-800' :
-                                                        'bg-red-100 text-red-800'
-                                                    }`}>
-                                                        {row.zipCode.confidence.toUpperCase()}
-                                                    </div>
                                                 </div>
                                             ) : (
                                                 <span className="text-gray-400 italic">Sin código postal</span>
@@ -956,7 +946,7 @@ export default function DataDashboard({ data, statistics, onBack }: DataDashboar
                                             {row.googleMapsLink ? (
                                                 <div className="space-y-1">
                                                     <div className="flex items-center gap-2">
-                                                        {row.status === 'high_confidence' && row.geocoding.latitude && row.geocoding.longitude && (
+                                                        {(row.locationLinkStatus === 'submitted' || !!row.lastLocationUpdate) && (
                                                             <span className="px-2 py-0.5 rounded-full text-xs font-medium bg-blue-50 text-blue-700">
                                                                 Actualizado por usuario
                                                             </span>
@@ -1153,245 +1143,6 @@ export default function DataDashboard({ data, statistics, onBack }: DataDashboar
                 </div>
             )}
 
-            {/* SMS Confirmation Modal - REMOVED */}
-            {false && (
-                <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-                    <div className="bg-white rounded-lg max-w-4xl w-full mx-4 max-h-[90vh] overflow-y-auto">
-                        <div className="p-6">
-                            <div className="flex justify-between items-center mb-6">
-                                <h3 className="text-xl font-bold text-gray-900">
-                                    Confirmación por SMS
-                                </h3>
-                                <Button
-                                    onClick={() => setShowSMSModal(false)}
-                                    variant="outline"
-                                    size="sm"
-                                >
-                                    Cerrar
-                                </Button>
-                            </div>
-
-                            <div className="mb-6">
-                                <p className="text-gray-600 mb-4">
-                                    Selecciona los clientes que recibirán SMS para confirmar sus direcciones.
-                                    Por defecto se seleccionan direcciones con confianza ≤40%.
-                                </p>
-
-                                <div className="flex gap-4 mb-4">
-                                    <Button
-                                        onClick={handleSelectAllSMSEligible}
-                                        variant="outline"
-                                        size="sm"
-                                        className="flex items-center gap-2"
-                                    >
-                                        <Users className="w-4 h-4" />
-                                        Seleccionar Elegibles ({smsEligibleRows.length})
-                                    </Button>
-                                    <Button
-                                        onClick={handleDeselectAllSMS}
-                                        variant="outline"
-                                        size="sm"
-                                        className="flex items-center gap-2"
-                                    >
-                                        <XCircle className="w-4 h-4" />
-                                        Deseleccionar Todo
-                                    </Button>
-                                </div>
-
-                                <div className="bg-blue-50 p-4 rounded-lg mb-4">
-                                    <p className="text-sm text-blue-800">
-                                        <strong>{selectedForSMS.size}</strong> clientes seleccionados para SMS
-                                    </p>
-                                </div>
-                            </div>
-
-                            {/* Customer Selection Table */}
-                            <div className="border rounded-lg overflow-hidden mb-6">
-                                <table className="min-w-full divide-y divide-gray-200">
-                                    <thead className="bg-gray-50">
-                                        <tr>
-                                            <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                                                Seleccionar
-                                            </th>
-                                            <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                                                Fila
-                                            </th>
-                                            <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                                                Dirección Limpiada
-                                            </th>
-                                            <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                                                Teléfono
-                                            </th>
-                                            <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                                                Código Postal
-                                            </th>
-                                            <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                                                Confianza
-                                            </th>
-                                        </tr>
-                                    </thead>
-                                    <tbody className="bg-white divide-y divide-gray-200">
-                                        {data
-                                            .filter(row => row.cleaned.phone && row.cleaned.phone.trim() !== '')
-                                            .map((row) => (
-                                                <tr key={row.rowIndex} className="hover:bg-gray-50">
-                                                    <td className="px-4 py-4 whitespace-nowrap">
-                                                        <input
-                                                            type="checkbox"
-                                                            checked={selectedForSMS.has(row.rowIndex)}
-                                                            onChange={() => handleSMSSelectionToggle(row.rowIndex)}
-                                                            className="h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded"
-                                                        />
-                                                    </td>
-                                                    <td className="px-4 py-4 whitespace-nowrap text-sm font-medium text-gray-900">
-                                                        {row.rowIndex + 1}
-                                                    </td>
-                                                    <td className="px-4 py-4 text-sm text-gray-900 max-w-xs">
-                                                        <div className="truncate" title={row.cleaned.address}>
-                                                            {row.cleaned.address}
-                                                        </div>
-                                                    </td>
-                                                    <td className="px-4 py-4 whitespace-nowrap">
-                                                        <div className="flex items-center text-sm text-gray-900">
-                                                            <Phone className="w-4 h-4 mr-2 text-gray-400" />
-                                                            {row.cleaned.phone}
-                                                        </div>
-                                                    </td>
-                                                    <td className="px-4 py-4 text-sm text-gray-900">
-                                                        {row.zipCode ? (
-                                                            <div className="space-y-1">
-                                                                <div className="font-mono text-sm font-medium">
-                                                                    {row.zipCode.zipCode || 'N/A'}
-                                                                </div>
-                                                                <div className="text-xs text-gray-500">
-                                                                    {row.zipCode.department}
-                                                                </div>
-                                                            </div>
-                                                        ) : (
-                                                            <span className="text-gray-400 italic">Sin código postal</span>
-                                                        )}
-                                                    </td>
-                                                    <td className="px-4 py-4 whitespace-nowrap">
-                                                        <div className="flex items-center">
-                                                            <span className={`px-2 py-1 text-xs font-medium rounded-full ${row.geocoding.confidence <= 0.4
-                                                                ? 'bg-red-100 text-red-800'
-                                                                : row.geocoding.confidence <= 0.7
-                                                                    ? 'bg-yellow-100 text-yellow-800'
-                                                                    : 'bg-green-100 text-green-800'
-                                                                }`}>
-                                                                {Math.round(row.geocoding.confidence * 100)}%
-                                                            </span>
-                                                        </div>
-                                                    </td>
-                                                </tr>
-                                            ))}
-                                    </tbody>
-                                </table>
-                            </div>
-
-                            {/* Send Button */}
-                            <div className="flex justify-end gap-4">
-                                <Button
-                                    onClick={() => setShowSMSModal(false)}
-                                    variant="outline"
-                                >
-                                    Cancelar
-                                </Button>
-                                <Button
-                                    onClick={handleSendSMS}
-                                    disabled={selectedForSMS.size === 0 || isSendingSMS}
-                                    className="bg-gradient-to-r from-blue-500 to-indigo-500 hover:from-blue-600 hover:to-indigo-600 text-white"
-                                >
-                                    {isSendingSMS ? (
-                                        <>
-                                            <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white mr-2"></div>
-                                            Enviando...
-                                        </>
-                                    ) : (
-                                        <>
-                                            <Send className="w-4 h-4 mr-2" />
-                                            Enviar SMS a {selectedForSMS.size} Clientes
-                                        </>
-                                    )}
-                                </Button>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            )}
-
-            {/* SMS Results Modal - REMOVED */}
-            {false && (
-                <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-                    <div className="bg-white rounded-lg max-w-2xl w-full mx-4 max-h-[90vh] overflow-y-auto">
-                        <div className="p-6">
-                            <div className="flex justify-between items-center mb-6">
-                                <h3 className="text-xl font-bold text-gray-900">
-                                    Resultados del Envío SMS
-                                </h3>
-                                <Button
-                                    onClick={() => setShowSMSResults(false)}
-                                    variant="outline"
-                                    size="sm"
-                                >
-                                    Cerrar
-                                </Button>
-                            </div>
-
-                            <div className="grid grid-cols-2 gap-4 mb-6">
-                                <div className="bg-green-50 p-4 rounded-lg border border-green-200">
-                                    <div className="flex items-center">
-                                        <CheckCircle className="w-5 h-5 text-green-500 mr-2" />
-                                        <div>
-                                            <p className="text-sm text-green-600">Exitosos</p>
-                                            <p className="text-2xl font-bold text-green-700">
-                                                {smsResults.filter(r => r.success).length}
-                                            </p>
-                                        </div>
-                                    </div>
-                                </div>
-                                <div className="bg-red-50 p-4 rounded-lg border border-red-200">
-                                    <div className="flex items-center">
-                                        <XCircle className="w-5 h-5 text-red-500 mr-2" />
-                                        <div>
-                                            <p className="text-sm text-red-600">Fallidos</p>
-                                            <p className="text-2xl font-bold text-red-700">
-                                                {smsResults.filter(r => !r.success).length}
-                                            </p>
-                                        </div>
-                                    </div>
-                                </div>
-                            </div>
-
-                            <div className="space-y-2 max-h-64 overflow-y-auto">
-                                {smsResults.map((result, index) => (
-                                    <div
-                                        key={index}
-                                        className={`p-3 rounded-lg border ${result.success
-                                            ? 'bg-green-50 border-green-200'
-                                            : 'bg-red-50 border-red-200'
-                                            }`}
-                                    >
-                                        <div className="flex items-center justify-between">
-                                            <span className="font-medium">
-                                                Fila {result.rowIndex + 1}
-                                            </span>
-                                            {result.success ? (
-                                                <CheckCircle className="w-4 h-4 text-green-500" />
-                                            ) : (
-                                                <XCircle className="w-4 h-4 text-red-500" />
-                                            )}
-                                        </div>
-                                        {result.error && (
-                                            <p className="text-sm text-red-600 mt-1">{result.error}</p>
-                                        )}
-                                    </div>
-                                ))}
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            )}
 
             {/* Email Results Modal */}
             {showEmailResults && (

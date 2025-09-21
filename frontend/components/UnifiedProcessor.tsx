@@ -1,4 +1,5 @@
 import React, { useState } from 'react'
+import * as XLSX from 'xlsx'
 import { Card } from './shared/ui/card'
 import { Button } from './shared/ui/button'
 import { Upload, FileText, Sparkles, MapPin, CheckCircle } from 'lucide-react'
@@ -68,12 +69,19 @@ export default function UnifiedProcessor({ onProcessingComplete }: UnifiedProces
 
     const handleFileUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
         const selectedFile = event.target.files?.[0]
-        if (selectedFile && selectedFile.type === 'text/csv') {
+        if (!selectedFile) return
+
+        const name = selectedFile.name.toLowerCase()
+        const isCsv = name.endsWith('.csv') || selectedFile.type === 'text/csv'
+        const isExcel = name.endsWith('.xlsx') || name.endsWith('.xls') ||
+            selectedFile.type.includes('spreadsheetml') || selectedFile.type.includes('ms-excel')
+
+        if (isCsv || isExcel) {
             setFile(selectedFile)
             setCurrentStep('upload')
             setProgress(0)
         } else {
-            alert('Por favor selecciona un archivo CSV válido')
+            alert('Formato no soportado. Sube un archivo .csv, .xlsx o .xls')
         }
     }
 
@@ -84,10 +92,25 @@ export default function UnifiedProcessor({ onProcessingComplete }: UnifiedProces
         setProgress(0)
 
         try {
-            // Read file content
-            const csvContent = await file.text()
-            console.log('[DEBUG] CSV file size:', csvContent.length)
-            console.log('[DEBUG] CSV preview:', csvContent.substring(0, 300))
+            // Read file content (CSV or Excel -> CSV)
+            let fullCsvContent = ''
+
+            const lowerName = file.name.toLowerCase()
+            const isExcel = lowerName.endsWith('.xlsx') || lowerName.endsWith('.xls') ||
+                file.type.includes('spreadsheetml') || file.type.includes('ms-excel')
+
+            if (isExcel) {
+                const buffer = await file.arrayBuffer()
+                const wb = XLSX.read(buffer, { type: 'array' })
+                const sheetName = wb.SheetNames[0]
+                const ws = wb.Sheets[sheetName]
+                fullCsvContent = XLSX.utils.sheet_to_csv(ws, { FS: ',', strip: true })
+            } else {
+                fullCsvContent = await file.text()
+            }
+
+            console.log('[DEBUG] Input CSV size:', fullCsvContent.length)
+            console.log('[DEBUG] Input CSV preview:', fullCsvContent.substring(0, 300))
 
             // Step 1: Extracting
             setCurrentStep('extracting')
@@ -107,49 +130,77 @@ export default function UnifiedProcessor({ onProcessingComplete }: UnifiedProces
             setStepDetails('Procesando con inteligencia artificial...')
             setProgress(55)
 
-            // Step 3: Geocoding
+            // Step 3: Geocoding (batched)
             setCurrentStep('geocoding')
-            setStepDetails('Geocodificando direcciones con Google Maps...')
+            setStepDetails('Dividiendo en lotes y geocodificando...')
             setProgress(70)
 
-            // Send to unified backend endpoint
-            const response = await fetch('/api/process-complete', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'text/csv',
-                },
-                body: csvContent
-            })
+            // Split CSV into batches of 30 data rows (keep header per batch)
+            const allLines = fullCsvContent.trim().split('\n')
+            const header = allLines[0]
+            const dataLines = allLines.slice(1).filter(l => l && l.trim().length > 0)
+            const batchSize = 30
+            const numBatches = Math.max(1, Math.ceil(dataLines.length / batchSize))
 
-            if (!response.ok) {
-                const errorBody = await response.text()
-                console.error('Server error response:', errorBody)
-
-                let errorMessage = `Error en el servidor: ${response.status}`
-                try {
-                    const errorJson = JSON.parse(errorBody)
-                    if (errorJson.error) {
-                        errorMessage = errorJson.error
-                    }
-                    if (errorJson.availableHeaders) {
-                        errorMessage += `\n\nColumnas disponibles: ${errorJson.availableHeaders.join(', ')}`
-                        errorMessage += `\nColumnas requeridas: ${errorJson.requiredHeaders.join(', ')}`
-                    }
-                } catch (e) {
-                    // If error response is not JSON, use the text as is
-                    errorMessage = errorBody || errorMessage
-                }
-
-                throw new Error(errorMessage)
+            const aggregate: ProcessingResult = {
+                success: true,
+                totalProcessed: 0,
+                statistics: { highConfidence: 0, mediumConfidence: 0, lowConfidence: 0, totalRows: 0 },
+                results: []
             }
 
-            const result: ProcessingResult = await response.json()
+            for (let b = 0; b < numBatches; b++) {
+                const start = b * batchSize
+                const end = Math.min(start + batchSize, dataLines.length)
+                const batchCsv = [header, ...dataLines.slice(start, end)].join('\n')
+
+                setStepDetails(`Procesando lote ${b + 1} de ${numBatches} (${end - start} filas)`)
+                setProgress(70 + Math.round(((b + 1) / numBatches) * 20))
+
+                // Client-side logs for visibility
+                console.log(`[BATCH] Sending batch ${b + 1}/${numBatches}: rows ${start + 1}-${end} of ${dataLines.length}`)
+                console.log('[BATCH] Header:', header)
+                console.log('[BATCH] First 3 data lines:', dataLines.slice(start, Math.min(end, start + 3)))
+
+                const response = await fetch('/api/process-complete', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'text/csv',
+                        'X-GeoNorm-Batch-Index': String(b),
+                        'X-GeoNorm-Batch-Start': String(start),
+                        'X-GeoNorm-Batch-End': String(end),
+                        'X-GeoNorm-Batch-TotalRows': String(dataLines.length)
+                    },
+                    body: batchCsv
+                })
+
+                if (!response.ok) {
+                    const errorBody = await response.text()
+                    console.error('Server error response (batch):', errorBody)
+                    throw new Error(errorBody || `Error en el servidor: ${response.status}`)
+                }
+
+                const result: ProcessingResult = await response.json()
+
+                // Reindex results to global row indices based on original order
+                const adjusted = result.results.map(r => ({
+                    ...r,
+                    rowIndex: start + r.rowIndex
+                }))
+
+                aggregate.results.push(...adjusted)
+                aggregate.totalProcessed += result.totalProcessed
+                aggregate.statistics.highConfidence += result.statistics.highConfidence
+                aggregate.statistics.mediumConfidence += result.statistics.mediumConfidence
+                aggregate.statistics.lowConfidence += result.statistics.lowConfidence
+                aggregate.statistics.totalRows += result.statistics.totalRows
+            }
 
             setStepDetails('Finalizando procesamiento...')
             setProgress(90)
 
             // Save to Firebase if user is authenticated
-            if (currentUser && result.success) {
+            if (currentUser && aggregate.success) {
                 try {
                     setStepDetails('Guardando datos en Firebase...')
 
@@ -157,21 +208,21 @@ export default function UnifiedProcessor({ onProcessingComplete }: UnifiedProces
                     const csvId = await DataService.createCSVDataset(
                         currentUser.uid,
                         file.name,
-                        result.totalProcessed
+                        aggregate.totalProcessed
                     )
 
                     // Update with statistics
                     await DataService.updateCSVDataset(csvId, {
-                        processedRows: result.totalProcessed,
-                        highConfidenceAddresses: result.statistics.highConfidence,
-                        mediumConfidenceAddresses: result.statistics.mediumConfidence,
-                        lowConfidenceAddresses: result.statistics.lowConfidence,
+                        processedRows: aggregate.totalProcessed,
+                        highConfidenceAddresses: aggregate.statistics.highConfidence,
+                        mediumConfidenceAddresses: aggregate.statistics.mediumConfidence,
+                        lowConfidenceAddresses: aggregate.statistics.lowConfidence,
                         processingStatus: 'completed',
                         completedAt: new Date() as any
                     })
 
                     // Save address records
-                    const addressRecords = result.results.map(row => ({
+                    const addressRecords = aggregate.results.map(row => ({
                         userId: currentUser.uid,
                         csvId: csvId,
                         rowIndex: row.rowIndex,
@@ -184,10 +235,12 @@ export default function UnifiedProcessor({ onProcessingComplete }: UnifiedProces
                         cleanedState: row.cleaned.state,
                         cleanedPhone: row.cleaned.phone,
                         cleanedEmail: row.cleaned.email,
-                        coordinates: row.geocoding.latitude && row.geocoding.longitude ? {
-                            lat: row.geocoding.latitude,
-                            lng: row.geocoding.longitude
-                        } : undefined,
+                        ...(row.geocoding.latitude != null && row.geocoding.longitude != null ? {
+                            coordinates: {
+                                lat: row.geocoding.latitude,
+                                lng: row.geocoding.longitude
+                            }
+                        } : {}),
                         geocodingConfidence: row.status === 'high_confidence' ? 'high' :
                             row.status === 'medium_confidence' ? 'medium' : 'low',
                         locationType: row.geocoding.locationType,
@@ -201,7 +254,7 @@ export default function UnifiedProcessor({ onProcessingComplete }: UnifiedProces
 
                     const recordIds = await DataService.bulkSaveAddressRecords(addressRecords)
 
-                    result.results = result.results.map((row, index) => ({
+                    aggregate.results = aggregate.results.map((row, index) => ({
                         ...row,
                         recordId: recordIds[index]
                     }))
@@ -221,7 +274,7 @@ export default function UnifiedProcessor({ onProcessingComplete }: UnifiedProces
 
             // Wait a moment before showing results
             setTimeout(() => {
-                onProcessingComplete(result)
+                onProcessingComplete(aggregate)
             }, 1000)
 
         } catch (error: any) {
@@ -290,7 +343,7 @@ export default function UnifiedProcessor({ onProcessingComplete }: UnifiedProces
                             <div className="border-2 border-dashed border-orange-300 rounded-xl p-8 hover:border-orange-400 transition-colors">
                                 <input
                                     type="file"
-                                    accept=".csv"
+                                    accept=".csv,.xlsx,.xls"
                                     onChange={handleFileUpload}
                                     className="hidden"
                                     id="csv-upload"
@@ -303,7 +356,7 @@ export default function UnifiedProcessor({ onProcessingComplete }: UnifiedProces
                                         <FileText className="w-6 h-6 text-orange-600" />
                                     </div>
                                     <span className="text-lg font-semibold text-gray-700 mb-2">
-                                        {file ? file.name : 'Seleccionar archivo CSV'}
+                                        {file ? file.name : 'Seleccionar archivo CSV/XLSX'}
                                     </span>
                                     <span className="text-sm text-gray-500">
                                         Haz clic para seleccionar o arrastra tu archivo aquí
