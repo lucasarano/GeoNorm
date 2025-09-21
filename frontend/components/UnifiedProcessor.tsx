@@ -194,7 +194,9 @@ export default function UnifiedProcessor({ onProcessingComplete }: UnifiedProces
                         formattedAddress: row.geocoding.formattedAddress,
                         zipCode: row.zipCode,
                         status: 'processed' as const,
-                        needsConfirmation: row.status === 'low_confidence'
+                        needsConfirmation: row.status === 'low_confidence',
+                        // Use the Google Maps link from processing
+                        googleMapsLink: row.googleMapsLink
                     }))
 
                     const recordIds = await DataService.bulkSaveAddressRecords(addressRecords)

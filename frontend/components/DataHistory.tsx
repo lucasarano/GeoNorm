@@ -112,28 +112,40 @@ export default function DataHistory({ onSelectDataset, onBack }: DataHistoryProp
             'Longitude',
             'Formatted Address',
             'Confidence',
+            'Google Maps Link',
+            'Zip Code',
+            'Department',
+            'District',
+            'Neighborhood',
             'Status'
         ]
 
         const csvContent = [
             headers.join(','),
-            ...addresses.map(addr => [
-                addr.rowIndex + 1,
-                `"${addr.originalAddress}"`,
-                `"${addr.originalCity || ''}"`,
-                `"${addr.originalState || ''}"`,
-                `"${addr.originalPhone || ''}"`,
-                `"${addr.cleanedAddress}"`,
-                `"${addr.cleanedCity}"`,
-                `"${addr.cleanedState}"`,
-                `"${addr.cleanedPhone || ''}"`,
-                `"${addr.cleanedEmail || ''}"`,
-                addr.coordinates?.lat || '',
-                addr.coordinates?.lng || '',
-                `"${addr.formattedAddress || ''}"`,
-                addr.geocodingConfidence,
-                addr.status
-            ].join(','))
+            ...addresses.map(addr => {
+                return [
+                    addr.rowIndex + 1,
+                    `"${addr.originalAddress}"`,
+                    `"${addr.originalCity || ''}"`,
+                    `"${addr.originalState || ''}"`,
+                    `"${addr.originalPhone || ''}"`,
+                    `"${addr.cleanedAddress}"`,
+                    `"${addr.cleanedCity}"`,
+                    `"${addr.cleanedState}"`,
+                    `"${addr.cleanedPhone || ''}"`,
+                    `"${addr.cleanedEmail || ''}"`,
+                    addr.coordinates?.lat || '',
+                    addr.coordinates?.lng || '',
+                    `"${addr.formattedAddress || ''}"`,
+                    addr.geocodingConfidence,
+                    `"${addr.googleMapsLink || ''}"`,
+                    `"${addr.zipCode?.zipCode || ''}"`,
+                    `"${addr.zipCode?.department || ''}"`,
+                    `"${addr.zipCode?.district || ''}"`,
+                    `"${addr.zipCode?.neighborhood || ''}"`,
+                    addr.status
+                ].join(',')
+            })
         ].join('\n')
 
         const blob = new Blob([csvContent], { type: 'text/csv' })

@@ -248,17 +248,25 @@ export default function Pipeline() {
         try {
             const finalData = pipelineData.final
             const csvContent = [
-                ['Address', 'City', 'State', 'Phone', 'Email', 'Latitude', 'Longitude', 'Confidence'].join(','),
-                ...finalData.map(row => [
-                    row.Address,
-                    row.City,
-                    row.State,
-                    row.Phone,
-                    row.Email,
-                    row.latitude,
-                    row.longitude,
-                    row.confidence
-                ].join(','))
+                ['Address', 'City', 'State', 'Phone', 'Email', 'Latitude', 'Longitude', 'Confidence', 'Google Maps Link'].join(','),
+                ...finalData.map(row => {
+                    // Generate Google Maps link if coordinates are available
+                    const googleMapsLink = (row.latitude && row.longitude) 
+                        ? `https://www.google.com/maps?q=${row.latitude},${row.longitude}`
+                        : ''
+                    
+                    return [
+                        `"${row.Address}"`,
+                        `"${row.City}"`,
+                        `"${row.State}"`,
+                        `"${row.Phone}"`,
+                        `"${row.Email}"`,
+                        row.latitude || '',
+                        row.longitude || '',
+                        row.confidence,
+                        `"${googleMapsLink}"`
+                    ].join(',')
+                })
             ].join('\n')
 
             const blob = new Blob([csvContent], { type: 'text/csv' })

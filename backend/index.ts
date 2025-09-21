@@ -30,7 +30,7 @@ function notifyAddressUpdate(userId: string, addressId: string, updateData: any)
     const userClients = sseClients.filter(client => client.userId === userId)
 
     const updateMessage = {
-        type: 'address_update',
+        type: updateData.type || 'address_update',
         addressId,
         data: {
             ...updateData,
@@ -624,7 +624,11 @@ app.post('/api/process-complete', express.raw({ type: 'text/csv', limit: '10mb' 
                         confidence: zipCodeResult.confidence
                     } : null,
                     status: confidence >= 0.8 ? 'high_confidence' :
-                        confidence >= 0.6 ? 'medium_confidence' : 'low_confidence'
+                        confidence >= 0.6 ? 'medium_confidence' : 'low_confidence',
+                    // Generate simple Google Maps link
+                    googleMapsLink: data.cleaned?.best?.latitude && data.cleaned?.best?.longitude 
+                        ? `https://www.google.com/maps?q=${data.cleaned.best.latitude},${data.cleaned.best.longitude}`
+                        : null
                 })
             } catch (error: any) {
                 lowConfidence++
@@ -655,7 +659,9 @@ app.post('/api/process-complete', express.raw({ type: 'text/csv', limit: '10mb' 
                     },
                     zipCode: null,
                     status: 'failed',
-                    error: error.message
+                    error: error.message,
+                    // No Google Maps link for failed geocoding
+                    googleMapsLink: null
                 })
             }
         }
@@ -1221,6 +1227,9 @@ app.post('/api/location-link/:token/submit', async (req, res) => {
                 updateData.coordinates.accuracy = numericAccuracy
             }
 
+            // Update Google Maps link with new coordinates
+            updateData.googleMapsLink = `https://www.google.com/maps?q=${numericLatitude},${numericLongitude}`
+
             updateData.confirmationMethod = mapAdjusted ? 'map_adjusted' : 'gps'
 
             linkUpdateData.latitude = numericLatitude
@@ -1242,7 +1251,8 @@ app.post('/api/location-link/:token/submit', async (req, res) => {
         const notificationData = {
             ...updateData,
             addressId: linkData.addressId,
-            timestamp: new Date().toISOString()
+            timestamp: new Date().toISOString(),
+            type: 'location_updated'
         }
         notifyAddressUpdate(linkData.userId, linkData.addressId, notificationData)
 

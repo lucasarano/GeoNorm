@@ -50,6 +50,17 @@ export interface AddressRecord {
         neighborhood: string | null
         confidence: 'high' | 'medium' | 'low' | 'none'
     }
+    // Google Maps link (original AI coordinates)
+    googleMapsLink?: string | null
+    // User-updated coordinates (from SMS/email)
+    userUpdatedCoordinates?: {
+        lat: number
+        lng: number
+        accuracy?: number
+        updatedAt: Date
+    }
+    // User-updated Google Maps link
+    userUpdatedGoogleMapsLink?: string | null
 
     // Status tracking
     status: 'processed' | 'pending_confirmation' | 'confirmed' | 'rejected'

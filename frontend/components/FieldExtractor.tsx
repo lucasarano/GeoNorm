@@ -244,6 +244,10 @@ export default function FieldExtractor({ onExtractComplete }: FieldExtractorProp
                         zipCode: data.zipCode,
                         status: geocodingResult.status,
                         needsConfirmation: geocodingResult.needsConfirmation,
+                        // Generate Google Maps link from coordinates
+                        googleMapsLink: data.cleaned?.best?.latitude && data.cleaned?.best?.longitude 
+                            ? `https://www.google.com/maps?q=${data.cleaned.best.latitude},${data.cleaned.best.longitude}`
+                            : null,
                         processedAt: new Date() as any,
                         updatedAt: new Date() as any
                     }

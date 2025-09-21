@@ -1,5 +1,6 @@
 import { VercelRequest, VercelResponse } from '@vercel/node'
 import dotenv from 'dotenv'
+import { randomUUID } from 'crypto'
 import { zipCodeService } from '../backend/services/zipCodeService'
 
 // Load environment variables
@@ -257,7 +258,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             neighborhood: zipCodeResult.neighborhood,
             confidence: zipCodeResult.confidence
           } : null,
-          status: confidence >= 0.8 ? 'high_confidence' : confidence >= 0.6 ? 'medium_confidence' : 'low_confidence'
+          status: confidence >= 0.8 ? 'high_confidence' : confidence >= 0.6 ? 'medium_confidence' : 'low_confidence',
+          // Generate simple Google Maps link
+          googleMapsLink: geo?.best?.latitude && geo?.best?.longitude 
+            ? `https://www.google.com/maps?q=${geo.best.latitude},${geo.best.longitude}`
+            : null
         })
       } catch (error: any) {
         lowConfidence++
@@ -288,7 +293,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           },
           zipCode: null,
           status: 'failed',
-          error: error.message
+          error: error.message,
+          // No Google Maps link for failed geocoding
+          googleMapsLink: null
         })
       }
     }

@@ -57,10 +57,14 @@ interface ProcessedRow {
     }
     status: 'high_confidence' | 'medium_confidence' | 'low_confidence' | 'failed'
     error?: string
-    locationLinkToken?: string
-    locationLinkStatus?: 'pending' | 'sent' | 'submitted' | 'expired'
-    locationLinkExpiresAt?: string
-    lastLocationUpdate?: string
+    googleMapsLink?: string | null
+    userUpdatedCoordinates?: {
+        lat: number
+        lng: number
+        accuracy?: number
+        updatedAt: string
+    }
+    userUpdatedGoogleMapsLink?: string | null
 }
 
 interface DataDashboardProps {
@@ -218,6 +222,34 @@ export default function DataDashboard({ data, statistics, onBack }: DataDashboar
                     setTimeout(() => {
                         setUpdatedRows(new Set())
                     }, 2000)
+                } else if (message.type === 'location_updated') {
+                    console.log('Received location update:', message)
+
+                    const { addressId, data } = message
+
+                    setRows(prev => prev.map(row => {
+                        if (!row.recordId || row.recordId !== addressId) return row
+
+                        return {
+                            ...row,
+                            // Update coordinates with user-provided ones
+                            geocoding: {
+                                ...row.geocoding,
+                                latitude: data.coordinates?.lat || row.geocoding.latitude,
+                                longitude: data.coordinates?.lng || row.geocoding.longitude
+                            },
+                            // Update Google Maps link with new coordinates
+                            googleMapsLink: data.googleMapsLink || row.googleMapsLink,
+                            // Update status to show it's been confirmed by user
+                            status: 'high_confidence' as const
+                        }
+                    }))
+
+                    // Highlight the updated row briefly
+                    setUpdatedRows(new Set([addressId]))
+                    setTimeout(() => {
+                        setUpdatedRows(new Set())
+                    }, 3000)
                 } else if (message.type === 'ping') {
                     // Keep-alive ping, no action needed
                 }
@@ -523,29 +555,41 @@ export default function DataDashboard({ data, statistics, onBack }: DataDashboar
             'Longitude',
             'Formatted Address',
             'Geocoding Confidence',
+            'Google Maps Link',
+            'Zip Code',
+            'Department',
+            'District',
+            'Neighborhood',
             'Status'
         ]
 
         const csvContent = [
             headers.join(','),
-            ...filteredData.map(row => [
-                row.rowIndex + 1,
-                `"${row.original.address}"`,
-                `"${row.original.city}"`,
-                `"${row.original.state}"`,
-                `"${row.original.phone}"`,
-                `"${row.cleaned.address}"`,
-                `"${row.cleaned.city}"`,
-                `"${row.cleaned.state}"`,
-                `"${row.cleaned.phone}"`,
-                `"${row.cleaned.email}"`,
-                row.cleaned.aiConfidence,
-                row.geocoding.latitude || '',
-                row.geocoding.longitude || '',
-                `"${row.geocoding.formattedAddress}"`,
-                row.geocoding.confidence,
-                row.status
-            ].join(','))
+            ...filteredData.map(row => {
+                return [
+                    row.rowIndex + 1,
+                    `"${row.original.address}"`,
+                    `"${row.original.city}"`,
+                    `"${row.original.state}"`,
+                    `"${row.original.phone}"`,
+                    `"${row.cleaned.address}"`,
+                    `"${row.cleaned.city}"`,
+                    `"${row.cleaned.state}"`,
+                    `"${row.cleaned.phone}"`,
+                    `"${row.cleaned.email}"`,
+                    row.cleaned.aiConfidence,
+                    row.geocoding.latitude || '',
+                    row.geocoding.longitude || '',
+                    `"${row.geocoding.formattedAddress}"`,
+                    row.geocoding.confidence,
+                    `"${row.googleMapsLink || ''}"`,
+                    `"${row.zipCode?.zipCode || ''}"`,
+                    `"${row.zipCode?.department || ''}"`,
+                    `"${row.zipCode?.district || ''}"`,
+                    `"${row.zipCode?.neighborhood || ''}"`,
+                    row.status
+                ].join(',')
+            })
         ].join('\n')
 
         const blob = new Blob([csvContent], { type: 'text/csv' })
@@ -749,10 +793,10 @@ export default function DataDashboard({ data, statistics, onBack }: DataDashboar
                                     #
                                 </th>
                                 <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                                    Estado
+                                    Confianza 
                                 </th>
                                 <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                                    Enlace
+                                    Link de Reubicación
                                 </th>
                                 {showOriginal && (
                                     <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
@@ -781,10 +825,10 @@ export default function DataDashboard({ data, statistics, onBack }: DataDashboar
                                     Coordenadas
                                 </th>
                                 <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                                    Confianza
+                                    Geo Conf
                                 </th>
                                 <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                                    AI Conf.
+                                    AI Conf
                                 </th>
                                 <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                                     Mapa
@@ -824,12 +868,24 @@ export default function DataDashboard({ data, statistics, onBack }: DataDashboar
                                             {row.rowIndex + 1}
                                         </td>
                                         <td className="px-4 py-4 whitespace-nowrap">
-                                            <div className="flex items-center">
-                                                {getStatusIcon(row.status)}
-                                                <span className={`ml-2 px-2 py-1 text-xs font-medium rounded-full ${getStatusColor(row.status)}`}>
-                                                    {row.status.replace('_', ' ')}
-                                                </span>
-                                            </div>
+                                            {(() => {
+                                                const ai = (row.cleaned.aiConfidence || 0) / 100
+                                                const geo = row.geocoding.confidence || 0
+                                                const combined = ((8*ai) * (2*geo))/10
+                                                const combinedStatus = combined >= 0.8
+                                                    ? 'high_confidence'
+                                                    : combined >= 0.6
+                                                        ? 'medium_confidence'
+                                                        : 'low_confidence'
+                                                return (
+                                                    <div className="flex items-center">
+                                                        {getStatusIcon(combinedStatus)}
+                                                        <span className={`ml-2 px-2 py-1 text-xs font-medium rounded-full ${getStatusColor(combinedStatus)}`}>
+                                                            {combinedStatus === 'high_confidence' ? 'Alta Confianza' : combinedStatus === 'medium_confidence' ? 'Confianza Media' : 'Baja Confianza'}
+                                                        </span>
+                                                    </div>
+                                                )
+                                            })()}
                                         </td>
                                         <td className="px-4 py-4 whitespace-nowrap">
                                             {row.locationLinkStatus ? (
@@ -897,46 +953,45 @@ export default function DataDashboard({ data, statistics, onBack }: DataDashboar
                                             )}
                                         </td>
                                         <td className="px-4 py-4 text-sm text-gray-900">
-                                            {row.locationLinkToken ? (
+                                            {row.googleMapsLink ? (
                                                 <div className="space-y-1">
-                                                    <div className="flex flex-wrap items-center gap-2">
-                                                        <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${linkStatus.className}`}>
-                                                            {linkStatus.label}
-                                                        </span>
-                                                        {row.lastLocationUpdate && (
-                                                            <span className="text-xs text-gray-500">
-                                                                Actualizado: {formatDateTime(row.lastLocationUpdate)}
+                                                    <div className="flex items-center gap-2">
+                                                        {row.status === 'high_confidence' && row.geocoding.latitude && row.geocoding.longitude && (
+                                                            <span className="px-2 py-0.5 rounded-full text-xs font-medium bg-blue-50 text-blue-700">
+                                                                Actualizado por usuario
                                                             </span>
                                                         )}
                                                     </div>
                                                     <div className="flex items-center gap-2">
-                                                        <span className="text-xs text-gray-600 break-all max-w-[220px] md:max-w-xs">
-                                                            {linkUrl}
-                                                        </span>
+                                                        <a 
+                                                            href={row.googleMapsLink}
+                                                            target="_blank"
+                                                            rel="noopener noreferrer"
+                                                            className="text-xs text-blue-600 hover:text-blue-800 break-all max-w-[220px] md:max-w-xs underline"
+                                                        >
+                                                            {row.googleMapsLink}
+                                                        </a>
                                                         <Button
                                                             onClick={(e) => {
                                                                 e.stopPropagation()
-                                                                handleCopyLink(row)
+                                                                navigator.clipboard.writeText(row.googleMapsLink!)
+                                                                setCopiedLinkId(row.recordId || `row-${row.rowIndex}`)
+                                                                setTimeout(() => setCopiedLinkId(null), 2000)
                                                             }}
                                                             variant="ghost"
                                                             size="icon"
-                                                            className="h-7 w-7 text-orange-600 hover:text-orange-700 hover:bg-orange-50"
+                                                            className="h-7 w-7 text-blue-600 hover:text-blue-700 hover:bg-blue-50"
                                                             title="Copiar enlace"
                                                         >
                                                             <Copy className="w-3.5 h-3.5" />
                                                         </Button>
                                                     </div>
-                                                    {copiedLinkId === (row.recordId || row.locationLinkToken) && (
+                                                    {copiedLinkId === (row.recordId || `row-${row.rowIndex}`) && (
                                                         <span className="text-xs text-green-600">¡Enlace copiado!</span>
-                                                    )}
-                                                    {row.locationLinkExpiresAt && (
-                                                        <div className="text-[11px] text-gray-400">
-                                                            Expira: {formatDateTime(row.locationLinkExpiresAt)}
-                                                        </div>
                                                     )}
                                                 </div>
                                             ) : (
-                                                <span className="text-xs text-gray-400">Sin enlace generado</span>
+                                                <span className="text-xs text-gray-400">Sin coordenadas</span>
                                             )}
                                         </td>
                                         <td className="px-4 py-4 text-sm text-gray-900">
@@ -1210,14 +1265,6 @@ export default function DataDashboard({ data, statistics, onBack }: DataDashboar
                                                                 </div>
                                                                 <div className="text-xs text-gray-500">
                                                                     {row.zipCode.department}
-                                                                </div>
-                                                                <div className={`text-xs px-1.5 py-0.5 rounded ${
-                                                                    row.zipCode.confidence === 'high' ? 'bg-green-100 text-green-800' :
-                                                                    row.zipCode.confidence === 'medium' ? 'bg-yellow-100 text-yellow-800' :
-                                                                    row.zipCode.confidence === 'low' ? 'bg-orange-100 text-orange-800' :
-                                                                    'bg-red-100 text-red-800'
-                                                                }`}>
-                                                                    {row.zipCode.confidence.toUpperCase()}
                                                                 </div>
                                                             </div>
                                                         ) : (
