@@ -258,7 +258,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         const aiConfidence = (cleaned.aiConfidence || 0) / 100
         // Combined confidence calculation: ((8*ai) * (2*geo))/10
         const combinedConfidence = ((8 * aiConfidence) * (2 * geoConfidence)) / 10
-        
+
         if (combinedConfidence >= 0.8) highConfidence++
         else if (combinedConfidence >= 0.6) mediumConfidence++
         else lowConfidence++
@@ -307,7 +307,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           } : null,
           status: combinedConfidence >= 0.8 ? 'high_confidence' : combinedConfidence >= 0.6 ? 'medium_confidence' : 'low_confidence',
           // Generate simple Google Maps link
-          googleMapsLink: geo?.best?.latitude && geo?.best?.longitude 
+          googleMapsLink: geo?.best?.latitude && geo?.best?.longitude
             ? `https://www.google.com/maps?q=${geo.best.latitude},${geo.best.longitude}`
             : null
         })

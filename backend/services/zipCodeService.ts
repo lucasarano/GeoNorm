@@ -41,7 +41,7 @@ class ZipCodeService {
 
   constructor() {
     this.shapefilePath = path.join(process.cwd(), 'backend', 'Pubilc', 'geocoding', 'ZONA_POSTAL_PARAGUAY.shp');
-    
+
     // Define UTM Zone 21S projection (from the .prj file)
     const utm21S = '+proj=utm +zone=21 +south +datum=WGS84 +units=m +no_defs';
     const wgs84 = '+proj=longlat +datum=WGS84 +no_defs';
@@ -52,7 +52,7 @@ class ZipCodeService {
    * Transform UTM coordinates to WGS84
    */
   private transformCoordinates(coordinates: number[][][]): number[][][] {
-    return coordinates.map(ring => 
+    return coordinates.map(ring =>
       ring.map(point => {
         const [x, y] = point;
         const [lng, lat] = this.utmToWgs84.forward([x, y]);
@@ -70,16 +70,16 @@ class ZipCodeService {
     try {
       console.log('[ZIP_CODE_SERVICE] Loading postal zones shapefile...');
       const source = await shapefile.open(this.shapefilePath);
-      
+
       this.postalZones = [];
       let result = await source.read();
-      
+
       while (!result.done) {
         const feature = result.value as unknown as PostalZone;
         this.postalZones.push(feature);
         result = await source.read();
       }
-      
+
       this.isLoaded = true;
       console.log(`[ZIP_CODE_SERVICE] Loaded ${this.postalZones.length} postal zones`);
     } catch (error) {
@@ -109,7 +109,7 @@ class ZipCodeService {
     try {
       // Create a point from the coordinates
       const point = turf.point([longitude, latitude]);
-      
+
       // Check each postal zone to see if the point is inside
       for (const zone of this.postalZones) {
         try {
@@ -127,10 +127,10 @@ class ZipCodeService {
 
           // Transform UTM coordinates to WGS84
           const transformedCoordinates = this.transformCoordinates(coordinates);
-          
+
           // Convert the polygon coordinates to GeoJSON format
           const polygon = turf.polygon(transformedCoordinates);
-          
+
           // Check if the point is inside the polygon
           if (turf.booleanPointInPolygon(point, polygon)) {
             return {
@@ -167,11 +167,11 @@ class ZipCodeService {
 
           // Transform UTM coordinates to WGS84
           const transformedCoordinates = this.transformCoordinates(coordinates);
-          
+
           const polygon = turf.polygon(transformedCoordinates);
           const centroid = turf.centroid(polygon);
           const distance = turf.distance(point, centroid, { units: 'kilometers' });
-          
+
           if (distance < minDistance) {
             minDistance = distance;
             closestZone = zone;
@@ -220,7 +220,7 @@ class ZipCodeService {
     }
 
     const results: ZipCodeResult[] = [];
-    
+
     for (const coord of coordinates) {
       const result = await this.getZipCode(coord.latitude, coord.longitude);
       results.push(result);
