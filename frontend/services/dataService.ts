@@ -42,6 +42,15 @@ export interface AddressRecord {
     locationType: string
     formattedAddress?: string
 
+    // Zip code information
+    zipCode?: {
+        zipCode: string | null
+        department: string | null
+        district: string | null
+        neighborhood: string | null
+        confidence: 'high' | 'medium' | 'low' | 'none'
+    }
+
     // Status tracking
     status: 'processed' | 'pending_confirmation' | 'confirmed' | 'rejected'
     needsConfirmation: boolean

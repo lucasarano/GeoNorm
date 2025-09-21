@@ -31,6 +31,13 @@ interface ProcessedRow {
         locationType: string
         staticMapUrl: string | null
     }
+    zipCode?: {
+        zipCode: string | null
+        department: string | null
+        district: string | null
+        neighborhood: string | null
+        confidence: 'high' | 'medium' | 'low' | 'none'
+    }
     status: 'high_confidence' | 'medium_confidence' | 'low_confidence' | 'failed'
     error?: string
 }
@@ -185,6 +192,7 @@ export default function UnifiedProcessor({ onProcessingComplete }: UnifiedProces
                             row.status === 'medium_confidence' ? 'medium' : 'low',
                         locationType: row.geocoding.locationType,
                         formattedAddress: row.geocoding.formattedAddress,
+                        zipCode: row.zipCode,
                         status: 'processed' as const,
                         needsConfirmation: row.status === 'low_confidence'
                     }))

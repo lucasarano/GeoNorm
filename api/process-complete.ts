@@ -1,5 +1,6 @@
 import { VercelRequest, VercelResponse } from '@vercel/node'
 import dotenv from 'dotenv'
+import { zipCodeService } from '../backend/services/zipCodeService'
 
 // Load environment variables
 dotenv.config()
@@ -214,6 +215,16 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         else if (confidence >= 0.6) mediumConfidence++
         else lowConfidence++
 
+        // Extract zip code if we have coordinates
+        let zipCodeResult = null
+        if (geo?.best?.latitude && geo?.best?.longitude) {
+          try {
+            zipCodeResult = await zipCodeService.getZipCode(geo.best.latitude, geo.best.longitude)
+          } catch (zipError) {
+            console.warn(`[ZIP_CODE] Failed to get zip code for row ${i}:`, zipError)
+          }
+        }
+
         results.push({
           rowIndex: i,
           original: {
@@ -239,6 +250,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             locationType: geo?.best?.location_type || 'N/A',
             staticMapUrl: null
           },
+          zipCode: zipCodeResult ? {
+            zipCode: zipCodeResult.zipCode,
+            department: zipCodeResult.department,
+            district: zipCodeResult.district,
+            neighborhood: zipCodeResult.neighborhood,
+            confidence: zipCodeResult.confidence
+          } : null,
           status: confidence >= 0.8 ? 'high_confidence' : confidence >= 0.6 ? 'medium_confidence' : 'low_confidence'
         })
       } catch (error: any) {
@@ -268,6 +286,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             locationType: 'FAILED',
             staticMapUrl: null
           },
+          zipCode: null,
           status: 'failed',
           error: error.message
         })

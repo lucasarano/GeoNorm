@@ -48,6 +48,13 @@ interface ProcessedRow {
         locationType: string
         staticMapUrl: string | null
     }
+    zipCode?: {
+        zipCode: string | null
+        department: string | null
+        district: string | null
+        neighborhood: string | null
+        confidence: 'high' | 'medium' | 'low' | 'none'
+    }
     status: 'high_confidence' | 'medium_confidence' | 'low_confidence' | 'failed'
     error?: string
     locationLinkToken?: string
@@ -765,6 +772,9 @@ export default function DataDashboard({ data, statistics, onBack }: DataDashboar
                                     Email
                                 </th>
                                 <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                                    Código Postal
+                                </th>
+                                <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                                     Enlace Ubicación
                                 </th>
                                 <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
@@ -860,6 +870,31 @@ export default function DataDashboard({ data, statistics, onBack }: DataDashboar
                                         </td>
                                         <td className="px-4 py-4 text-sm text-gray-900">
                                             {row.cleaned.email || <span className="text-gray-400 italic">Sin email</span>}
+                                        </td>
+                                        <td className="px-4 py-4 text-sm text-gray-900">
+                                            {row.zipCode ? (
+                                                <div className="space-y-1">
+                                                    <div className="font-mono text-sm font-medium">
+                                                        {row.zipCode.zipCode || 'N/A'}
+                                                    </div>
+                                                    <div className="text-xs text-gray-500">
+                                                        {row.zipCode.department}
+                                                    </div>
+                                                    <div className="text-xs text-gray-500">
+                                                        {row.zipCode.district}
+                                                    </div>
+                                                    <div className={`text-xs px-1.5 py-0.5 rounded ${
+                                                        row.zipCode.confidence === 'high' ? 'bg-green-100 text-green-800' :
+                                                        row.zipCode.confidence === 'medium' ? 'bg-yellow-100 text-yellow-800' :
+                                                        row.zipCode.confidence === 'low' ? 'bg-orange-100 text-orange-800' :
+                                                        'bg-red-100 text-red-800'
+                                                    }`}>
+                                                        {row.zipCode.confidence.toUpperCase()}
+                                                    </div>
+                                                </div>
+                                            ) : (
+                                                <span className="text-gray-400 italic">Sin código postal</span>
+                                            )}
                                         </td>
                                         <td className="px-4 py-4 text-sm text-gray-900">
                                             {row.locationLinkToken ? (
@@ -1133,6 +1168,9 @@ export default function DataDashboard({ data, statistics, onBack }: DataDashboar
                                                 Teléfono
                                             </th>
                                             <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                                                Código Postal
+                                            </th>
+                                            <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                                                 Confianza
                                             </th>
                                         </tr>
@@ -1163,6 +1201,28 @@ export default function DataDashboard({ data, statistics, onBack }: DataDashboar
                                                             <Phone className="w-4 h-4 mr-2 text-gray-400" />
                                                             {row.cleaned.phone}
                                                         </div>
+                                                    </td>
+                                                    <td className="px-4 py-4 text-sm text-gray-900">
+                                                        {row.zipCode ? (
+                                                            <div className="space-y-1">
+                                                                <div className="font-mono text-sm font-medium">
+                                                                    {row.zipCode.zipCode || 'N/A'}
+                                                                </div>
+                                                                <div className="text-xs text-gray-500">
+                                                                    {row.zipCode.department}
+                                                                </div>
+                                                                <div className={`text-xs px-1.5 py-0.5 rounded ${
+                                                                    row.zipCode.confidence === 'high' ? 'bg-green-100 text-green-800' :
+                                                                    row.zipCode.confidence === 'medium' ? 'bg-yellow-100 text-yellow-800' :
+                                                                    row.zipCode.confidence === 'low' ? 'bg-orange-100 text-orange-800' :
+                                                                    'bg-red-100 text-red-800'
+                                                                }`}>
+                                                                    {row.zipCode.confidence.toUpperCase()}
+                                                                </div>
+                                                            </div>
+                                                        ) : (
+                                                            <span className="text-gray-400 italic">Sin código postal</span>
+                                                        )}
                                                     </td>
                                                     <td className="px-4 py-4 whitespace-nowrap">
                                                         <div className="flex items-center">

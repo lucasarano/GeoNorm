@@ -11,6 +11,7 @@ import { doc, getDoc, updateDoc, setDoc, collection, query, where, getDocs, Time
 import { db } from './config/firebase.js'
 import { smsService } from './services/smsService'
 import { emailService } from './services/emailService'
+import { zipCodeService } from './services/zipCodeService'
 // Note: dynamically import the cleaner to avoid TS type declaration issues for .js module
 
 const app = express()
@@ -580,6 +581,16 @@ app.post('/api/process-complete', express.raw({ type: 'text/csv', limit: '10mb' 
                 else if (confidence >= 0.6) mediumConfidence++
                 else lowConfidence++
 
+                // Extract zip code if we have coordinates
+                let zipCodeResult = null
+                if (data.cleaned?.best?.latitude && data.cleaned?.best?.longitude) {
+                    try {
+                        zipCodeResult = await zipCodeService.getZipCode(data.cleaned.best.latitude, data.cleaned.best.longitude)
+                    } catch (zipError) {
+                        console.warn(`[ZIP_CODE] Failed to get zip code for row ${i}:`, zipError)
+                    }
+                }
+
                 results.push({
                     rowIndex: i,
                     original: {
@@ -605,6 +616,13 @@ app.post('/api/process-complete', express.raw({ type: 'text/csv', limit: '10mb' 
                         locationType: data.locationType || 'N/A',
                         staticMapUrl: data.staticMapUrl || null
                     },
+                    zipCode: zipCodeResult ? {
+                        zipCode: zipCodeResult.zipCode,
+                        department: zipCodeResult.department,
+                        district: zipCodeResult.district,
+                        neighborhood: zipCodeResult.neighborhood,
+                        confidence: zipCodeResult.confidence
+                    } : null,
                     status: confidence >= 0.8 ? 'high_confidence' :
                         confidence >= 0.6 ? 'medium_confidence' : 'low_confidence'
                 })
@@ -635,6 +653,7 @@ app.post('/api/process-complete', express.raw({ type: 'text/csv', limit: '10mb' 
                         locationType: 'FAILED',
                         staticMapUrl: null
                     },
+                    zipCode: null,
                     status: 'failed',
                     error: error.message
                 })

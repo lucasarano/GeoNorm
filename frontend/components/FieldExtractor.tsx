@@ -241,6 +241,7 @@ export default function FieldExtractor({ onExtractComplete }: FieldExtractorProp
                         geocodingConfidence: geocodingResult.geocodingConfidence,
                         locationType: data.locationType,
                         formattedAddress: data.cleaned?.best?.formatted_address,
+                        zipCode: data.zipCode,
                         status: geocodingResult.status,
                         needsConfirmation: geocodingResult.needsConfirmation,
                         processedAt: new Date() as any,
@@ -469,6 +470,9 @@ export default function FieldExtractor({ onExtractComplete }: FieldExtractorProp
                                     <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                                         Teléfono
                                     </th>
+                                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                                        Código Postal
+                                    </th>
                                 </tr>
                             </thead>
                             <tbody className="bg-white divide-y divide-gray-200">
@@ -490,6 +494,9 @@ export default function FieldExtractor({ onExtractComplete }: FieldExtractorProp
                                         </td>
                                         <td className="px-4 py-4 text-sm text-gray-900">
                                             {row.phone || '-'}
+                                        </td>
+                                        <td className="px-4 py-4 text-sm text-gray-900">
+                                            <span className="text-gray-400 italic">Pendiente de geocodificación</span>
                                         </td>
                                     </tr>
                                 ))}

@@ -417,6 +417,42 @@ export default function DataVisualization({
                                             }
                                         </div>
                                     </div>
+
+                                    {/* Zip Code Information */}
+                                    {row.zipCode && (
+                                        <div className="bg-green-50 border border-green-200 rounded p-3 mt-3">
+                                            <div className="text-xs font-medium text-green-800 mb-2">📮 ZIP CODE INFORMATION</div>
+                                            <div className="grid grid-cols-2 gap-2 text-xs">
+                                                <div>
+                                                    <span className="font-medium">Zip Code:</span>
+                                                    <span className="ml-1 font-mono">{row.zipCode.zipCode || 'N/A'}</span>
+                                                </div>
+                                                <div>
+                                                    <span className="font-medium">Department:</span>
+                                                    <span className="ml-1">{row.zipCode.department || 'N/A'}</span>
+                                                </div>
+                                                <div>
+                                                    <span className="font-medium">District:</span>
+                                                    <span className="ml-1">{row.zipCode.district || 'N/A'}</span>
+                                                </div>
+                                                <div>
+                                                    <span className="font-medium">Neighborhood:</span>
+                                                    <span className="ml-1">{row.zipCode.neighborhood || 'N/A'}</span>
+                                                </div>
+                                                <div className="col-span-2">
+                                                    <span className="font-medium">Confidence:</span>
+                                                    <span className={`ml-1 px-2 py-1 rounded text-xs ${
+                                                        row.zipCode.confidence === 'high' ? 'bg-green-100 text-green-800' :
+                                                        row.zipCode.confidence === 'medium' ? 'bg-yellow-100 text-yellow-800' :
+                                                        row.zipCode.confidence === 'low' ? 'bg-orange-100 text-orange-800' :
+                                                        'bg-red-100 text-red-800'
+                                                    }`}>
+                                                        {row.zipCode.confidence.toUpperCase()}
+                                                    </span>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    )}
                                 </div>
                             )
                         })}
