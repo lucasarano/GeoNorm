@@ -4,14 +4,14 @@ import { buildPrompt } from './buildPrompt.js';
 
 export async function cleanParaguayAddresses(apiKey, csvData) {
     const prompt = buildPrompt(csvData);
-    
+
     console.log('\n=== OpenAI Request Details ===')
     console.log('[OPENAI][REQUEST] Prompt length:', prompt.length)
     console.log('[OPENAI][REQUEST] Full prompt:')
     console.log(prompt)
     console.log('=== End OpenAI Request ===\n')
 
-    const response = await fetch('https://api.openai.com/v1/chat/completions', {
+    const response = await fetch('https://api.openai.com/v1/responses', {
         method: 'POST',
         headers: {
             'Content-Type': 'application/json',
@@ -19,18 +19,24 @@ export async function cleanParaguayAddresses(apiKey, csvData) {
         },
         body: JSON.stringify({
             model: 'gpt-5-mini',
-            messages: [
+            input: [
                 {
                     role: 'system',
                     content:
-                        'You are a meticulous CSV transformer. You MUST: 1) output exactly one RFC-4180 CSV code block with header Address,City,State,Phone,Email,AI_Confidence; 2) when an email is present in any field (especially Address), extract it to the Email column and remove it from Address; 3) keep Phone and Email separate; 4) leave fields blank if unknown; 5) never add commentary outside the CSV code block.'
+                        'You are a meticulous CSV transformer. You MUST: 1) output exactly one RFC-4180 CSV code block with header Original_Address,Original_City,Original_State,Original_Phone,Address,City,State,Phone,Email,AI_Confidence; 2) when an email is present in any field (especially Address), extract it to the Email column and remove it from Address; 3) keep Phone and Email separate; 4) leave fields blank if unknown; 5) never add commentary outside the CSV code block.'
                 },
                 { role: 'user', content: prompt }
             ],
-            temperature: 0,
-            top_p: 1,
-            // Set a generous cap to avoid truncation on bigger batches
-            max_tokens: 8000,
+            // Set reasoning effort to minimal for faster processing
+            reasoning: {
+                effort: 'minimal'
+            },
+            // Set verbosity to low for concise output  
+            text: {
+                verbosity: 'low'
+            },
+            // Responses API uses max_output_tokens instead of max_tokens
+            max_output_tokens: 8000,
         }),
     });
 
@@ -40,13 +46,39 @@ export async function cleanParaguayAddresses(apiKey, csvData) {
     }
 
     const result = await response.json();
-    
+
     console.log('\n=== OpenAI Response Details ===')
     console.log('[OPENAI][RESPONSE] Full API response:')
     console.log(JSON.stringify(result, null, 2))
     console.log('=== End OpenAI Response ===\n')
-    
-    const content = result?.choices?.[0]?.message?.content;
+
+    // Responses API returns text in result.output array
+    let content = null;
+
+    // Try different ways to extract content from GPT-5 response
+    if (result.output_text) {
+        content = result.output_text;
+    } else if (result.output && Array.isArray(result.output)) {
+        // Look for message content in the output array
+        for (const output of result.output) {
+            if (output.type === 'message' && output.content && Array.isArray(output.content)) {
+                for (const contentItem of output.content) {
+                    if (contentItem.type === 'output_text' && contentItem.text) {
+                        content = contentItem.text;
+                        break;
+                    }
+                }
+                if (content) break;
+            }
+        }
+    } else if (result?.choices?.[0]?.message?.content) {
+        // Fallback for older API format
+        content = result.choices[0].message.content;
+    }
+
+    console.log('[OPENAI][CONTENT] Extracted content length:', content?.length || 0);
+    console.log('[OPENAI][CONTENT] Content preview:', content?.substring(0, 200) || 'No content found');
+
     if (!content) throw new Error('Empty response from OpenAI');
 
     // Extract CSV from a fenced block; be forgiving on whitespace/labels

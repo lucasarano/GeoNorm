@@ -112,7 +112,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     // @ts-ignore - JS module without TypeScript types
     const cleanerModule: any = await import('../backend/cleanParaguayAddresses.js')
     const cleanedCsv: string = await cleanerModule.cleanParaguayAddresses(openaiApiKey, csvForCleaning)
-    
+
     console.log('\n=== BATCH PROCESSING: OpenAI Response ===')
     console.log('[OPENAI][OUTPUT] Response length:', cleanedCsv?.length)
     console.log('[OPENAI][OUTPUT] Full cleaned CSV:')
@@ -271,7 +271,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       console.log(`[GEOCODE][${i}][INPUT] City: "${cleaned.city}"`)
       console.log(`[GEOCODE][${i}][INPUT] State: "${cleaned.state}"`)
       console.log(`[GEOCODE][${i}][INPUT] AI Confidence: ${cleaned.aiConfidence}%`)
-      
+
       // Use AI-extracted ORIGINAL fields (uncleaned)
       const original = {
         address: cleaned.originalAddress,
@@ -298,11 +298,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         const aiConfidence = (cleaned.aiConfidence || 0) / 100
         // Combined confidence calculation: ((8*ai) * (2*geo))/10
         const combinedConfidence = ((8 * aiConfidence) * (2 * geoConfidence)) / 10
-        
+
         console.log(`[GEOCODE][${i}][CALCULATION] AI Confidence: ${aiConfidence} (${cleaned.aiConfidence}%)`)
         console.log(`[GEOCODE][${i}][CALCULATION] Geo Confidence: ${geoConfidence}`)
         console.log(`[GEOCODE][${i}][CALCULATION] Combined: ${combinedConfidence}`)
-        
+
         if (combinedConfidence >= 0.8) {
           highConfidence++
           console.log(`[GEOCODE][${i}][RESULT] HIGH CONFIDENCE`)
