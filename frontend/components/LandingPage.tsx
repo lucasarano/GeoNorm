@@ -361,17 +361,12 @@ export default function LandingPage({ onGetStarted, onSMSTest, onEmailTest }: La
             <section className="relative z-10 py-20 px-4 sm:px-6 lg:px-8 bg-gradient-to-br from-gray-50 to-orange-50">
                 <div className="max-w-7xl mx-auto">
                     <div className="text-center mb-16">
-                        <div className="flex justify-center mb-6">
-                            <div className="w-16 h-16 bg-gradient-to-r from-orange-500 to-amber-500 rounded-2xl flex items-center justify-center shadow-lg">
-                                <Sparkles className="w-8 h-8 text-white" />
-                            </div>
-                        </div>
                         <h2 className="text-4xl md:text-5xl font-bold text-gray-900 mb-6">
                             Elige Tu
                             <span className="bg-gradient-to-r from-orange-500 to-amber-500 bg-clip-text text-transparent"> Plan</span>
                         </h2>
                         <p className="text-xl text-gray-600 max-w-3xl mx-auto">
-                            Desde prueba gratuita hasta soluciones empresariales. Encuentra el plan perfecto para tus necesidades.
+                            Transforma tus datos de direcciones con nuestro pipeline de geocodificación impulsado por IA. Desde pruebas gratuitas hasta soluciones empresariales, tenemos el plan perfecto para tus necesidades.
                         </p>
                     </div>
 
@@ -379,24 +374,21 @@ export default function LandingPage({ onGetStarted, onSMSTest, onEmailTest }: La
                         {/* Free Trial Plan */}
                         <div className="bg-white rounded-3xl shadow-xl border border-gray-100 p-8 hover:shadow-2xl transition-all duration-300 hover:-translate-y-1">
                             <div className="text-center mb-8">
-                                <div className="w-16 h-16 bg-gradient-to-r from-blue-500 to-cyan-500 rounded-2xl flex items-center justify-center mx-auto mb-4 shadow-lg">
-                                    <MapPin className="w-8 h-8 text-white" />
-                                </div>
                                 <h3 className="text-2xl font-bold text-gray-900 mb-2">Prueba Gratuita</h3>
                                 <div className="mb-4">
                                     <span className="text-4xl font-bold text-gray-900">$0</span>
-                                    <span className="text-gray-600 ml-2">/siempre</span>
+                                    <span className="text-gray-600 ml-2">/para siempre</span>
                                 </div>
                                 <p className="text-gray-600">Prueba nuestro pipeline con 5 usos gratuitos</p>
                             </div>
 
                             <div className="space-y-4 mb-8">
                                 {[
-                                    '5 usos gratuitos del pipeline',
-                                    'Carga y procesamiento CSV',
-                                    'Limpieza con IA',
-                                    'Geocodificación Google Maps',
-                                    'Exportación CSV',
+                                    '5 usos gratis de normalización de direcciones con IA',
+                                    'Transformación a coordenadas precisas',
+                                    'Descarga de data limpia y procesada',
+                                    'Sistema de seguimiento para direcciones incorrectas',
+                                    'Carga y procesamiento de archivos CSV',
                                     'Soporte básico'
                                 ].map((feature, index) => (
                                     <div key={index} className="flex items-center">
@@ -406,6 +398,24 @@ export default function LandingPage({ onGetStarted, onSMSTest, onEmailTest }: La
                                         <span className="text-gray-700">{feature}</span>
                                     </div>
                                 ))}
+                            </div>
+
+                            <div className="mb-6">
+                                <p className="text-sm font-semibold text-gray-500 mb-3">Limitaciones:</p>
+                                <div className="space-y-2">
+                                    <div className="flex items-center">
+                                        <div className="w-5 h-5 bg-gray-200 rounded-full flex items-center justify-center mr-3 flex-shrink-0">
+                                            <div className="w-2 h-2 bg-gray-400 rounded-full" />
+                                        </div>
+                                        <span className="text-sm text-gray-500">5 usos en total</span>
+                                    </div>
+                                    <div className="flex items-center">
+                                        <div className="w-5 h-5 bg-gray-200 rounded-full flex items-center justify-center mr-3 flex-shrink-0">
+                                            <div className="w-2 h-2 bg-gray-400 rounded-full" />
+                                        </div>
+                                        <span className="text-sm text-gray-500">Sin acceso a API</span>
+                                    </div>
+                                </div>
                             </div>
 
                             <Button
@@ -429,25 +439,22 @@ export default function LandingPage({ onGetStarted, onSMSTest, onEmailTest }: La
                             </div>
 
                             <div className="text-center mb-8">
-                                <div className="w-16 h-16 bg-gradient-to-r from-orange-500 to-pink-500 rounded-2xl flex items-center justify-center mx-auto mb-4 shadow-lg">
-                                    <Zap className="w-8 h-8 text-white" />
-                                </div>
                                 <h3 className="text-2xl font-bold text-gray-900 mb-2">Plan Pro</h3>
                                 <div className="mb-4">
                                     <span className="text-4xl font-bold text-gray-900">$49</span>
-                                    <span className="text-gray-600 ml-2">/mes</span>
+                                    <span className="text-gray-600 ml-2">/por mes</span>
                                 </div>
                                 <p className="text-gray-600">Procesamiento ilimitado para empresas</p>
                             </div>
 
                             <div className="space-y-4 mb-8">
                                 {[
-                                    'Usos ilimitados del pipeline',
-                                    'Procesamiento prioritario',
-                                    'Acceso a API',
-                                    'Procesamiento por lotes',
-                                    'Soporte prioritario',
-                                    'Analíticas de uso'
+                                    'Base de datos para guardar tus procesamientos',
+                                    'Procesamientos ilimitados de direcciones',
+                                    'Soporte completo de nuestro equipo técnico',
+                                    'Procesamiento prioritario y rápido',
+                                    'Acceso completo a todas las funciones',
+                                    'Analíticas detalladas de uso'
                                 ].map((feature, index) => (
                                     <div key={index} className="flex items-center">
                                         <div className="w-5 h-5 bg-gradient-to-r from-orange-500 to-pink-500 rounded-full flex items-center justify-center mr-3 flex-shrink-0">
@@ -472,24 +479,21 @@ export default function LandingPage({ onGetStarted, onSMSTest, onEmailTest }: La
                         {/* Enterprise Plan */}
                         <div className="bg-white rounded-3xl shadow-xl border border-gray-100 p-8 hover:shadow-2xl transition-all duration-300 hover:-translate-y-1">
                             <div className="text-center mb-8">
-                                <div className="w-16 h-16 bg-gradient-to-r from-purple-500 to-indigo-500 rounded-2xl flex items-center justify-center mx-auto mb-4 shadow-lg">
-                                    <Shield className="w-8 h-8 text-white" />
-                                </div>
                                 <h3 className="text-2xl font-bold text-gray-900 mb-2">Enterprise</h3>
                                 <div className="mb-4">
                                     <span className="text-4xl font-bold text-gray-900">Personalizado</span>
                                 </div>
-                                <p className="text-gray-600">Integración y automatización personalizada</p>
+                                <p className="text-gray-600">Integración y automatización personalizada para empresas</p>
                             </div>
 
                             <div className="space-y-4 mb-8">
                                 {[
-                                    'Todo lo del Plan Pro',
-                                    'Integración API personalizada',
-                                    'Solución white-label',
-                                    'Soporte dedicado',
-                                    'Despliegue personalizado',
-                                    'Acuerdos SLA'
+                                    'Todo lo incluido en Plan Pro',
+                                    'Integración completa con API personalizada',
+                                    'Integración con automatización customizada a su empresa',
+                                    'Todo ilimitado sin restricciones',
+                                    'Soporte técnico dedicado 24/7',
+                                    'Solución white-label personalizada'
                                 ].map((feature, index) => (
                                     <div key={index} className="flex items-center">
                                         <div className="w-5 h-5 bg-gradient-to-r from-purple-500 to-indigo-500 rounded-full flex items-center justify-center mr-3 flex-shrink-0">
@@ -516,28 +520,54 @@ export default function LandingPage({ onGetStarted, onSMSTest, onEmailTest }: La
                     <div className="mt-20">
                         <div className="text-center mb-12">
                             <h3 className="text-3xl font-bold text-gray-900 mb-4">Preguntas Frecuentes</h3>
-                            <p className="text-gray-600">Todo lo que necesitas saber sobre nuestros planes</p>
+                            <p className="text-gray-600">Todo lo que necesitas saber sobre nuestros planes de precios</p>
                         </div>
-                        
+
                         <div className="grid md:grid-cols-2 gap-8">
                             <div className="bg-white rounded-2xl p-6 shadow-lg">
                                 <h4 className="font-semibold text-gray-900 mb-3">¿Qué pasa después de mi prueba gratuita?</h4>
-                                <p className="text-gray-600">Actualiza a Pro para acceso ilimitado. Tus datos permanecen accesibles.</p>
+                                <p className="text-gray-600">Actualiza a Pro para acceso ilimitado. Tus datos permanecen accesibles y seguros.</p>
                             </div>
-                            
+
                             <div className="bg-white rounded-2xl p-6 shadow-lg">
                                 <h4 className="font-semibold text-gray-900 mb-3">¿Puedo cambiar de plan en cualquier momento?</h4>
                                 <p className="text-gray-600">¡Sí! Actualiza o degrada tu plan cuando quieras. Los cambios toman efecto inmediatamente.</p>
                             </div>
-                            
+
                             <div className="bg-white rounded-2xl p-6 shadow-lg">
                                 <h4 className="font-semibold text-gray-900 mb-3">¿Qué incluye Enterprise?</h4>
-                                <p className="text-gray-600">Integración API personalizada, white-labeling, soporte dedicado y opciones de despliegue personalizado.</p>
+                                <p className="text-gray-600">Integración API personalizada, automatización customizada, soporte dedicado y todo ilimitado.</p>
                             </div>
-                            
+
                             <div className="bg-white rounded-2xl p-6 shadow-lg">
                                 <h4 className="font-semibold text-gray-900 mb-3">¿Ofrecen reembolsos?</h4>
                                 <p className="text-gray-600">Garantía de devolución de dinero de 30 días para planes Pro.</p>
+                            </div>
+                        </div>
+                    </div>
+
+                    {/* Contact Section */}
+                    <div className="mt-16 bg-gradient-to-r from-gray-900 to-gray-800 text-white rounded-3xl p-8 md:p-12">
+                        <div className="text-center">
+                            <Users className="w-12 h-12 mx-auto mb-6 text-orange-400" />
+                            <h3 className="text-3xl font-bold mb-4">¿Necesitas una Solución Personalizada?</h3>
+                            <p className="text-gray-300 mb-8 max-w-2xl mx-auto">
+                                Plan Enterprise con integración API personalizada, servicios de automatización y soporte dedicado.
+                            </p>
+                            <div className="flex flex-col sm:flex-row gap-4 justify-center">
+                                <a
+                                    href="mailto:sales@geonorm.com"
+                                    className="bg-orange-500 hover:bg-orange-600 text-white px-8 py-3 rounded-2xl font-semibold transition-colors flex items-center justify-center"
+                                >
+                                    <Mail className="w-5 h-5 mr-2" />
+                                    Contactar Ventas
+                                </a>
+                                <button
+                                    onClick={onGetStarted}
+                                    className="border border-gray-600 hover:border-gray-500 text-white px-8 py-3 rounded-2xl font-semibold transition-colors"
+                                >
+                                    Comenzar Prueba Gratuita
+                                </button>
                             </div>
                         </div>
                     </div>

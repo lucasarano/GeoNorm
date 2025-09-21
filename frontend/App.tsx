@@ -1,6 +1,5 @@
 import React, { useState } from 'react'
 import LandingPage from './components/LandingPage'
-import PricingPage from './components/PricingPage'
 import RegistrationPage from './components/auth/RegistrationPage'
 import UnifiedProcessor from './components/UnifiedProcessor'
 import DataDashboard from './components/DataDashboard'
@@ -9,7 +8,7 @@ import LocationCollection from './components/LocationCollection'
 import SMSTest from './components/SMSTest'
 import EmailTest from './components/EmailTest'
 
-type AppState = 'landing' | 'pricing' | 'registration' | 'pipeline' | 'dashboard' | 'data-history' | 'location-collection' | 'sms-test' | 'email-test'
+type AppState = 'landing' | 'registration' | 'pipeline' | 'dashboard' | 'data-history' | 'location-collection' | 'sms-test' | 'email-test'
 
 interface ProcessingResult {
   success: boolean
@@ -40,25 +39,9 @@ function App() {
   if (currentView === 'landing') {
     return (
       <LandingPage
-        onGetStarted={() => setCurrentView('pricing')}
+        onGetStarted={() => setCurrentView('registration')}
         onSMSTest={() => setCurrentView('sms-test')}
         onEmailTest={() => setCurrentView('email-test')}
-      />
-    )
-  }
-
-  if (currentView === 'pricing') {
-    return (
-      <PricingPage
-        onSelectPlan={(plan) => {
-          if (plan === 'free') {
-            setCurrentView('registration')
-          } else {
-            // For pro/enterprise, they need to register first then upgrade
-            setCurrentView('registration')
-          }
-        }}
-        onGetStarted={() => setCurrentView('registration')}
       />
     )
   }
@@ -67,7 +50,7 @@ function App() {
     return (
       <RegistrationPage
         onRegistrationComplete={() => setCurrentView('pipeline')}
-        onBackToHome={() => setCurrentView('pricing')}
+        onBackToHome={() => setCurrentView('landing')}
       />
     )
   }
@@ -227,12 +210,6 @@ function App() {
               </div>
             </div>
             <div className="flex items-center space-x-4">
-              <button
-                onClick={() => setCurrentView('pricing')}
-                className="text-gray-600 hover:text-orange-600 transition-colors duration-200 text-sm font-medium"
-              >
-                💎 Planes y Precios
-              </button>
               <button
                 onClick={() => setCurrentView('data-history')}
                 className="text-gray-600 hover:text-orange-600 transition-colors duration-200 text-sm font-medium"
