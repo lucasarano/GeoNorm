@@ -211,9 +211,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       }
       try {
         const geo = await geocode(cleaned.address, cleaned.city, cleaned.state)
-        const confidence = geo?.best?.confidence_score || 0
-        if (confidence >= 0.8) highConfidence++
-        else if (confidence >= 0.6) mediumConfidence++
+        const geoConfidence = geo?.best?.confidence_score || 0
+        const aiConfidence = (cleaned.aiConfidence || 0) / 100
+        // Combined confidence calculation: ((8*ai) * (2*geo))/10
+        const combinedConfidence = ((8 * aiConfidence) * (2 * geoConfidence)) / 10
+        
+        if (combinedConfidence >= 0.8) highConfidence++
+        else if (combinedConfidence >= 0.6) mediumConfidence++
         else lowConfidence++
 
         // Extract zip code if we have coordinates
@@ -246,7 +250,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             latitude: geo?.best?.latitude || null,
             longitude: geo?.best?.longitude || null,
             formattedAddress: geo?.best?.formatted_address || '',
-            confidence: confidence,
+            confidence: geoConfidence,
             confidenceDescription: geo?.best?.confidence_description || 'No geocoding result',
             locationType: geo?.best?.location_type || 'N/A',
             staticMapUrl: null
@@ -258,7 +262,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             neighborhood: zipCodeResult.neighborhood,
             confidence: zipCodeResult.confidence
           } : null,
-          status: confidence >= 0.8 ? 'high_confidence' : confidence >= 0.6 ? 'medium_confidence' : 'low_confidence',
+          status: combinedConfidence >= 0.8 ? 'high_confidence' : combinedConfidence >= 0.6 ? 'medium_confidence' : 'low_confidence',
           // Generate simple Google Maps link
           googleMapsLink: geo?.best?.latitude && geo?.best?.longitude 
             ? `https://www.google.com/maps?q=${geo.best.latitude},${geo.best.longitude}`

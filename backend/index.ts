@@ -575,10 +575,14 @@ app.post('/api/process-complete', express.raw({ type: 'text/csv', limit: '10mb' 
                 if (!resp.ok) throw new Error(`Geocode error ${resp.status}`)
                 const data = await resp.json()
 
-                // Categorize by confidence
-                const confidence = data.confidence || 0
-                if (confidence >= 0.8) highConfidence++
-                else if (confidence >= 0.6) mediumConfidence++
+                // Categorize by combined confidence
+                const geoConfidence = data.confidence || 0
+                const aiConfidence = (cleaned.aiConfidence || 0) / 100
+                // Combined confidence calculation: ((8*ai) * (2*geo))/10
+                const combinedConfidence = ((8 * aiConfidence) * (2 * geoConfidence)) / 10
+                
+                if (combinedConfidence >= 0.8) highConfidence++
+                else if (combinedConfidence >= 0.6) mediumConfidence++
                 else lowConfidence++
 
                 // Extract zip code if we have coordinates
@@ -611,7 +615,7 @@ app.post('/api/process-complete', express.raw({ type: 'text/csv', limit: '10mb' 
                         latitude: data.cleaned?.best?.latitude || null,
                         longitude: data.cleaned?.best?.longitude || null,
                         formattedAddress: data.cleaned?.best?.formatted_address || '',
-                        confidence: confidence,
+                        confidence: geoConfidence,
                         confidenceDescription: data.confidenceDescription || 'Unknown',
                         locationType: data.locationType || 'N/A',
                         staticMapUrl: data.staticMapUrl || null
@@ -623,8 +627,8 @@ app.post('/api/process-complete', express.raw({ type: 'text/csv', limit: '10mb' 
                         neighborhood: zipCodeResult.neighborhood,
                         confidence: zipCodeResult.confidence
                     } : null,
-                    status: confidence >= 0.8 ? 'high_confidence' :
-                        confidence >= 0.6 ? 'medium_confidence' : 'low_confidence',
+                    status: combinedConfidence >= 0.8 ? 'high_confidence' :
+                        combinedConfidence >= 0.6 ? 'medium_confidence' : 'low_confidence',
                     // Generate simple Google Maps link
                     googleMapsLink: data.cleaned?.best?.latitude && data.cleaned?.best?.longitude 
                         ? `https://www.google.com/maps?q=${data.cleaned.best.latitude},${data.cleaned.best.longitude}`
