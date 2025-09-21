@@ -2,6 +2,7 @@ import { VercelRequest, VercelResponse } from '@vercel/node'
 import dotenv from 'dotenv'
 import { randomUUID } from 'crypto'
 import { zipCodeService } from '../backend/services/zipCodeService'
+import { userService } from '../backend/services/firebaseUserService'
 
 // Load environment variables
 dotenv.config()
@@ -10,7 +11,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   // Set CORS headers
   res.setHeader('Access-Control-Allow-Origin', '*')
   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS')
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type')
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization')
 
   if (req.method === 'OPTIONS') {
     return res.status(200).end()
@@ -21,6 +22,29 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   }
 
   try {
+    // Get user ID from Authorization header or body
+    const authHeader = req.headers.authorization
+    const userId = authHeader?.replace('Bearer ', '') || req.body?.userId
+
+    if (!userId) {
+      return res.status(401).json({
+        error: 'Authentication required',
+        message: 'Please provide a user ID to process data'
+      })
+    }
+
+    // Check if user can process (usage limits)
+    const usageCheck = await userService.canUserProcess(userId)
+    if (!usageCheck.canProcess) {
+      return res.status(429).json({
+        error: 'Usage limit exceeded',
+        message: usageCheck.reason,
+        remainingTries: usageCheck.remainingTries,
+        plan: usageCheck.plan,
+        upgradeRequired: true
+      })
+    }
+
     // Debug logging
     const contentType = req.headers['content-type'] || ''
     console.log('[DEBUG] Request method:', req.method)
@@ -48,6 +72,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     let csvData: string | undefined
     if (typeof req.body === 'string') {
       csvData = req.body
+    } else if (req.body?.csvData) {
+      csvData = req.body.csvData
     } else if ((req as any).body && Buffer.isBuffer((req as any).body)) {
       csvData = (req as any).body.toString('utf8')
     } else {
@@ -215,7 +241,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         const aiConfidence = (cleaned.aiConfidence || 0) / 100
         // Combined confidence calculation: ((8*ai) * (2*geo))/10
         const combinedConfidence = ((8 * aiConfidence) * (2 * geoConfidence)) / 10
-        
+
         if (combinedConfidence >= 0.8) highConfidence++
         else if (combinedConfidence >= 0.6) mediumConfidence++
         else lowConfidence++
@@ -264,7 +290,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           } : null,
           status: combinedConfidence >= 0.8 ? 'high_confidence' : combinedConfidence >= 0.6 ? 'medium_confidence' : 'low_confidence',
           // Generate simple Google Maps link
-          googleMapsLink: geo?.best?.latitude && geo?.best?.longitude 
+          googleMapsLink: geo?.best?.latitude && geo?.best?.longitude
             ? `https://www.google.com/maps?q=${geo.best.latitude},${geo.best.longitude}`
             : null
         })
@@ -306,6 +332,22 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     console.log(`[UNIFIED_PROCESS] Processed ${results.length} addresses`)
 
+    // Update usage tracking after successful processing
+    if (usageCheck.plan === 'free') {
+      // If user is on free trial, use one of their free tries
+      const freeTrialResult = await userService.useFreeTrial(userId)
+      if (!freeTrialResult.success) {
+        console.error('Warning: Could not update free trial usage:', freeTrialResult.message)
+      }
+    } else if (usageCheck.plan === 'pro' || usageCheck.plan === 'enterprise') {
+      // For paid users, just update last used timestamp (they have unlimited access)
+      try {
+        await userService.updateUserUsage(userId)
+      } catch (error) {
+        console.error('Warning: Could not update user usage:', error)
+      }
+    }
+
     // Note: Data will be saved to Firebase by the frontend after processing
     // The frontend will handle the Firebase integration using the existing DataService
 
@@ -318,7 +360,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         lowConfidence,
         totalRows: results.length
       },
-      results
+      results,
+      usageInfo: {
+        plan: usageCheck.plan,
+        remainingTries: usageCheck.remainingTries,
+        isFreeTrial: usageCheck.plan === 'free',
+        isPaidUser: usageCheck.plan === 'pro' || usageCheck.plan === 'enterprise'
+      }
     })
 
   } catch (error: any) {

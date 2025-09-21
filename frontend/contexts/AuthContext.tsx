@@ -13,13 +13,24 @@ import { auth, googleProvider, db } from '../lib/firebase'
 // Use the User type from the auth instance
 type User = import('firebase/auth').User
 
+interface UserUsage {
+  freeTriesUsed: number
+  freeTriesLimit: number
+  hasUsedFreeTrial: boolean
+  plan: 'free' | 'pro' | 'enterprise'
+  requestsCount: number
+  maxRequests: number
+}
+
 interface AuthContextType {
   currentUser: User | null
+  userUsage: UserUsage | null
   loading: boolean
   signup: (email: string, password: string, name: string) => Promise<void>
   login: (email: string, password: string) => Promise<void>
   loginWithGoogle: () => Promise<void>
   logout: () => Promise<void>
+  refreshUserUsage: () => Promise<void>
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined)
@@ -34,7 +45,32 @@ export function useAuth() {
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [currentUser, setCurrentUser] = useState<User | null>(null)
+  const [userUsage, setUserUsage] = useState<UserUsage | null>(null)
   const [loading, setLoading] = useState(true)
+
+  const refreshUserUsage = async () => {
+    if (!currentUser) {
+      setUserUsage(null)
+      return
+    }
+
+    try {
+      const userDoc = await getDoc(doc(db, 'users', currentUser.uid))
+      if (userDoc.exists()) {
+        const userData = userDoc.data()
+        setUserUsage({
+          freeTriesUsed: userData.freeTriesUsed || 0,
+          freeTriesLimit: userData.freeTriesLimit || 5,
+          hasUsedFreeTrial: userData.hasUsedFreeTrial || false,
+          plan: userData.plan || 'free',
+          requestsCount: userData.requestsCount || 0,
+          maxRequests: userData.maxRequests || 5
+        })
+      }
+    } catch (error) {
+      console.error('Error fetching user usage:', error)
+    }
+  }
 
   const signup = async (email: string, password: string, name: string) => {
     const { user } = await createUserWithEmailAndPassword(auth, email, password)
@@ -44,12 +80,17 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       displayName: name
     })
 
-    // Create user document in Firestore
+    // Create user document in Firestore with usage tracking
     await setDoc(doc(db, 'users', user.uid), {
       name: name,
       email: email,
       createdAt: new Date().toISOString(),
       plan: 'free',
+      freeTriesUsed: 0,
+      freeTriesLimit: 5,
+      hasUsedFreeTrial: false,
+      requestsCount: 0,
+      maxRequests: 5,
       usage: {
         addressesProcessed: 0,
         lastReset: new Date().toISOString()
@@ -74,6 +115,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         email: user.email,
         createdAt: new Date().toISOString(),
         plan: 'free',
+        freeTriesUsed: 0,
+        freeTriesLimit: 5,
+        hasUsedFreeTrial: false,
+        requestsCount: 0,
+        maxRequests: 5,
         usage: {
           addressesProcessed: 0,
           lastReset: new Date().toISOString()
@@ -84,11 +130,17 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const logout = async () => {
     await signOut(auth)
+    setUserUsage(null)
   }
 
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, (user) => {
+    const unsubscribe = onAuthStateChanged(auth, async (user) => {
       setCurrentUser(user)
+      if (user) {
+        await refreshUserUsage()
+      } else {
+        setUserUsage(null)
+      }
       setLoading(false)
     })
 
@@ -97,11 +149,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const value = {
     currentUser,
+    userUsage,
     loading,
     signup,
     login,
     loginWithGoogle,
-    logout
+    logout,
+    refreshUserUsage
   }
 
   return (

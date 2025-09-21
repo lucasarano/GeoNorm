@@ -1,9 +1,12 @@
-import React, { useState } from 'react'
+import React, { useState, useEffect } from 'react'
 import { Card } from './shared/ui/card'
 import { Button } from './shared/ui/button'
 import { Upload, FileText, Sparkles, MapPin, CheckCircle } from 'lucide-react'
 import { DataService } from '../services/dataService'
 import { useAuth } from '../contexts/AuthContext'
+import { UsageService } from '../services/usageService'
+import UsageDisplay from './UsageDisplay'
+import UpgradeModal from './UpgradeModal'
 
 interface ProcessedRow {
     rowIndex: number
@@ -59,12 +62,36 @@ interface UnifiedProcessorProps {
 }
 
 export default function UnifiedProcessor({ onProcessingComplete }: UnifiedProcessorProps) {
-    const { currentUser } = useAuth()
+    const { currentUser, refreshUserUsage } = useAuth()
     const [file, setFile] = useState<File | null>(null)
     const [isProcessing, setIsProcessing] = useState(false)
     const [currentStep, setCurrentStep] = useState<'upload' | 'extracting' | 'cleaning' | 'geocoding' | 'completed'>('upload')
     const [progress, setProgress] = useState(0)
     const [stepDetails, setStepDetails] = useState<string>('')
+    const [canProcess, setCanProcess] = useState(true)
+    const [usageMessage, setUsageMessage] = useState('')
+    const [showUpgradeModal, setShowUpgradeModal] = useState(false)
+
+    // Check usage when component mounts and when user changes
+    useEffect(() => {
+        if (currentUser) {
+            checkUsage()
+        }
+    }, [currentUser])
+
+    const checkUsage = async () => {
+        if (!currentUser) return
+
+        try {
+            const result = await UsageService.checkUsage(currentUser.uid)
+            setCanProcess(result.canProcess)
+            setUsageMessage(result.reason)
+        } catch (error) {
+            console.error('Error checking usage:', error)
+            setCanProcess(false)
+            setUsageMessage('Error checking usage limits')
+        }
+    }
 
     const handleFileUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
         const selectedFile = event.target.files?.[0]
@@ -78,7 +105,16 @@ export default function UnifiedProcessor({ onProcessingComplete }: UnifiedProces
     }
 
     const processCSV = async () => {
-        if (!file) return
+        if (!file || !currentUser) return
+
+        // Check usage again before processing
+        const usageResult = await UsageService.checkUsage(currentUser.uid)
+        if (!usageResult.canProcess) {
+            setUsageMessage(usageResult.reason)
+            setCanProcess(false)
+            setShowUpgradeModal(true)
+            return
+        }
 
         setIsProcessing(true)
         setProgress(0)
@@ -112,38 +148,51 @@ export default function UnifiedProcessor({ onProcessingComplete }: UnifiedProces
             setStepDetails('Geocodificando direcciones con Google Maps...')
             setProgress(70)
 
-            // Send to unified backend endpoint
+            // Send to unified backend endpoint with user authentication
             const response = await fetch('/api/process-complete', {
                 method: 'POST',
                 headers: {
-                    'Content-Type': 'text/csv',
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${currentUser.uid}`
                 },
-                body: csvContent
+                body: JSON.stringify({
+                    csvData: csvContent,
+                    userId: currentUser.uid
+                })
             })
 
             if (!response.ok) {
-                const errorBody = await response.text()
+                const errorBody = await response.json().catch(() => ({ error: 'Unknown error' }))
                 console.error('Server error response:', errorBody)
 
+                // Handle usage limit errors
+                if (response.status === 429) {
+                    setUsageMessage(errorBody.message || 'Usage limit exceeded')
+                    setCanProcess(false)
+                    await refreshUserUsage()
+                    if (errorBody.upgradeRequired) {
+                        setShowUpgradeModal(true)
+                    }
+                    return
+                }
+
                 let errorMessage = `Error en el servidor: ${response.status}`
-                try {
-                    const errorJson = JSON.parse(errorBody)
-                    if (errorJson.error) {
-                        errorMessage = errorJson.error
-                    }
-                    if (errorJson.availableHeaders) {
-                        errorMessage += `\n\nColumnas disponibles: ${errorJson.availableHeaders.join(', ')}`
-                        errorMessage += `\nColumnas requeridas: ${errorJson.requiredHeaders.join(', ')}`
-                    }
-                } catch (e) {
-                    // If error response is not JSON, use the text as is
-                    errorMessage = errorBody || errorMessage
+                if (errorBody.error) {
+                    errorMessage = errorBody.error
+                }
+                if (errorBody.availableHeaders) {
+                    errorMessage += `\n\nColumnas disponibles: ${errorBody.availableHeaders.join(', ')}`
+                    errorMessage += `\nColumnas requeridas: ${errorBody.requiredHeaders.join(', ')}`
                 }
 
                 throw new Error(errorMessage)
             }
 
             const result: ProcessingResult = await response.json()
+
+            // Refresh usage after successful processing
+            await refreshUserUsage()
+            await checkUsage()
 
             setStepDetails('Finalizando procesamiento...')
             setProgress(90)
@@ -269,6 +318,41 @@ export default function UnifiedProcessor({ onProcessingComplete }: UnifiedProces
 
     return (
         <div className="space-y-6">
+            {/* Usage Display */}
+            {currentUser && (
+                <UsageDisplay
+                    onUpgrade={() => setShowUpgradeModal(true)}
+                    showUpgradeButton={true}
+                />
+            )}
+
+            {/* Usage limit message */}
+            {!canProcess && usageMessage && (
+                <div className="bg-red-50 border border-red-200 rounded-2xl p-6">
+                    <div className="flex items-start space-x-4">
+                        <div className="w-12 h-12 bg-red-100 rounded-xl flex items-center justify-center flex-shrink-0">
+                            <svg className="w-6 h-6 text-red-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.732-.833-2.5 0L4.268 15.5c-.77.833.192 2.5 1.732 2.5z" />
+                            </svg>
+                        </div>
+                        <div className="flex-1">
+                            <h3 className="text-lg font-semibold text-red-800 mb-2">
+                                Usage Limit Reached
+                            </h3>
+                            <p className="text-red-700 mb-4">
+                                {usageMessage}
+                            </p>
+                            <button
+                                onClick={() => setShowUpgradeModal(true)}
+                                className="bg-red-600 hover:bg-red-700 text-white px-6 py-2 rounded-xl font-medium transition-colors"
+                            >
+                                Upgrade to Pro
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
             {/* Main Upload Card */}
             <Card className="p-8 bg-white/50 backdrop-blur-sm border border-orange-100 shadow-lg">
                 <div className="text-center">
@@ -314,8 +398,11 @@ export default function UnifiedProcessor({ onProcessingComplete }: UnifiedProces
                             {/* Process Button */}
                             <Button
                                 onClick={processCSV}
-                                disabled={!file}
-                                className="w-full bg-gradient-to-r from-orange-500 to-amber-500 hover:from-orange-600 hover:to-amber-600 text-white font-bold py-4 px-8 rounded-xl shadow-lg hover:shadow-xl transition-all duration-200 text-lg"
+                                disabled={!file || !canProcess}
+                                className={`w-full font-bold py-4 px-8 rounded-xl shadow-lg transition-all duration-200 text-lg ${!canProcess
+                                        ? 'bg-gray-400 cursor-not-allowed'
+                                        : 'bg-gradient-to-r from-orange-500 to-amber-500 hover:from-orange-600 hover:to-amber-600 text-white hover:shadow-xl'
+                                    }`}
                             >
                                 <Sparkles className="w-5 h-5 mr-2" />
                                 Procesar CSV Completo
@@ -428,6 +515,16 @@ export default function UnifiedProcessor({ onProcessingComplete }: UnifiedProces
                     </div>
                 </div>
             </Card>
+
+            {/* Upgrade Modal */}
+            <UpgradeModal
+                isOpen={showUpgradeModal}
+                onClose={() => setShowUpgradeModal(false)}
+                onUpgradeComplete={async () => {
+                    await refreshUserUsage()
+                    await checkUsage()
+                }}
+            />
         </div>
     )
 }
