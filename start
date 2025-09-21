@@ -1,0 +1,12 @@
+#!/bin/bash
+
+# GeoNorm Start Script
+# This script starts both the backend server and frontend development server
+
+echo "🚀 Starting GeoNorm application..."
+echo "📡 Starting backend server..."
+echo "🎨 Starting frontend development server..."
+echo ""
+
+# Run both servers concurrently
+npm run start

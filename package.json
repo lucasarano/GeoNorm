@@ -10,6 +10,7 @@
     "preview": "vite preview",
     "server": "tsx backend/index.ts",
     "server:dev": "nodemon --exec tsx backend/index.ts",
+    "start": "concurrently \"npm run server:dev\" \"npm run dev\"",
     "start:all": "concurrently \"npm run server:dev\" \"npm run dev\""
   },
   "dependencies": {
