@@ -4,6 +4,12 @@ import { buildPrompt } from './buildPrompt.js';
 
 export async function cleanParaguayAddresses(apiKey, csvData) {
     const prompt = buildPrompt(csvData);
+    
+    console.log('\n=== OpenAI Request Details ===')
+    console.log('[OPENAI][REQUEST] Prompt length:', prompt.length)
+    console.log('[OPENAI][REQUEST] Full prompt:')
+    console.log(prompt)
+    console.log('=== End OpenAI Request ===\n')
 
     const response = await fetch('https://api.openai.com/v1/chat/completions', {
         method: 'POST',
@@ -12,7 +18,7 @@ export async function cleanParaguayAddresses(apiKey, csvData) {
             Authorization: `Bearer ${apiKey}`,
         },
         body: JSON.stringify({
-            model: 'gpt-4o',
+            model: 'gpt-5-mini',
             messages: [
                 {
                     role: 'system',
@@ -34,6 +40,12 @@ export async function cleanParaguayAddresses(apiKey, csvData) {
     }
 
     const result = await response.json();
+    
+    console.log('\n=== OpenAI Response Details ===')
+    console.log('[OPENAI][RESPONSE] Full API response:')
+    console.log(JSON.stringify(result, null, 2))
+    console.log('=== End OpenAI Response ===\n')
+    
     const content = result?.choices?.[0]?.message?.content;
     if (!content) throw new Error('Empty response from OpenAI');
 

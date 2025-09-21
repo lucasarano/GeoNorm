@@ -96,14 +96,28 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     // Send RAW CSV to LLM; prompt is now flexible to discover columns per row
     const csvForCleaning = csvData
-    console.log('[CLEAN][INPUT] header first line:', csvForCleaning.split('\n')[0])
-    console.log('[CLEAN][INPUT] first 3 lines:', csvForCleaning.split('\n').slice(1, 4))
+    console.log('\n=== BATCH PROCESSING: OpenAI Input ===')
+    console.log('[OPENAI][INPUT] Total CSV length:', csvForCleaning.length)
+    console.log('[OPENAI][INPUT] Line count:', csvForCleaning.split('\n').length)
+    console.log('[OPENAI][INPUT] Header line:', csvForCleaning.split('\n')[0])
+    console.log('[OPENAI][INPUT] First 5 data lines:')
+    csvForCleaning.split('\n').slice(1, 6).forEach((line, idx) => {
+      console.log(`  [${idx + 1}]: ${line}`)
+    })
+    console.log('[OPENAI][INPUT] Full CSV preview (first 500 chars):')
+    console.log(csvForCleaning.substring(0, 500))
+    console.log('=== End OpenAI Input ===\n')
 
     // Dynamically import the cleaning module and call OpenAI
     // @ts-ignore - JS module without TypeScript types
     const cleanerModule: any = await import('../backend/cleanParaguayAddresses.js')
     const cleanedCsv: string = await cleanerModule.cleanParaguayAddresses(openaiApiKey, csvForCleaning)
-    console.log('[DEBUG] Received cleaned CSV length:', cleanedCsv?.length)
+    
+    console.log('\n=== BATCH PROCESSING: OpenAI Response ===')
+    console.log('[OPENAI][OUTPUT] Response length:', cleanedCsv?.length)
+    console.log('[OPENAI][OUTPUT] Full cleaned CSV:')
+    console.log(cleanedCsv)
+    console.log('=== End OpenAI Response ===\n')
 
     // Parser that strips surrounding quotes when pushing
     const parseCleanCSVLine = (line: string): string[] => {
@@ -229,6 +243,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     let mediumConfidence = 0
     let lowConfidence = 0
 
+    console.log('\n=== BATCH PROCESSING: Starting Geocoding ===')
+    console.log(`[GEOCODING][BATCH] Processing ${cleanedData.length} addresses`)
+    console.log('[GEOCODING][BATCH] Addresses to geocode:')
+    cleanedData.forEach((item, idx) => {
+      console.log(`  [${idx}]: "${item.address}" (city: "${item.city}", state: "${item.state}")`)
+    })
+    console.log('=== Starting Individual Geocoding ===\n')
+
     for (let i = 0; i < cleanedData.length; i++) {
       const cleaned = cleanedData[i]
       // Per-row fallback: if cleaned row is empty, backfill from raw data and set aiConfidence=0
@@ -243,7 +265,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         console.warn(`[ROW_FALLBACK] Filled cleaned fields for row ${i} from raw CSV`)
       }
 
-      console.log(`[GEOCODE][ROW ${i}] original='${cleaned.originalAddress}' cleaned='${cleaned.address}' city='${cleaned.city}' state='${cleaned.state}'`)
+      console.log(`\n--- GEOCODING ROW ${i} ---`)
+      console.log(`[GEOCODE][${i}][INPUT] Original: "${cleaned.originalAddress}"`)
+      console.log(`[GEOCODE][${i}][INPUT] Cleaned: "${cleaned.address}"`)
+      console.log(`[GEOCODE][${i}][INPUT] City: "${cleaned.city}"`)
+      console.log(`[GEOCODE][${i}][INPUT] State: "${cleaned.state}"`)
+      console.log(`[GEOCODE][${i}][INPUT] AI Confidence: ${cleaned.aiConfidence}%`)
+      
       // Use AI-extracted ORIGINAL fields (uncleaned)
       const original = {
         address: cleaned.originalAddress,
@@ -253,24 +281,51 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       }
       try {
         const geo = await geocode(cleaned.address, cleaned.city, cleaned.state)
-        console.log(`[GEOCODE][ROW ${i}] status=${geo?.status} best=${geo?.best ? 'yes' : 'no'} rawCount=${geo?.rawCount}`)
+        console.log(`[GEOCODE][${i}][OUTPUT] Status: ${geo?.status}`)
+        console.log(`[GEOCODE][${i}][OUTPUT] Raw results count: ${geo?.rawCount}`)
+        if (geo?.best) {
+          console.log(`[GEOCODE][${i}][OUTPUT] Best result:`)
+          console.log(`  - Latitude: ${geo.best.latitude}`)
+          console.log(`  - Longitude: ${geo.best.longitude}`)
+          console.log(`  - Formatted: "${geo.best.formatted_address}"`)
+          console.log(`  - Location Type: ${geo.best.location_type}`)
+          console.log(`  - Confidence Score: ${geo.best.confidence_score}`)
+          console.log(`  - Description: ${geo.best.confidence_description}`)
+        } else {
+          console.log(`[GEOCODE][${i}][OUTPUT] No best result found`)
+        }
         const geoConfidence = geo?.best?.confidence_score || 0
         const aiConfidence = (cleaned.aiConfidence || 0) / 100
         // Combined confidence calculation: ((8*ai) * (2*geo))/10
         const combinedConfidence = ((8 * aiConfidence) * (2 * geoConfidence)) / 10
-
-        if (combinedConfidence >= 0.8) highConfidence++
-        else if (combinedConfidence >= 0.6) mediumConfidence++
-        else lowConfidence++
+        
+        console.log(`[GEOCODE][${i}][CALCULATION] AI Confidence: ${aiConfidence} (${cleaned.aiConfidence}%)`)
+        console.log(`[GEOCODE][${i}][CALCULATION] Geo Confidence: ${geoConfidence}`)
+        console.log(`[GEOCODE][${i}][CALCULATION] Combined: ${combinedConfidence}`)
+        
+        if (combinedConfidence >= 0.8) {
+          highConfidence++
+          console.log(`[GEOCODE][${i}][RESULT] HIGH CONFIDENCE`)
+        } else if (combinedConfidence >= 0.6) {
+          mediumConfidence++
+          console.log(`[GEOCODE][${i}][RESULT] MEDIUM CONFIDENCE`)
+        } else {
+          lowConfidence++
+          console.log(`[GEOCODE][${i}][RESULT] LOW CONFIDENCE`)
+        }
 
         // Extract zip code if we have coordinates
         let zipCodeResult = null
         if (geo?.best?.latitude && geo?.best?.longitude) {
           try {
+            console.log(`[ZIPCODE][${i}][INPUT] Coordinates: ${geo.best.latitude}, ${geo.best.longitude}`)
             zipCodeResult = await zipCodeService.getZipCode(geo.best.latitude, geo.best.longitude)
+            console.log(`[ZIPCODE][${i}][OUTPUT] Result:`, zipCodeResult)
           } catch (zipError) {
-            console.warn(`[ZIP_CODE] Failed to get zip code for row ${i}:`, zipError)
+            console.warn(`[ZIPCODE][${i}][ERROR] Failed to get zip code:`, zipError)
           }
+        } else {
+          console.log(`[ZIPCODE][${i}][SKIP] No coordinates available`)
         }
 
         results.push({
@@ -312,6 +367,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             : null
         })
       } catch (error: any) {
+        console.error(`[GEOCODE][${i}][ERROR] Processing failed:`, error)
         lowConfidence++
         results.push({
           rowIndex: i,
@@ -345,7 +401,16 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           googleMapsLink: null
         })
       }
+      console.log(`--- END ROW ${i} ---\n`)
     }
+
+    console.log('\n=== BATCH PROCESSING: Final Summary ===')
+    console.log(`[SUMMARY] Total addresses processed: ${results.length}`)
+    console.log(`[SUMMARY] High confidence: ${highConfidence}`)
+    console.log(`[SUMMARY] Medium confidence: ${mediumConfidence}`)
+    console.log(`[SUMMARY] Low confidence: ${lowConfidence}`)
+    console.log(`[SUMMARY] Success rate: ${((highConfidence + mediumConfidence) / results.length * 100).toFixed(1)}%`)
+    console.log('=== End Batch Processing ===\n')
 
     console.log(`[UNIFIED_PROCESS] Processed ${results.length} addresses`)
 
