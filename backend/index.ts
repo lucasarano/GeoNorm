@@ -528,8 +528,7 @@ app.post('/api/process-complete', express.raw({ type: 'text/csv', limit: '10mb' 
                 city: values[5] || '',
                 state: values[6] || '',
                 phone: values[7] || '',
-                email: values[8] || '',
-                aiConfidence: parseInt(values[9]) || 0
+                email: values[8] || ''
             }
         })
 
@@ -575,14 +574,12 @@ app.post('/api/process-complete', express.raw({ type: 'text/csv', limit: '10mb' 
                 if (!resp.ok) throw new Error(`Geocode error ${resp.status}`)
                 const data = await resp.json()
 
-                // Categorize by combined confidence
+                // Categorize by geocoding confidence only
                 const geoConfidence = data.confidence || 0
-                const aiConfidence = (cleaned.aiConfidence || 0) / 100
-                // Combined confidence calculation: ((8*ai) * (2*geo))/10
-                const combinedConfidence = ((8 * aiConfidence) * (2 * geoConfidence)) / 10
-                
-                if (combinedConfidence >= 0.8) highConfidence++
-                else if (combinedConfidence >= 0.6) mediumConfidence++
+                const confidenceScore = geoConfidence
+
+                if (confidenceScore >= 0.8) highConfidence++
+                else if (confidenceScore >= 0.6) mediumConfidence++
                 else lowConfidence++
 
                 // Extract zip code if we have coordinates
@@ -608,8 +605,7 @@ app.post('/api/process-complete', express.raw({ type: 'text/csv', limit: '10mb' 
                         city: cleaned.city,
                         state: cleaned.state,
                         phone: cleaned.phone,
-                        email: cleaned.email,
-                        aiConfidence: cleaned.aiConfidence
+                        email: cleaned.email
                     },
                     geocoding: {
                         latitude: data.cleaned?.best?.latitude || null,
@@ -627,8 +623,8 @@ app.post('/api/process-complete', express.raw({ type: 'text/csv', limit: '10mb' 
                         neighborhood: zipCodeResult.neighborhood,
                         confidence: zipCodeResult.confidence
                     } : null,
-                    status: combinedConfidence >= 0.8 ? 'high_confidence' :
-                        combinedConfidence >= 0.6 ? 'medium_confidence' : 'low_confidence',
+                    status: confidenceScore >= 0.8 ? 'high_confidence' :
+                        confidenceScore >= 0.6 ? 'medium_confidence' : 'low_confidence',
                     // Generate simple Google Maps link
                     googleMapsLink: data.cleaned?.best?.latitude && data.cleaned?.best?.longitude 
                         ? `https://www.google.com/maps?q=${data.cleaned.best.latitude},${data.cleaned.best.longitude}`
@@ -649,8 +645,7 @@ app.post('/api/process-complete', express.raw({ type: 'text/csv', limit: '10mb' 
                         city: cleaned.city,
                         state: cleaned.state,
                         phone: cleaned.phone,
-                        email: cleaned.email,
-                        aiConfidence: cleaned.aiConfidence
+                        email: cleaned.email
                     },
                     geocoding: {
                         latitude: null,

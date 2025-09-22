@@ -35,7 +35,6 @@ interface ProcessedRow {
         state: string
         phone: string
         email: string
-        aiConfidence: number
     }
     geocoding: {
         latitude: number | null
@@ -548,7 +547,6 @@ export default function DataDashboard({ data, statistics, onBack }: DataDashboar
             'Cleaned State',
             'Cleaned Phone',
             'Cleaned Email',
-            'AI Confidence',
             'Latitude',
             'Longitude',
             'Formatted Address',
@@ -575,7 +573,6 @@ export default function DataDashboard({ data, statistics, onBack }: DataDashboar
                     `"${row.cleaned.state}"`,
                     `"${row.cleaned.phone}"`,
                     `"${row.cleaned.email}"`,
-                    row.cleaned.aiConfidence,
                     row.geocoding.latitude || '',
                     row.geocoding.longitude || '',
                     `"${row.geocoding.formattedAddress}"`,
@@ -824,7 +821,7 @@ export default function DataDashboard({ data, statistics, onBack }: DataDashboar
                                             # de Guia
                                         </th>
                                         <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                                            Confianza
+                                            Confianza geocodificación
                                         </th>
                                         <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                                             Link de Reubicación
@@ -859,9 +856,6 @@ export default function DataDashboard({ data, statistics, onBack }: DataDashboar
                                             Geo Conf
                                         </th>
                                         <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                                            AI Conf
-                                        </th>
-                                        <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                                             Mapa
                                         </th>
                                     </tr>
@@ -894,19 +888,26 @@ export default function DataDashboard({ data, statistics, onBack }: DataDashboar
                                                 </td>
                                                 <td className="px-4 py-4 whitespace-nowrap">
                                                     {(() => {
-                                                        const ai = (row.cleaned.aiConfidence || 0) / 100
                                                         const geo = row.geocoding.confidence || 0
-                                                        const combined = ((8 * ai) * (2 * geo)) / 10
-                                                        const combinedStatus = combined >= 0.8
-                                                            ? 'high_confidence'
-                                                            : combined >= 0.6
-                                                                ? 'medium_confidence'
-                                                                : 'low_confidence'
+                                                        const statusForDisplay = row.status === 'failed'
+                                                            ? 'failed'
+                                                            : geo >= 0.8
+                                                                ? 'high_confidence'
+                                                                : geo >= 0.6
+                                                                    ? 'medium_confidence'
+                                                                    : 'low_confidence'
+                                                        const label = statusForDisplay === 'high_confidence'
+                                                            ? 'Alta confianza'
+                                                            : statusForDisplay === 'medium_confidence'
+                                                                ? 'Confianza media'
+                                                                : statusForDisplay === 'low_confidence'
+                                                                    ? 'Baja confianza'
+                                                                    : 'Geocodificación fallida'
                                                         return (
                                                             <div className="flex items-center">
-                                                                {getStatusIcon(combinedStatus)}
-                                                                <span className={`ml-2 px-2 py-1 text-xs font-medium rounded-full ${getStatusColor(combinedStatus)}`}>
-                                                                    {combinedStatus === 'high_confidence' ? 'Alta Confianza' : combinedStatus === 'medium_confidence' ? 'Confianza Media' : 'Baja Confianza'}
+                                                                {getStatusIcon(statusForDisplay)}
+                                                                <span className={`ml-2 px-2 py-1 text-xs font-medium rounded-full ${getStatusColor(statusForDisplay)}`}>
+                                                                    {label}
                                                                 </span>
                                                             </div>
                                                         )
@@ -1044,9 +1045,6 @@ export default function DataDashboard({ data, statistics, onBack }: DataDashboar
                                                     </div>
                                                 </td>
                                                 <td className="px-4 py-4 text-sm text-gray-900">
-                                                    {row.cleaned.aiConfidence}%
-                                                </td>
-                                                <td className="px-4 py-4 text-sm text-gray-900">
                                                     {row.geocoding.staticMapUrl ? (
                                                         <img
                                                             src={row.geocoding.staticMapUrl}
@@ -1104,7 +1102,6 @@ export default function DataDashboard({ data, statistics, onBack }: DataDashboar
                                                 <div><strong>Estado:</strong> {selectedRow.cleaned.state}</div>
                                                 <div><strong>Teléfono:</strong> {selectedRow.cleaned.phone}</div>
                                                 <div><strong>Email:</strong> {selectedRow.cleaned.email}</div>
-                                                <div><strong>Confianza IA:</strong> <span className="text-purple-700 font-semibold">{selectedRow.cleaned.aiConfidence}%</span></div>
                                             </div>
                                         </Card>
 
@@ -1271,9 +1268,9 @@ export default function DataDashboard({ data, statistics, onBack }: DataDashboar
                                     </p>
                                 </div>
                                 <div className="bg-white p-3 rounded border">
-                                    <p className="text-sm text-gray-600">Promedio AI Confidence</p>
+                                    <p className="text-sm text-gray-600">Promedio confianza de geocodificación</p>
                                     <p className="text-lg font-bold text-blue-600">
-                                        {(rows.reduce((acc, row) => acc + row.cleaned.aiConfidence, 0) / rows.length).toFixed(1)}%
+                                        {rows.length ? ((rows.reduce((acc, row) => acc + (row.geocoding.confidence || 0), 0) / rows.length) * 100).toFixed(1) : '0.0'}%
                                     </p>
                                 </div>
                             </div>
@@ -1289,10 +1286,11 @@ export default function DataDashboard({ data, statistics, onBack }: DataDashboar
                                             <h5 className="font-medium text-gray-900">Fila {index + 1}</h5>
                                             <span className={`px-2 py-1 text-xs font-medium rounded-full ${row.status === 'high_confidence' ? 'bg-green-100 text-green-800' :
                                                 row.status === 'medium_confidence' ? 'bg-yellow-100 text-yellow-800' :
-                                                    'bg-red-100 text-red-800'
+                                                    row.status === 'low_confidence' ? 'bg-red-100 text-red-800' : 'bg-gray-200 text-gray-700'
                                                 }`}>
                                                 {row.status === 'high_confidence' ? 'Alta Confianza' :
-                                                    row.status === 'medium_confidence' ? 'Media Confianza' : 'Baja Confianza'}
+                                                    row.status === 'medium_confidence' ? 'Media Confianza' :
+                                                        row.status === 'low_confidence' ? 'Baja Confianza' : 'Geocodificación fallida'}
                                             </span>
                                         </div>
 
@@ -1307,7 +1305,6 @@ export default function DataDashboard({ data, statistics, onBack }: DataDashboar
                                                     <p><span className="font-medium">Estado:</span> "{row.cleaned.state}"</p>
                                                     <p><span className="font-medium">Teléfono:</span> "{row.cleaned.phone}"</p>
                                                     <p><span className="font-medium">Email:</span> "{row.cleaned.email}"</p>
-                                                    <p><span className="font-medium">AI Confidence:</span> {row.cleaned.aiConfidence}%</p>
                                                 </div>
                                             </div>
 
@@ -1331,15 +1328,13 @@ export default function DataDashboard({ data, statistics, onBack }: DataDashboar
                                             </div>
                                         </div>
 
-                                        {/* Combined Calculation */}
+                                        {/* Geocoding Confidence Summary */}
                                         <div className="mt-3 bg-orange-50 p-3 rounded border">
-                                            <h6 className="font-medium text-orange-700 mb-2">Cálculo de Confianza Combinada</h6>
+                                            <h6 className="font-medium text-orange-700 mb-2">Resumen de confianza de geocodificación</h6>
                                             <div className="text-sm">
-                                                <p>AI Confidence: {row.cleaned.aiConfidence}% → {(row.cleaned.aiConfidence / 100).toFixed(2)}</p>
-                                                <p>Geo Confidence: {(row.geocoding.confidence * 100).toFixed(1)}% → {row.geocoding.confidence.toFixed(2)}</p>
-                                                <p className="font-medium">
-                                                    Fórmula: ((8 × {(row.cleaned.aiConfidence / 100).toFixed(2)}) × (2 × {row.geocoding.confidence.toFixed(2)})) / 10 = {(((8 * (row.cleaned.aiConfidence / 100)) * (2 * row.geocoding.confidence)) / 10).toFixed(3)}
-                                                </p>
+                                                <p>Nivel: {row.status === 'high_confidence' ? 'Alta' : row.status === 'medium_confidence' ? 'Media' : row.status === 'low_confidence' ? 'Baja' : 'Fallida'}</p>
+                                                <p>Confianza de geocodificación: {(row.geocoding.confidence * 100).toFixed(1)}% ({row.geocoding.confidence.toFixed(2)})</p>
+                                                <p>Descripción: {row.geocoding.confidenceDescription}</p>
                                             </div>
                                         </div>
 

@@ -116,8 +116,7 @@ function App() {
                   city: addr.cleanedCity,
                   state: addr.cleanedState,
                   phone: addr.cleanedPhone || '',
-                  email: addr.cleanedEmail || '',
-                  aiConfidence: 85 // Default value since it's not stored in Firebase
+                  email: addr.cleanedEmail || ''
                 },
                 geocoding: {
                   latitude: addr.coordinates?.lat || null,

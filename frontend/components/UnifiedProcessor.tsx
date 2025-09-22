@@ -21,7 +21,6 @@ interface ProcessedRow {
         state: string
         phone: string
         email: string
-        aiConfidence: number
     }
     geocoding: {
         latitude: number | null

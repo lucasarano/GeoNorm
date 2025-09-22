@@ -12,8 +12,8 @@ Preserve original row order.
 
 TASK
 For every row, identify and extract: Address, City, State (Departamento), Phone, Email. First preserve originals, then normalize for Google Maps Geocoding in Paraguay.
-Return a CSV with exactly these 10 columns, in this order:
-Original_Address,Original_City,Original_State,Original_Phone,Address,City,State,Phone,Email,AI_Confidence
+Return a CSV with exactly these 9 columns, in this order:
+Original_Address,Original_City,Original_State,Original_Phone,Address,City,State,Phone,Email
 
 IMPORTANT FLEXIBILITY
 
@@ -175,17 +175,9 @@ Keep a row if it has Address OR (City and State) AND at least one of Phone or Em
 
 Drop exact/near duplicates using case-insensitive comparison of (Address, City, State) and normalized Phone/Email; keep the first occurrence.
 
-F) AI Confidence Assessment
-
-For each cleaned address, assess how likely Google Maps Geocoding API will successfully geocode it.
-
-Consider factors: address completeness, street name clarity, city/state accuracy, Paraguay-specific formatting.
-
-Output a percentage (0-100) representing confidence in successful geocoding.
-
 OUTPUT
 Return exactly one fenced code block labeled csv with:
-Original_Address,Original_City,Original_State,Original_Phone,Address,City,State,Phone,Email,AI_Confidence
+Original_Address,Original_City,Original_State,Original_Phone,Address,City,State,Phone,Email
 (one header row, then rows with both original and cleaned data).
 
 CRITICAL FORMATTING REQUIREMENTS:
@@ -194,7 +186,7 @@ Output RFC-4180 CSV, UTF-8. Quote fields that contain commas, quotes, or line br
 
 No blank lines; no trailing commas; end with a single newline.
 
-Use exactly 10 columns in this exact order: Original_Address,Original_City,Original_State,Original_Phone,Address,City,State,Phone,Email,AI_Confidence
+Use exactly 9 columns in this exact order: Original_Address,Original_City,Original_State,Original_Phone,Address,City,State,Phone,Email
 
 Preserve original row order for kept rows; do not create or drop rows except per Rule D.
 
@@ -207,8 +199,6 @@ Accents must be correct (á é í ó ú ü ñ). Do not replace with ASCII.
 If unsure about a field, leave it blank but maintain column structure.
 
 Email extraction: MUST extract emails from Address field and put them in Email column, then remove from Address.
-
-AI_Confidence: must be integer 0-100, no % symbol.
 
 No extra text, no API calls, no coordinates.
 

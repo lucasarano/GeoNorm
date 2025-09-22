@@ -23,7 +23,7 @@ export async function cleanParaguayAddresses(apiKey, csvData) {
                 {
                     role: 'system',
                     content:
-                        'You are a meticulous CSV transformer. You MUST: 1) output exactly one RFC-4180 CSV code block with header Original_Address,Original_City,Original_State,Original_Phone,Address,City,State,Phone,Email,AI_Confidence; 2) when an email is present in any field (especially Address), extract it to the Email column and remove it from Address; 3) keep Phone and Email separate; 4) leave fields blank if unknown; 5) never add commentary outside the CSV code block.'
+                        'You are a meticulous CSV transformer. You MUST: 1) output exactly one RFC-4180 CSV code block with header Original_Address,Original_City,Original_State,Original_Phone,Address,City,State,Phone,Email; 2) when an email is present in any field (especially Address), extract it to the Email column and remove it from Address; 3) keep Phone and Email separate; 4) leave fields blank if unknown; 5) never add commentary outside the CSV code block.'
                 },
                 { role: 'user', content: prompt }
             ],
@@ -94,7 +94,7 @@ export async function cleanParaguayAddresses(apiKey, csvData) {
 
     // Sanity checks
     const header = csv.split('\n', 1)[0].trim();
-    const expectedHeader = 'Original_Address,Original_City,Original_State,Original_Phone,Address,City,State,Phone,Email,AI_Confidence';
+    const expectedHeader = 'Original_Address,Original_City,Original_State,Original_Phone,Address,City,State,Phone,Email';
     if (header !== expectedHeader) {
         throw new Error(`Unexpected header. Got "${header}", expected "${expectedHeader}"`);
     }

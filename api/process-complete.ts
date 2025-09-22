@@ -147,21 +147,20 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       .filter((line: string) => line && line.trim().length > 0)
       .map((line: string) => {
         const values = parseCleanCSVLine(line)
-        return {
-          // Original fields (AI-extracted, uncleaned)
-          originalAddress: values[0] || '',
-          originalCity: values[1] || '',
-          originalState: values[2] || '',
-          originalPhone: values[3] || '',
-          // Cleaned fields
-          address: values[4] || '',
-          city: values[5] || '',
-          state: values[6] || '',
-          phone: values[7] || '',
-          email: values[8] || '',
-          aiConfidence: parseInt(values[9] || '0') || 0
-        }
-      })
+      return {
+        // Original fields (AI-extracted, uncleaned)
+        originalAddress: values[0] || '',
+        originalCity: values[1] || '',
+        originalState: values[2] || '',
+        originalPhone: values[3] || '',
+        // Cleaned fields
+        address: values[4] || '',
+        city: values[5] || '',
+        state: values[6] || '',
+        phone: values[7] || '',
+        email: values[8] || ''
+      }
+    })
 
     // Prepare original CSV rows for per-row fallback when LLM skipped rows
     const rawAllLines = csvForCleaning.trim().split('\n')
@@ -253,7 +252,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     for (let i = 0; i < cleanedData.length; i++) {
       const cleaned = cleanedData[i]
-      // Per-row fallback: if cleaned row is empty, backfill from raw data and set aiConfidence=0
+      // Per-row fallback: if cleaned row is empty, backfill from raw data
       if ((!cleaned.address || cleaned.address.trim() === '') && rawDataRows[i]) {
         const raw = rawDataRows[i]
         cleaned.address = idxAddress >= 0 ? (raw[idxAddress] || '') : ''
@@ -261,7 +260,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         cleaned.state = idxState >= 0 ? (raw[idxState] || '') : ''
         cleaned.phone = idxPhone >= 0 ? (raw[idxPhone] || '') : ''
         cleaned.email = idxEmail >= 0 ? (raw[idxEmail] || '') : ''
-        cleaned.aiConfidence = 0
         console.warn(`[ROW_FALLBACK] Filled cleaned fields for row ${i} from raw CSV`)
       }
 
@@ -270,8 +268,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       console.log(`[GEOCODE][${i}][INPUT] Cleaned: "${cleaned.address}"`)
       console.log(`[GEOCODE][${i}][INPUT] City: "${cleaned.city}"`)
       console.log(`[GEOCODE][${i}][INPUT] State: "${cleaned.state}"`)
-      console.log(`[GEOCODE][${i}][INPUT] AI Confidence: ${cleaned.aiConfidence}%`)
-
       // Use AI-extracted ORIGINAL fields (uncleaned)
       const original = {
         address: cleaned.originalAddress,
@@ -295,18 +291,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           console.log(`[GEOCODE][${i}][OUTPUT] No best result found`)
         }
         const geoConfidence = geo?.best?.confidence_score || 0
-        const aiConfidence = (cleaned.aiConfidence || 0) / 100
-        // Combined confidence calculation: ((8*ai) * (2*geo))/10
-        const combinedConfidence = ((8 * aiConfidence) * (2 * geoConfidence)) / 10
+        const confidenceScore = geoConfidence
 
-        console.log(`[GEOCODE][${i}][CALCULATION] AI Confidence: ${aiConfidence} (${cleaned.aiConfidence}%)`)
         console.log(`[GEOCODE][${i}][CALCULATION] Geo Confidence: ${geoConfidence}`)
-        console.log(`[GEOCODE][${i}][CALCULATION] Combined: ${combinedConfidence}`)
 
-        if (combinedConfidence >= 0.8) {
+        if (confidenceScore >= 0.8) {
           highConfidence++
           console.log(`[GEOCODE][${i}][RESULT] HIGH CONFIDENCE`)
-        } else if (combinedConfidence >= 0.6) {
+        } else if (confidenceScore >= 0.6) {
           mediumConfidence++
           console.log(`[GEOCODE][${i}][RESULT] MEDIUM CONFIDENCE`)
         } else {
@@ -341,8 +333,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             city: cleaned.city,
             state: cleaned.state,
             phone: cleaned.phone,
-            email: cleaned.email,
-            aiConfidence: cleaned.aiConfidence
+            email: cleaned.email
           },
           geocoding: {
             latitude: geo?.best?.latitude || null,
@@ -360,7 +351,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             neighborhood: zipCodeResult.neighborhood,
             confidence: zipCodeResult.confidence
           } : null,
-          status: combinedConfidence >= 0.8 ? 'high_confidence' : combinedConfidence >= 0.6 ? 'medium_confidence' : 'low_confidence',
+          status: confidenceScore >= 0.8 ? 'high_confidence' : confidenceScore >= 0.6 ? 'medium_confidence' : 'low_confidence',
           // Generate simple Google Maps link
           googleMapsLink: geo?.best?.latitude && geo?.best?.longitude
             ? `https://www.google.com/maps?q=${geo.best.latitude},${geo.best.longitude}`
@@ -382,8 +373,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             city: cleaned.city,
             state: cleaned.state,
             phone: cleaned.phone,
-            email: cleaned.email,
-            aiConfidence: cleaned.aiConfidence
+            email: cleaned.email
           },
           geocoding: {
             latitude: null,
