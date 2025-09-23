@@ -30,6 +30,21 @@ const clearAuthCookie = () => {
   document.cookie = `${AUTH_COOKIE_NAME}=;Max-Age=0;Path=/;SameSite=Lax`
 }
 
+const readAuthCookie = () => {
+  if (!isBrowser) return null
+
+  const cookies = document.cookie.split(';')
+  const authCookie = cookies.find(cookie =>
+    cookie.trim().startsWith(`${AUTH_COOKIE_NAME}=`)
+  )
+
+  if (authCookie) {
+    return authCookie.split('=')[1]
+  }
+
+  return null
+}
+
 const storeAuthToken = async (user: User) => {
   try {
     const token = await user.getIdToken()
@@ -119,16 +134,43 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }
 
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, (user) => {
-      setCurrentUser(user)
-      setLoading(false)
+    const initializeAuth = async () => {
+      // First, check if we have a stored token
+      const storedToken = readAuthCookie()
 
-      if (!user) {
-        clearAuthCookie()
+      if (storedToken) {
+        try {
+          // Try to verify the token is still valid by getting a fresh token
+          const user = auth.currentUser
+          if (user) {
+            const freshToken = await user.getIdToken(true) // Force refresh
+            writeAuthCookie(freshToken)
+            setCurrentUser(user)
+          } else {
+            // Token exists but no user, clear it
+            clearAuthCookie()
+          }
+        } catch (error) {
+          // Token is invalid, clear it
+          console.log('Stored token is invalid, clearing...')
+          clearAuthCookie()
+        }
       }
-    })
 
-    return unsubscribe
+      // Set up the auth state listener
+      const unsubscribe = onAuthStateChanged(auth, (user) => {
+        setCurrentUser(user)
+        setLoading(false)
+
+        if (!user) {
+          clearAuthCookie()
+        }
+      })
+
+      return unsubscribe
+    }
+
+    initializeAuth()
   }, [])
 
   const value = {

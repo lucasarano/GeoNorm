@@ -26,18 +26,20 @@ function App() {
   })
   const [processingResult, setProcessingResult] = useState<ProcessingResult | null>(null)
   const [isLiveProcessing, setIsLiveProcessing] = useState(false)
-  const { currentUser, loading } = useAuth()
+  const { currentUser, loading, logout } = useAuth()
 
   useEffect(() => {
     if (loading) {
       return
     }
 
-    if (currentUser) {
+    // Only redirect to pipeline if user is actually authenticated
+    if (currentUser && currentUser.uid) {
       if (currentView === 'landing') {
         setCurrentView('pipeline')
       }
     } else if (['pipeline', 'dashboard', 'data-history'].includes(currentView)) {
+      // User is not authenticated, redirect to landing
       setCurrentView('landing')
     }
   }, [currentUser, currentView, loading])
@@ -94,6 +96,20 @@ function App() {
                   <h1 className="text-2xl md:text-3xl font-bold tracking-tight bg-gradient-to-r from-orange-600 to-amber-600 bg-clip-text text-transparent">GeoNorm</h1>
                   <p className="text-sm text-gray-600">Historial de Datos</p>
                 </div>
+              </div>
+              <div className="flex items-center space-x-4">
+                <button
+                  onClick={() => setCurrentView('pipeline')}
+                  className="text-gray-600 hover:text-orange-600 transition-colors duration-200 text-sm font-medium"
+                >
+                  ← Volver al Pipeline
+                </button>
+                <button
+                  onClick={logout}
+                  className="bg-red-500 hover:bg-red-600 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors duration-200"
+                >
+                  Cerrar Sesión
+                </button>
               </div>
             </div>
           </div>
@@ -188,6 +204,20 @@ function App() {
                   <p className="text-sm text-gray-600">Dashboard de Resultados</p>
                 </div>
               </div>
+              <div className="flex items-center space-x-4">
+                <button
+                  onClick={() => setCurrentView('pipeline')}
+                  className="text-gray-600 hover:text-orange-600 transition-colors duration-200 text-sm font-medium"
+                >
+                  ← Volver al Pipeline
+                </button>
+                <button
+                  onClick={logout}
+                  className="bg-red-500 hover:bg-red-600 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors duration-200"
+                >
+                  Cerrar Sesión
+                </button>
+              </div>
             </div>
           </div>
         </header>
@@ -242,6 +272,12 @@ function App() {
                 className="text-gray-600 hover:text-orange-600 transition-colors duration-200 text-sm font-medium"
               >
                 ← Volver al Inicio
+              </button>
+              <button
+                onClick={logout}
+                className="bg-red-500 hover:bg-red-600 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors duration-200"
+              >
+                Cerrar Sesión
               </button>
             </div>
           </div>
