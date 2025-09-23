@@ -7,10 +7,17 @@ import { useAuth } from '../contexts/AuthContext'
 import type { BatchProcessingResponse, BatchRowResult, ProcessedRow, ProcessingResult } from '../types/processing'
 
 const MAX_BATCH_SIZE = 25
+const DEFAULT_MAX_CONCURRENT_BATCHES = Number(import.meta.env.VITE_MAX_CONCURRENT_BATCHES ?? 2)
+const MAX_CONCURRENT_LIMIT = 5
 
 const clampBatchSize = (value: number): number => {
     if (!Number.isFinite(value)) return 1
     return Math.max(1, Math.min(Math.floor(value), MAX_BATCH_SIZE))
+}
+
+const clampConcurrentBatches = (value: number): number => {
+    if (!Number.isFinite(value)) return 1
+    return Math.max(1, Math.min(Math.floor(value), MAX_CONCURRENT_LIMIT))
 }
 
 const average = (values: number[]): number | null => {
@@ -71,6 +78,7 @@ export default function UnifiedProcessor({
     const [batchDurations, setBatchDurations] = useState<number[]>([])
     const [totalElapsedMs, setTotalElapsedMs] = useState<number | null>(null)
     const [fileRunStart, setFileRunStart] = useState<number | null>(null)
+    const maxConcurrentBatches = clampConcurrentBatches(DEFAULT_MAX_CONCURRENT_BATCHES)
     const batchLabel = batchSize === 1 ? 'fila' : 'filas'
     const debugMetricsEnabled = import.meta.env.DEV || import.meta.env.VITE_DEBUG_PANEL === '1'
 
@@ -276,16 +284,33 @@ export default function UnifiedProcessor({
                 }
             }
 
+            const batches: { index: number; start: number; rows: string[] }[] = []
             for (let start = 0; start < dataLines.length; start += effectiveBatchSize) {
-                const batchRows = dataLines.slice(start, start + effectiveBatchSize)
-                const batchStartNumber = start + 1
-                const batchEndNumber = Math.min(expectedRows, start + batchRows.length)
-                const rangeLabel = batchRows.length > 1
+                batches.push({
+                    index: batches.length,
+                    start,
+                    rows: dataLines.slice(start, start + effectiveBatchSize)
+                })
+            }
+
+            type BatchOutcome = {
+                index: number
+                results: BatchRowResult[]
+                llmDurationMs: number
+                startedAt: number
+            }
+
+            aggregate.batchLatenciesMs = []
+            aggregate.batchDurationsMs = []
+
+            const executeBatch = async (batch: { index: number; start: number; rows: string[] }): Promise<BatchOutcome> => {
+                const batchStartTime = performance.now()
+                const batchStartNumber = batch.start + 1
+                const batchEndNumber = Math.min(expectedRows, batch.start + batch.rows.length)
+                const rangeLabel = batch.rows.length > 1
                     ? `filas ${batchStartNumber}-${batchEndNumber}`
                     : `fila ${batchStartNumber}`
-                const batchStart = performance.now()
-                const llmStart = batchStart
-                let llmDuration = 0
+
                 const processedBeforeRow = aggregate.totalProcessed + aggregate.skipped
                 const basePercent = expectedRows > 0
                     ? Math.round((processedBeforeRow / expectedRows) * 100)
@@ -294,10 +319,11 @@ export default function UnifiedProcessor({
                 aggregate.statusMessage = `Procesando ${rangeLabel} de ${expectedRows}`
                 setStepDetails(aggregate.statusMessage)
 
-                let batchResults: BatchRowResult[] = []
-                let fallbackToSingles = false
+                let results: BatchRowResult[] = []
+                let llmDurationMs = 0
 
                 try {
+                    const llmStart = performance.now()
                     const response = await fetch('/api/process-rows', {
                         method: 'POST',
                         headers: {
@@ -305,10 +331,11 @@ export default function UnifiedProcessor({
                         },
                         body: JSON.stringify({
                             header,
-                            rows: batchRows,
-                            startIndex: start
+                            rows: batch.rows,
+                            startIndex: batch.start
                         })
                     })
+                    llmDurationMs = performance.now() - llmStart
 
                     if (!response.ok) {
                         const errorBody = await response.text().catch(() => '')
@@ -321,24 +348,39 @@ export default function UnifiedProcessor({
                         throw new Error(payload.error || 'Respuesta inválida del servidor')
                     }
 
-                    batchResults = payload.results
+                    results = payload.results
                 } catch (batchError: any) {
                     console.error(`Error procesando lote ${batchStartNumber}-${batchEndNumber}:`, batchError)
-                    fallbackToSingles = true
-                }
-
-                if (fallbackToSingles) {
-                    batchResults = []
-                    for (let offset = 0; offset < batchRows.length; offset++) {
-                        const absoluteIndex = start + offset
-                        const singleResult = await processSingleRow(batchRows[offset], absoluteIndex)
-                        batchResults.push(singleResult)
+                    results = []
+                    for (let offset = 0; offset < batch.rows.length; offset++) {
+                        const singleStart = performance.now()
+                        const absoluteIndex = batch.start + offset
+                        const singleResult = await processSingleRow(batch.rows[offset], absoluteIndex)
+                        llmDurationMs += performance.now() - singleStart
+                        results.push(singleResult)
                     }
                 }
 
-                llmDuration = performance.now() - llmStart
+                return {
+                    index: batch.index,
+                    results,
+                    llmDurationMs,
+                    startedAt: batchStartTime
+                }
+            }
 
-                for (const result of batchResults) {
+            const applyBatchOutcome = async (outcome: BatchOutcome) => {
+                const { results, llmDurationMs, startedAt } = outcome
+                const batchDurationMs = performance.now() - startedAt
+
+                currentBatchLatencies = [...currentBatchLatencies, llmDurationMs]
+                currentBatchDurations = [...currentBatchDurations, batchDurationMs]
+                setBatchLatencies(currentBatchLatencies)
+                setBatchDurations(currentBatchDurations)
+                aggregate.batchLatenciesMs = currentBatchLatencies
+                aggregate.batchDurationsMs = currentBatchDurations
+
+                for (const result of results) {
                     const currentRowNumber = result.rowIndex + 1
                     aggregate.statusMessage = `Procesando fila ${currentRowNumber} de ${expectedRows}`
                     setStepDetails(aggregate.statusMessage)
@@ -479,18 +521,38 @@ export default function UnifiedProcessor({
                     }
                 }
 
-                const batchEnd = performance.now()
-                const batchDuration = batchEnd - batchStart
-                currentBatchLatencies = [...currentBatchLatencies, llmDuration]
-                currentBatchDurations = [...currentBatchDurations, batchDuration]
-                setBatchLatencies(currentBatchLatencies)
-                setBatchDurations(currentBatchDurations)
-                aggregate.batchLatenciesMs = currentBatchLatencies
-                aggregate.batchDurationsMs = currentBatchDurations
                 if (onProcessingProgress) {
                     onProcessingProgress(createSnapshot(aggregate), null)
                 }
             }
+
+            const resolvedBatches = new Map<number, BatchOutcome>()
+            let nextBatchToApply = 0
+
+            const applyReadyBatches = async () => {
+                while (resolvedBatches.has(nextBatchToApply)) {
+                    const outcome = resolvedBatches.get(nextBatchToApply)!
+                    resolvedBatches.delete(nextBatchToApply)
+                    await applyBatchOutcome(outcome)
+                    nextBatchToApply += 1
+                }
+            }
+
+            const pendingBatches = [...batches]
+            const workerCount = Math.min(maxConcurrentBatches, pendingBatches.length)
+
+            const workers = Array.from({ length: workerCount }, async () => {
+                while (pendingBatches.length > 0) {
+                    const batch = pendingBatches.shift()
+                    if (!batch) break
+                    const outcome = await executeBatch(batch)
+                    resolvedBatches.set(outcome.index, outcome)
+                    await applyReadyBatches()
+                }
+            })
+
+            await Promise.all(workers)
+            await applyReadyBatches()
 
             aggregate.isComplete = true
             aggregate.progressPercent = 100
@@ -519,6 +581,8 @@ export default function UnifiedProcessor({
         } finally {
             setIsProcessing(false)
             if (fileRunStart != null) {
+                const elapsed = performance.now() - fileRunStart
+                setTotalElapsedMs(prev => prev ?? elapsed)
                 setFileRunStart(null)
             }
         }
