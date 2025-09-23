@@ -123,9 +123,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       setCurrentUser(user)
       setLoading(false)
 
-      if (user) {
-        void storeAuthToken(user)
-      } else {
+      if (!user) {
         clearAuthCookie()
       }
     })
