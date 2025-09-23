@@ -14,73 +14,38 @@ import {
     EyeOff,
     Send,
     Copy,
-    Link,
     Loader2,
     Mail
 } from 'lucide-react'
 import { useAuth } from '../contexts/AuthContext'
+import type { ProcessedRow, ProcessingStatistics } from '../types/processing'
 
-interface ProcessedRow {
-    rowIndex: number
-    recordId?: string
-    original: {
-        address: string
-        city: string
-        state: string
-        phone: string
-    }
-    cleaned: {
-        address: string
-        city: string
-        state: string
-        phone: string
-        email: string
-    }
-    geocoding: {
-        latitude: number | null
-        longitude: number | null
-        formattedAddress: string
-        confidence: number
-        confidenceDescription: string
-        locationType: string
-        staticMapUrl: string | null
-    }
-    zipCode?: {
-        zipCode: string | null
-        department: string | null
-        district: string | null
-        neighborhood: string | null
-        confidence: 'high' | 'medium' | 'low' | 'none'
-    }
-    status: 'high_confidence' | 'medium_confidence' | 'low_confidence' | 'failed'
-    error?: string
-    googleMapsLink?: string | null
-    userUpdatedCoordinates?: {
-        lat: number
-        lng: number
-        accuracy?: number
-        updatedAt: string
-    }
-    userUpdatedGoogleMapsLink?: string | null
-    // Location link properties
-    locationLinkToken?: string
-    locationLinkStatus?: 'sent' | 'submitted' | 'expired' | 'pending'
-    locationLinkExpiresAt?: string
-    lastLocationUpdate?: string
+const average = (values: number[]): number | null => {
+    if (!values.length) return null
+    return values.reduce((total, value) => total + value, 0) / values.length
+}
+
+const formatMilliseconds = (value: number | null): string => {
+    if (value == null) return '—'
+    const rounded = Math.round(value)
+    return `${rounded.toLocaleString()} ms`
 }
 
 interface DataDashboardProps {
     data: ProcessedRow[]
-    statistics: {
-        highConfidence: number
-        mediumConfidence: number
-        lowConfidence: number
-        totalRows: number
-    }
+    statistics: ProcessingStatistics
+    totalExpected?: number
+    skipped?: number
+    isProcessing?: boolean
+    progressPercent?: number
+    statusMessage?: string
+    batchLatenciesMs?: number[]
+    batchDurationsMs?: number[]
+    totalRuntimeMs?: number | null
     onBack: () => void
 }
 
-export default function DataDashboard({ data, statistics, onBack }: DataDashboardProps) {
+export default function DataDashboard({ data, statistics, totalExpected, skipped = 0, isProcessing = false, progressPercent: progressOverride, statusMessage, batchLatenciesMs = [], batchDurationsMs = [], totalRuntimeMs = null, onBack }: DataDashboardProps) {
     const { currentUser } = useAuth()
     const [rows, setRows] = useState<ProcessedRow[]>(data)
     const [searchTerm, setSearchTerm] = useState('')
@@ -88,7 +53,6 @@ export default function DataDashboard({ data, statistics, onBack }: DataDashboar
     const [showOriginal, setShowOriginal] = useState(true)
     const [selectedRow, setSelectedRow] = useState<ProcessedRow | null>(null)
     const [selectedForLinks, setSelectedForLinks] = useState<Set<string>>(new Set())
-    const [generatingLinks, setGeneratingLinks] = useState(false)
     const [linkError, setLinkError] = useState<string | null>(null)
     const [sendingEmails, setSendingEmails] = useState(false)
     const [emailResults, setEmailResults] = useState<any[]>([])
@@ -96,6 +60,12 @@ export default function DataDashboard({ data, statistics, onBack }: DataDashboar
     const [copiedLinkId, setCopiedLinkId] = useState<string | null>(null)
     const selectAllLinksRef = useRef<HTMLInputElement | null>(null)
     const [activeTab, setActiveTab] = useState<'dashboard' | 'debug'>('dashboard')
+
+    const averageBatchLatency = useMemo(() => average(batchLatenciesMs), [batchLatenciesMs])
+    const averageBatchDuration = useMemo(() => average(batchDurationsMs), [batchDurationsMs])
+    const averageBatchLatencyDisplay = useMemo(() => formatMilliseconds(averageBatchLatency), [averageBatchLatency])
+    const averageBatchDurationDisplay = useMemo(() => formatMilliseconds(averageBatchDuration), [averageBatchDuration])
+    const totalRuntimeDisplay = useMemo(() => formatMilliseconds(totalRuntimeMs), [totalRuntimeMs])
 
     useEffect(() => {
         setRows(data)
@@ -383,79 +353,6 @@ export default function DataDashboard({ data, statistics, onBack }: DataDashboar
         }
     }
 
-    const handleGenerateLinks = async () => {
-        if (!currentUser) {
-            alert('Debes iniciar sesión para generar enlaces de ubicación')
-            return
-        }
-
-        // Filter to only include recordIds (not row-based IDs)
-        const selectedIds = Array.from(selectedForLinks).filter(id => !id.startsWith('row-'))
-
-        if (selectedIds.length === 0) {
-            alert('Selecciona al menos un registro guardado para generar enlaces de ubicación')
-            return
-        }
-
-        setGeneratingLinks(true)
-        setLinkError(null)
-
-        try {
-            const response = await fetch('/api/address-records/location-links', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                },
-                body: JSON.stringify({
-                    userId: currentUser.uid,
-                    addressIds: selectedIds
-                })
-            })
-
-            if (!response.ok) {
-                const errorText = await response.text()
-                throw new Error(errorText || 'Error generando enlaces de ubicación')
-            }
-
-            const payload = await response.json()
-            const links: Array<{
-                addressId: string
-                token: string
-                url: string
-                status: string
-                expiresAt?: string
-            }> = payload.links || []
-
-            const linkMap = new Map(links.map(link => [link.addressId, link]))
-
-            setRows(prev => prev.map(row => {
-                if (!row.recordId) return row
-                const link = linkMap.get(row.recordId)
-                if (!link) return row
-
-                return {
-                    ...row,
-                    locationLinkToken: link.token,
-                    locationLinkStatus: (link.status as ProcessedRow['locationLinkStatus']) || 'sent',
-                    locationLinkExpiresAt: link.expiresAt || row.locationLinkExpiresAt,
-                    lastLocationUpdate: row.lastLocationUpdate
-                }
-            }))
-
-            const updatedIds = new Set(links.map(link => link.addressId)) as Set<string>
-            setUpdatedRows(updatedIds)
-            setSelectedForLinks(new Set())
-
-            setTimeout(() => {
-                setUpdatedRows(new Set())
-            }, 3000)
-        } catch (error: any) {
-            console.error('Error generating location links:', error)
-            setLinkError(error.message || 'Error generando enlaces de ubicación')
-        } finally {
-            setGeneratingLinks(false)
-        }
-    }
 
     const handleCopyLink = async (row: ProcessedRow) => {
         if (!row.locationLinkToken) return
@@ -597,7 +494,21 @@ export default function DataDashboard({ data, statistics, onBack }: DataDashboar
     }
 
     // Percent helpers for summary cards
-    const totalRowsCount = (statistics && statistics.totalRows) || rows.length || 0
+    const processedCount = statistics?.totalRows ?? rows.length
+    const expectedCount = totalExpected ?? processedCount
+    const completionRatio = expectedCount
+        ? Math.min(100, Math.round(((processedCount + skipped) / expectedCount) * 100))
+        : null
+    const baseProgress = typeof progressOverride === 'number'
+        ? Math.min(100, Math.max(0, progressOverride))
+        : (completionRatio ?? 0)
+    const roundedProgress = Math.round(baseProgress)
+    const showProgressBar = (expectedCount ?? 0) > 0 && (isProcessing || (baseProgress > 0 && baseProgress < 100))
+    const progressStatusText = statusMessage
+        || (isProcessing
+            ? 'Procesando filas en tiempo real...'
+            : 'Procesamiento en curso')
+    const totalRowsCount = processedCount || 0
     const pct = (n: number) => totalRowsCount ? Math.round((n / totalRowsCount) * 100) : 0
 
     return (
@@ -607,7 +518,13 @@ export default function DataDashboard({ data, statistics, onBack }: DataDashboar
                 <div className="flex items-center justify-between mb-4">
                     <div>
                         <h2 className="text-2xl font-bold text-gray-900">Dashboard de Resultados</h2>
-                        <p className="text-gray-600">Procesamiento completado con éxito</p>
+                        <p className="text-gray-600">
+                            {isProcessing
+                                ? progressStatusText
+                                : statusMessage || (completionRatio !== null && completionRatio >= 100
+                                    ? 'Procesamiento completado con éxito.'
+                                    : 'Resultados listos para revisión.')}
+                        </p>
                     </div>
                     <Button
                         onClick={onBack}
@@ -618,8 +535,38 @@ export default function DataDashboard({ data, statistics, onBack }: DataDashboar
                     </Button>
                 </div>
 
+                <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-2 text-sm text-gray-600">
+                    <div>
+                        Progreso: <span className="font-semibold text-gray-900">{processedCount + skipped}</span>
+                        {expectedCount ? (
+                            <span className="text-gray-500"> / {expectedCount}</span>
+                        ) : null}
+                        {completionRatio != null && (
+                            <span className="ml-2 text-xs text-orange-600">{completionRatio}% completado</span>
+                        )}
+                    </div>
+                    {skipped > 0 && (
+                        <div className="text-xs text-gray-500">Filas omitidas por limpieza: {skipped}</div>
+                    )}
+                </div>
+
+                {showProgressBar && (
+                    <div className="mt-4">
+                        <div className="flex items-center justify-between text-xs text-gray-500 mb-1">
+                            <span>{progressStatusText}</span>
+                            <span className="font-semibold text-gray-700">{roundedProgress}%</span>
+                        </div>
+                        <div className="h-2.5 w-full rounded-full bg-gray-200 overflow-hidden">
+                            <div
+                                className="h-full rounded-full bg-gradient-to-r from-orange-500 via-amber-500 to-yellow-500 transition-[width] duration-500 ease-out"
+                                style={{ width: `${baseProgress}%` }}
+                            />
+                        </div>
+                    </div>
+                )}
+
                 {/* Statistics */}
-                <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mt-4">
                     <div className="bg-green-50 p-4 rounded-lg border border-green-200">
                         <div className="flex items-center">
                             <CheckCircle className="w-5 h-5 text-green-500 mr-2" />
@@ -647,6 +594,9 @@ export default function DataDashboard({ data, statistics, onBack }: DataDashboar
                                 <p className="text-sm text-orange-600">Baja Confianza</p>
                                 <p className="text-2xl font-bold text-orange-700">{statistics.lowConfidence}</p>
                                 <p className="text-xs text-orange-600">{pct(statistics.lowConfidence)}%</p>
+                                {statistics.failed ? (
+                                    <p className="text-xs text-orange-500 mt-1">{statistics.failed} filas sin geocodificar</p>
+                                ) : null}
                             </div>
                         </div>
                     </div>
@@ -655,7 +605,15 @@ export default function DataDashboard({ data, statistics, onBack }: DataDashboar
                             <MapPin className="w-5 h-5 text-blue-500 mr-2" />
                             <div>
                                 <p className="text-sm text-blue-600">Total Procesadas</p>
-                                <p className="text-2xl font-bold text-blue-700">{statistics.totalRows}</p>
+                                <p className="text-2xl font-bold text-blue-700">
+                                    {statistics.totalRows}
+                                    {expectedCount && expectedCount !== statistics.totalRows ? (
+                                        <span className="text-lg text-blue-500"> / {expectedCount}</span>
+                                    ) : null}
+                                </p>
+                                {completionRatio != null && (
+                                    <p className="text-xs text-blue-500">{completionRatio}% del dataset</p>
+                                )}
                             </div>
                         </div>
                     </div>
@@ -751,18 +709,6 @@ export default function DataDashboard({ data, statistics, onBack }: DataDashboar
                                     </Button>
                                 </div>
                                 <div className="flex flex-wrap items-center gap-2 justify-end">
-                                    <Button
-                                        onClick={handleGenerateLinks}
-                                        disabled={selectedForLinks.size === 0 || generatingLinks}
-                                        className="bg-gradient-to-r from-orange-500 to-pink-500 hover:from-orange-600 hover:to-pink-600 text-white"
-                                    >
-                                        {generatingLinks ? (
-                                            <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                                        ) : (
-                                            <Link className="w-4 h-4 mr-2" />
-                                        )}
-                                        {generatingLinks ? 'Generando enlaces...' : `Enlace GPS (${selectedForLinks.size})`}
-                                    </Button>
                                     <Button
                                         onClick={handleSendEmailLinks}
                                         disabled={selectedForLinks.size === 0 || sendingEmails}
@@ -1253,6 +1199,28 @@ export default function DataDashboard({ data, statistics, onBack }: DataDashboar
                             </p>
                         </div>
 
+                        {/* Pipeline Metrics */}
+                        <div className="bg-white p-4 rounded-lg border border-gray-200">
+                            <h4 className="font-semibold text-gray-900 mb-3">Métricas de Procesamiento</h4>
+                            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 text-sm">
+                                <div className="bg-gray-50 rounded-lg p-3 border border-gray-100">
+                                    <p className="text-gray-500">Latencia promedio LLM</p>
+                                    <p className="text-lg font-bold text-gray-900">{averageBatchLatencyDisplay}</p>
+                                    <p className="text-xs text-gray-400 mt-1">Tiempo desde el envío del lote hasta recibir respuesta de OpenAI.</p>
+                                </div>
+                                <div className="bg-gray-50 rounded-lg p-3 border border-gray-100">
+                                    <p className="text-gray-500">Duración promedio del lote</p>
+                                    <p className="text-lg font-bold text-gray-900">{averageBatchDurationDisplay}</p>
+                                    <p className="text-xs text-gray-400 mt-1">Incluye geocodificación y persistencia.</p>
+                                </div>
+                                <div className="bg-gray-50 rounded-lg p-3 border border-gray-100">
+                                    <p className="text-gray-500">Tiempo total de ejecución</p>
+                                    <p className="text-lg font-bold text-gray-900">{totalRuntimeDisplay}</p>
+                                    <p className="text-xs text-gray-400 mt-1">Desde el arranque hasta completar el archivo.</p>
+                                </div>
+                            </div>
+                        </div>
+
                         {/* Batch Summary */}
                         <div className="bg-gray-50 p-4 rounded-lg">
                             <h4 className="font-semibold text-gray-900 mb-3">Resumen del Batch</h4>
@@ -1264,7 +1232,9 @@ export default function DataDashboard({ data, statistics, onBack }: DataDashboar
                                 <div className="bg-white p-3 rounded border">
                                     <p className="text-sm text-gray-600">Tasa de Éxito</p>
                                     <p className="text-lg font-bold text-green-600">
-                                        {((statistics.highConfidence + statistics.mediumConfidence) / statistics.totalRows * 100).toFixed(1)}%
+                                        {totalRowsCount
+                                            ? (((statistics.highConfidence + statistics.mediumConfidence) / totalRowsCount) * 100).toFixed(1)
+                                            : '0.0'}%
                                     </p>
                                 </div>
                                 <div className="bg-white p-3 rounded border">
@@ -1361,4 +1331,3 @@ export default function DataDashboard({ data, statistics, onBack }: DataDashboar
         </div>
     )
 }
-

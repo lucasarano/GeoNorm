@@ -84,11 +84,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     console.log('[UNIFIED_PROCESS] Starting complete processing pipeline...')
 
-    // Step 1: Delegate all extraction (including originals) to LLM
-    console.log('[UNIFIED_PROCESS] Step 1/3: Delegating all field extraction to LLM (originals + cleaned)')
+    // Step 1: Ensure inbound spreadsheets are normalized to CSV (handled client-side for XLSX/XLS)
+    console.log('[UNIFIED_PROCESS] Step 1/3: Normalizing spreadsheet input to CSV')
 
-    // Step 2: Clean with OpenAI
-    console.log('[UNIFIED_PROCESS] Step 2/3: Cleaning with OpenAI...')
+    // Step 2: Run specialized LLM calls (field identification + enrichment)
+    console.log('[UNIFIED_PROCESS] Step 2/3: Identifying address fields with focused LLM calls')
     const openaiApiKey = process.env.OPENAI_API_KEY
     if (!openaiApiKey) {
       return res.status(500).json({ error: 'OpenAI API key not configured' })
@@ -108,7 +108,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     console.log(csvForCleaning.substring(0, 500))
     console.log('=== End OpenAI Input ===\n')
 
-    // Dynamically import the cleaning module and call OpenAI
+    // Dynamically import the cleaning module and run the multi-call pipeline (identification + enrichment)
     // @ts-ignore - JS module without TypeScript types
     const cleanerModule: any = await import('../backend/cleanParaguayAddresses.js')
     const cleanedCsv: string = await cleanerModule.cleanParaguayAddresses(openaiApiKey, csvForCleaning)
@@ -177,7 +177,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     console.log('[DEBUG] Cleaned rows:', cleanedData.length, 'Raw rows:', rawDataRows.length)
 
     // Step 3: Real geocoding results via Google Maps
-    console.log('[UNIFIED_PROCESS] Step 3/3: Geocoding addresses...')
+    console.log('[UNIFIED_PROCESS] Step 3/3: Geocoding enriched addresses...')
 
     const mapsApiKey = process.env.GOOGLE_MAPS_API_KEY || process.env.VITE_GOOGLE_MAPS_API_KEY
     if (!mapsApiKey) {

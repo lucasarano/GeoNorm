@@ -13,9 +13,30 @@ import { smsService } from './services/smsService'
 import { emailService } from './services/emailService'
 import { zipCodeService } from './services/zipCodeService'
 // Note: dynamically import the cleaner to avoid TS type declaration issues for .js module
+import multer from 'multer'
+import * as XLSX from 'xlsx'
 
 const app = express()
 const PORT = process.env.PORT || 3001
+const upload = multer()
+
+// Debug logging flag and helper
+const DEBUG_PIPELINE = process.env.DEBUG_PIPELINE === '1' || process.env.DEBUG === '1'
+function debugLog(message: string, details?: any, reqId?: string) {
+    if (!DEBUG_PIPELINE) return
+    const prefix = reqId ? `[${reqId}]` : ''
+    if (details === undefined) {
+        console.log(prefix, message)
+    } else if (typeof details === 'string') {
+        console.log(prefix, message, details)
+    } else {
+        try {
+            console.log(prefix, message, JSON.stringify(details))
+        } catch {
+            console.log(prefix, message, details)
+        }
+    }
+}
 
 // Real-time updates infrastructure
 interface SSEClient {
@@ -52,6 +73,184 @@ function notifyAddressUpdate(userId: string, addressId: string, updateData: any)
     })
 }
 
+// Reusable CSV parsing utility that respects quoted commas
+const parseCSVLine = (line: string): string[] => {
+    const result: string[] = []
+    let current = ''
+    let inQuotes = false
+
+    for (let i = 0; i < line.length; i++) {
+        const char = line[i]
+
+        if (char === '"') {
+            inQuotes = !inQuotes
+        } else if (char === ',' && !inQuotes) {
+            result.push(current.trim())
+            current = ''
+        } else {
+            current += char
+        }
+    }
+
+    result.push(current.trim())
+    return result
+}
+
+interface OriginalRowData {
+    address: string
+    city: string
+    state: string
+    phone: string
+}
+
+interface CleanedRowData extends OriginalRowData {
+    email: string
+}
+
+type ProcessedRowStatus = 'high_confidence' | 'medium_confidence' | 'low_confidence' | 'failed'
+
+interface ProcessedRowResult {
+    rowIndex: number
+    original: OriginalRowData
+    cleaned: CleanedRowData
+    geocoding: {
+        latitude: number | null
+        longitude: number | null
+        formattedAddress: string
+        confidence: number
+        confidenceDescription: string
+        locationType: string
+        staticMapUrl: string | null
+    }
+    zipCode: {
+        zipCode: string | null
+        department: string | null
+        district: string | null
+        neighborhood: string | null
+        confidence: 'high' | 'medium' | 'low' | 'none'
+    } | null
+    status: ProcessedRowStatus
+    error?: string
+    googleMapsLink: string | null
+}
+
+async function buildProcessedRowFromValues(index: number, rawValues: string[]): Promise<ProcessedRowResult> {
+    const values = rawValues.slice()
+    while (values.length < 9) {
+        values.push('')
+    }
+
+    const original: OriginalRowData = {
+        address: values[0] || '',
+        city: values[1] || '',
+        state: values[2] || '',
+        phone: values[3] || ''
+    }
+
+    const cleaned: CleanedRowData = {
+        address: values[4] || '',
+        city: values[5] || '',
+        state: values[6] || '',
+        phone: values[7] || '',
+        email: values[8] || ''
+    }
+
+    let geocodingResult: any = null
+    let geocodeError: string | null = null
+
+    if (cleaned.address && cleaned.address.trim().length >= 3) {
+        try {
+            const components: Record<string, string> = { country: 'PY' }
+            if (cleaned.state && cleaned.state.trim()) components.state = cleaned.state
+            if (cleaned.city && cleaned.city.trim()) components.city = cleaned.city
+
+            const resp = await fetch(`http://localhost:${PORT}/api/geocode-both`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    originalAddress: original.address,
+                    cleanedAddress: cleaned.address,
+                    components
+                })
+            })
+
+            if (!resp.ok) {
+                throw new Error(`Geocode error ${resp.status}`)
+            }
+
+            geocodingResult = await resp.json()
+        } catch (error: any) {
+            geocodeError = error?.message || 'Failed to geocode address'
+            console.error(`[PROCESS_ROW] Geocoding error for row ${index}:`, error)
+        }
+    } else {
+        geocodeError = 'Cleaned address missing or too short for geocoding'
+    }
+
+    let confidence = 0
+    const confidenceDescription = geocodingResult?.confidenceDescription || 'No geocoding result'
+    const locationType = geocodingResult?.locationType || 'N/A'
+    const latitude: number | null = geocodingResult?.cleaned?.best?.latitude ?? null
+    const longitude: number | null = geocodingResult?.cleaned?.best?.longitude ?? null
+    const formattedAddress = geocodingResult?.cleaned?.best?.formatted_address || ''
+    const staticMapUrl = geocodingResult?.staticMapUrl || null
+
+    if (geocodingResult) {
+        confidence = geocodingResult?.confidence || 0
+    }
+
+    let zipCodeInfo: any = null
+    if (latitude != null && longitude != null) {
+        try {
+            zipCodeInfo = await zipCodeService.getZipCode(latitude, longitude)
+        } catch (zipError) {
+            console.warn(`[PROCESS_ROW] Failed to get zip code for row ${index}:`, zipError)
+        }
+    }
+
+    let status: ProcessedRowStatus
+    if (confidence >= 0.8) {
+        status = 'high_confidence'
+    } else if (confidence >= 0.6) {
+        status = 'medium_confidence'
+    } else if (confidence > 0) {
+        status = 'low_confidence'
+    } else {
+        status = 'failed'
+    }
+
+    if (geocodeError) {
+        status = 'failed'
+    }
+
+    return {
+        rowIndex: index,
+        original,
+        cleaned,
+        geocoding: {
+            latitude,
+            longitude,
+            formattedAddress,
+            confidence,
+            confidenceDescription,
+            locationType,
+            staticMapUrl
+        },
+        zipCode: zipCodeInfo ? {
+            zipCode: zipCodeInfo.zipCode,
+            department: zipCodeInfo.department,
+            district: zipCodeInfo.district,
+            neighborhood: zipCodeInfo.neighborhood,
+            confidence: zipCodeInfo.confidence
+        } : null,
+        status,
+        error: geocodeError || undefined,
+        googleMapsLink: latitude != null && longitude != null
+            ? `https://www.google.com/maps?q=${latitude},${longitude}`
+            : null
+    }
+}
+
 // Minimal server for extract -> clean -> geocode flow only
 
 // Enable CORS for all routes
@@ -78,9 +277,38 @@ app.get('/health', (req, res) => {
 
 // Removed: standalone geocoding and places endpoints (not used by Extract flow)
 
+// XLSX -> CSV conversion endpoint (first sheet)
+app.post('/api/xlsx-to-csv', upload.single('file'), async (req, res) => {
+    try {
+        const reqId = randomUUID()
+        debugLog('XLSX->CSV: request received', { size: req.file?.size }, reqId)
+        const fileBuffer = req.file?.buffer
+        if (!fileBuffer) {
+            return res.status(400).json({ error: 'No file uploaded' })
+        }
+
+        const workbook = XLSX.read(fileBuffer, { type: 'buffer' })
+        const sheetName = workbook.SheetNames[0]
+        if (!sheetName) {
+            return res.status(400).json({ error: 'No sheets found in workbook' })
+        }
+        const worksheet = workbook.Sheets[sheetName]
+        debugLog('XLSX->CSV: converting sheet', { sheetName }, reqId)
+        const csv = XLSX.utils.sheet_to_csv(worksheet, { FS: ',', RS: '\n' })
+
+        res.setHeader('Content-Type', 'text/csv; charset=utf-8')
+        debugLog('XLSX->CSV: sending CSV response', { bytes: csv.length }, reqId)
+        res.send(csv.endsWith('\n') ? csv : csv + '\n')
+    } catch (error: any) {
+        console.error('[XLSX_TO_CSV] Error:', error)
+        res.status(500).json({ error: 'Failed to convert XLSX to CSV', details: error?.message })
+    }
+})
+
 // Geocode both original and cleaned addresses, with optional components
 app.post('/api/geocode-both', async (req, res) => {
     try {
+        const reqId = randomUUID()
         const { originalAddress, cleanedAddress, components } = req.body || {}
         const apiKey = process.env.VITE_GOOGLE_MAPS_API_KEY
 
@@ -164,6 +392,7 @@ app.post('/api/geocode-both', async (req, res) => {
 
         const componentsStr = buildComponents(components)
         // Only geocode the cleaned address
+        debugLog('GEOCODE_BOTH: start', { cleanedAddress, components: componentsStr }, reqId)
         const clean = await geocode(cleanedAddress, componentsStr)
         const orig = null // Don't geocode original addresses
 
@@ -184,6 +413,7 @@ app.post('/api/geocode-both', async (req, res) => {
 
         // No persistence in simplified flow
 
+        debugLog('GEOCODE_BOTH: result', { status: clean?.status, lat, lng }, reqId)
         res.json({
             original: orig,
             cleaned: { ...(clean || {}), usedComponents: componentsStr },
@@ -202,6 +432,7 @@ app.post('/api/geocode-both', async (req, res) => {
 // Static Maps proxy endpoint
 app.get('/api/staticmap', async (req, res) => {
     try {
+        const reqId = randomUUID()
         const { lat, lng, zoom = '14', size = '600x300' } = req.query
         const apiKey = process.env.GOOGLE_MAPS_API_KEY || process.env.VITE_GOOGLE_MAPS_API_KEY
         if (!apiKey) {
@@ -215,6 +446,7 @@ app.get('/api/staticmap', async (req, res) => {
 
         const url = `https://maps.googleapis.com/maps/api/staticmap?center=${lat},${lng}&zoom=${zoom}&size=${size}&markers=color:red%7C${lat},${lng}&key=${apiKey}`
         console.log('[STATIC_MAP] Requesting:', url.replace(apiKey, '[API_KEY]'))
+        debugLog('STATIC_MAP: request', { lat, lng, zoom, size }, reqId)
 
         const r = await fetch(url)
         console.log('[STATIC_MAP] Google response status:', r.status)
@@ -235,6 +467,7 @@ app.get('/api/staticmap', async (req, res) => {
             // Use arrayBuffer for better compatibility
             const arrayBuffer = await r.arrayBuffer()
             const buffer = Buffer.from(arrayBuffer)
+            debugLog('STATIC_MAP: response OK', { bytes: buffer.byteLength }, reqId)
             res.send(buffer)
         } else {
             const text = await r.text()
@@ -465,9 +698,149 @@ app.get('/confirm/:addressId/reject', async (req, res) => {
     }
 })
 
+// Row-by-row processing endpoint for real-time pipelines
+app.post('/api/process-row', async (req, res) => {
+    try {
+        const reqId = randomUUID()
+        const { header, row, rowIndex } = req.body || {}
+        debugLog('PROCESS_ROW: received', { rowIndex }, reqId)
+
+        if (!header || typeof header !== 'string') {
+            return res.status(400).json({ error: 'CSV header is required' })
+        }
+
+        if (!row || typeof row !== 'string') {
+            return res.status(400).json({ error: 'CSV row is required' })
+        }
+
+        const index = typeof rowIndex === 'number' ? rowIndex : 0
+
+        const apiKey = process.env.OPENAI_API_KEY
+        if (!apiKey) {
+            return res.status(500).json({ error: 'OpenAI API key not configured' })
+        }
+
+        // Build a minimal CSV containing just the header and current row
+        const csvPayload = `${header}\n${row}\n`
+
+        // Run the multi-call LLM cleaner (field identification + address enrichment)
+        // @ts-ignore - JS module without TypeScript types
+        const cleanerModule: any = await import('./cleanParaguayAddresses.js')
+        debugLog('PROCESS_ROW: calling cleaner', { payloadBytes: csvPayload.length }, reqId)
+        const cleanedCsv: string = await cleanerModule.cleanParaguayAddresses(apiKey, csvPayload)
+        debugLog('PROCESS_ROW: cleaner returned', { bytes: cleanedCsv.length }, reqId)
+
+        const cleanedLines = cleanedCsv.trim().split('\n')
+        const dataLines = cleanedLines.slice(1).filter(line => line && line.trim().length > 0)
+
+        if (dataLines.length === 0) {
+            return res.json({ success: true, skipped: true, rowIndex: index, reason: 'Row removed during cleaning' })
+        }
+
+        if (dataLines.length > 1) {
+            console.warn(`[PROCESS_ROW] Unexpected multiple cleaned rows for index ${index}. Using the first entry.`)
+        }
+
+        const values = parseCSVLine(dataLines[0])
+        debugLog('PROCESS_ROW: building processed row', { rowIndex: index }, reqId)
+        const processedRow = await buildProcessedRowFromValues(index, values)
+
+        res.json({ success: true, processedRow })
+    } catch (error: any) {
+        console.error('[PROCESS_ROW] Error processing row:', error)
+        res.status(500).json({ error: 'Failed to process row', details: error?.message })
+    }
+})
+
+app.post('/api/process-rows', async (req, res) => {
+    try {
+        const reqId = randomUUID()
+        const { header, rows, startIndex } = req.body || {}
+        debugLog('PROCESS_ROWS: received', { rows: Array.isArray(rows) ? rows.length : 0, startIndex }, reqId)
+
+        if (!header || typeof header !== 'string') {
+            return res.status(400).json({ success: false, error: 'CSV header is required' })
+        }
+
+        if (!Array.isArray(rows) || rows.length === 0) {
+            return res.status(400).json({ success: false, error: 'At least one CSV row is required' })
+        }
+
+        const indexOffset = typeof startIndex === 'number' ? startIndex : 0
+
+        const apiKey = process.env.OPENAI_API_KEY
+        if (!apiKey) {
+            return res.status(500).json({ success: false, error: 'OpenAI API key not configured' })
+        }
+
+        const csvPayload = `${[header, ...rows].join('\n')}\n`
+
+        // @ts-ignore - JS module without TypeScript types
+        const cleanerModule: any = await import('./cleanParaguayAddresses.js')
+        debugLog('PROCESS_ROWS: calling cleaner', { payloadBytes: csvPayload.length }, reqId)
+        const cleanedCsv: string = await cleanerModule.cleanParaguayAddresses(apiKey, csvPayload)
+        debugLog('PROCESS_ROWS: cleaner returned', { bytes: cleanedCsv.length }, reqId)
+
+        const cleanedLines = cleanedCsv.trim().split('\n')
+        const dataLines = cleanedLines.slice(1)
+
+        if (dataLines.length !== rows.length) {
+            console.warn(`[PROCESS_ROWS] Cleaned row count mismatch: input=${rows.length}, output=${dataLines.length}`)
+        }
+
+        const results: Array<{
+            rowIndex: number
+            status: 'processed' | 'skipped' | 'error'
+            processedRow?: ProcessedRowResult
+            reason?: string
+            error?: string
+        }> = []
+
+        for (let i = 0; i < rows.length; i++) {
+            const absoluteIndex = indexOffset + i
+            const cleanedLine = dataLines[i]
+
+            if (!cleanedLine || !cleanedLine.trim()) {
+                debugLog('PROCESS_ROWS: row skipped (removed during cleaning)', { rowIndex: absoluteIndex }, reqId)
+                results.push({
+                    rowIndex: absoluteIndex,
+                    status: 'skipped',
+                    reason: 'Row removed during cleaning'
+                })
+                continue
+            }
+
+            try {
+                debugLog('PROCESS_ROWS: processing row', { rowIndex: absoluteIndex }, reqId)
+                const values = parseCSVLine(cleanedLine)
+                const processedRow = await buildProcessedRowFromValues(absoluteIndex, values)
+                results.push({
+                    rowIndex: absoluteIndex,
+                    status: 'processed',
+                    processedRow
+                })
+            } catch (rowError: any) {
+                console.error(`[PROCESS_ROWS] Error processing row ${absoluteIndex}:`, rowError)
+                results.push({
+                    rowIndex: absoluteIndex,
+                    status: 'error',
+                    error: rowError?.message || 'Failed to process row'
+                })
+            }
+        }
+
+        debugLog('PROCESS_ROWS: completed', { results: results.length }, reqId)
+        res.json({ success: true, results })
+    } catch (error: any) {
+        console.error('[PROCESS_ROWS] Batch processing error:', error)
+        res.status(500).json({ success: false, error: 'Failed to process rows', details: error?.message })
+    }
+})
+
 // Unified processing endpoint - CSV upload -> Extract -> Clean -> Geocode
 app.post('/api/process-complete', express.raw({ type: 'text/csv', limit: '10mb' }), async (req, res) => {
     try {
+        const reqId = randomUUID()
         const csvData = req.body.toString('utf-8')
 
         if (!csvData) {
@@ -475,6 +848,7 @@ app.post('/api/process-complete', express.raw({ type: 'text/csv', limit: '10mb' 
         }
 
         console.log('[UNIFIED_PROCESS] Starting complete processing pipeline...')
+        debugLog('UNIFIED: step 1/3 start - CSV received', { bytes: csvData.length }, reqId)
 
         // Step 1: Delegate all extraction (including originals) to LLM
         console.log('[UNIFIED_PROCESS] Step 1/3: Delegating all field extraction to LLM (originals + cleaned)')
@@ -502,6 +876,7 @@ app.post('/api/process-complete', express.raw({ type: 'text/csv', limit: '10mb' 
 
         // Step 2: Clean with OpenAI
         console.log('[UNIFIED_PROCESS] Step 2/3: Cleaning with OpenAI...')
+        debugLog('UNIFIED: step 2/3 - calling cleaner', undefined, reqId)
         const apiKey = process.env.OPENAI_API_KEY
         if (!apiKey) {
             return res.status(500).json({ error: 'OpenAI API key not configured' })
@@ -513,6 +888,7 @@ app.post('/api/process-complete', express.raw({ type: 'text/csv', limit: '10mb' 
         // @ts-ignore - JS module without TypeScript types
         const cleanerModule: any = await import('./cleanParaguayAddresses.js')
         const cleanedCsv: string = await cleanerModule.cleanParaguayAddresses(apiKey, csvForCleaning)
+        debugLog('UNIFIED: cleaner returned', { bytes: cleanedCsv.length }, reqId)
 
         const cleanedLines = cleanedCsv.trim().split('\n')
         const cleanedData = cleanedLines.slice(1).map((line: string) => {
@@ -533,9 +909,11 @@ app.post('/api/process-complete', express.raw({ type: 'text/csv', limit: '10mb' 
         })
 
         console.log(`[UNIFIED_PROCESS] Cleaned ${cleanedData.length} rows`)
+        debugLog('UNIFIED: parsed cleaned rows', { count: cleanedData.length }, reqId)
 
         // Step 3: Geocode cleaned addresses
         console.log('[UNIFIED_PROCESS] Step 3/3: Geocoding addresses...')
+        debugLog('UNIFIED: step 3/3 - geocoding start', undefined, reqId)
         const mapsApiKey = process.env.VITE_GOOGLE_MAPS_API_KEY
         if (!mapsApiKey) {
             return res.status(500).json({ error: 'Google Maps API key not configured' })
@@ -561,6 +939,7 @@ app.post('/api/process-complete', express.raw({ type: 'text/csv', limit: '10mb' 
                 if (cleaned.state && cleaned.state.trim()) components.state = cleaned.state
                 if (cleaned.city && cleaned.city.trim()) components.city = cleaned.city
 
+                debugLog('UNIFIED: geocoding row', { i, cleaned: cleaned.address, components }, reqId)
                 const resp = await fetch(`http://localhost:${PORT}/api/geocode-both`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
@@ -573,6 +952,7 @@ app.post('/api/process-complete', express.raw({ type: 'text/csv', limit: '10mb' 
 
                 if (!resp.ok) throw new Error(`Geocode error ${resp.status}`)
                 const data = await resp.json()
+                debugLog('UNIFIED: geocode OK', { i, confidence: data.confidence }, reqId)
 
                 // Categorize by geocoding confidence only
                 const geoConfidence = data.confidence || 0
@@ -587,8 +967,10 @@ app.post('/api/process-complete', express.raw({ type: 'text/csv', limit: '10mb' 
                 if (data.cleaned?.best?.latitude && data.cleaned?.best?.longitude) {
                     try {
                         zipCodeResult = await zipCodeService.getZipCode(data.cleaned.best.latitude, data.cleaned.best.longitude)
+                        debugLog('UNIFIED: zip code OK', { i, zip: zipCodeResult?.zipCode }, reqId)
                     } catch (zipError) {
                         console.warn(`[ZIP_CODE] Failed to get zip code for row ${i}:`, zipError)
+                        debugLog('UNIFIED: zip code FAIL', { i }, reqId)
                     }
                 }
 
@@ -632,6 +1014,7 @@ app.post('/api/process-complete', express.raw({ type: 'text/csv', limit: '10mb' 
                 })
             } catch (error: any) {
                 lowConfidence++
+                debugLog('UNIFIED: geocode FAIL', { i, error: error?.message }, reqId)
                 results.push({
                     rowIndex: i,
                     original: {
@@ -667,6 +1050,7 @@ app.post('/api/process-complete', express.raw({ type: 'text/csv', limit: '10mb' 
 
         console.log(`[UNIFIED_PROCESS] Geocoded ${results.length} addresses`)
         console.log(`[UNIFIED_PROCESS] Confidence breakdown: High: ${highConfidence}, Medium: ${mediumConfidence}, Low: ${lowConfidence}`)
+        debugLog('UNIFIED: done', { total: results.length, highConfidence, mediumConfidence, lowConfidence }, reqId)
 
         res.json({
             success: true,
@@ -683,6 +1067,40 @@ app.post('/api/process-complete', express.raw({ type: 'text/csv', limit: '10mb' 
     } catch (error) {
         console.error('[UNIFIED_PROCESS] Error:', error)
         res.status(500).json({ error: 'Failed to process CSV data' })
+    }
+})
+
+// Unified processing endpoint for XLSX uploads
+app.post('/api/process-complete-xlsx', upload.single('file'), async (req, res) => {
+    try {
+        const reqId = randomUUID()
+        debugLog('UNIFIED_XLSX: received', { size: req.file?.size }, reqId)
+        const fileBuffer = req.file?.buffer
+        if (!fileBuffer) {
+            return res.status(400).json({ error: 'No file uploaded' })
+        }
+
+        // Convert first sheet to CSV
+        const workbook = XLSX.read(fileBuffer, { type: 'buffer' })
+        const sheetName = workbook.SheetNames[0]
+        if (!sheetName) {
+            return res.status(400).json({ error: 'No sheets found in workbook' })
+        }
+        const worksheet = workbook.Sheets[sheetName]
+        debugLog('UNIFIED_XLSX: converting sheet', { sheetName }, reqId)
+        const csvData = XLSX.utils.sheet_to_csv(worksheet, { FS: ',', RS: '\n' })
+
+        // Reuse the CSV processing pipeline by calling the handler internally
+        // Easiest is to emulate the minimal body used by /api/process-complete
+        req.body = Buffer.from(csvData.endsWith('\n') ? csvData : csvData + '\n', 'utf-8')
+        ;(req as any).headers['content-type'] = 'text/csv'
+
+        // Delegate to the CSV pipeline
+        debugLog('UNIFIED_XLSX: delegating to CSV pipeline', { bytes: csvData.length }, reqId)
+        return app._router.handle(req, res, () => {})
+    } catch (error: any) {
+        console.error('[UNIFIED_PROCESS_XLSX] Error:', error)
+        res.status(500).json({ error: 'Failed to process XLSX data', details: error?.message })
     }
 })
 

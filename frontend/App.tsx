@@ -7,20 +7,9 @@ import DataHistory from './components/DataHistory'
 import LocationCollection from './components/LocationCollection'
 import SMSTest from './components/SMSTest'
 import EmailTest from './components/EmailTest'
+import type { ProcessingResult } from './types/processing'
 
 type AppState = 'landing' | 'registration' | 'pipeline' | 'dashboard' | 'data-history' | 'location-collection' | 'sms-test' | 'email-test'
-
-interface ProcessingResult {
-  success: boolean
-  totalProcessed: number
-  statistics: {
-    highConfidence: number
-    mediumConfidence: number
-    lowConfidence: number
-    totalRows: number
-  }
-  results: any[]
-}
 
 function App() {
   const [currentView, setCurrentView] = useState<AppState>(() => {
@@ -35,6 +24,7 @@ function App() {
     return 'landing'
   })
   const [processingResult, setProcessingResult] = useState<ProcessingResult | null>(null)
+  const [isLiveProcessing, setIsLiveProcessing] = useState(false)
 
   if (currentView === 'landing') {
     return (
@@ -136,15 +126,23 @@ function App() {
                 highConfidence: dataset.highConfidenceAddresses,
                 mediumConfidence: dataset.mediumConfidenceAddresses,
                 lowConfidence: dataset.lowConfidenceAddresses,
+                failed: 0,
                 totalRows: dataset.processedRows
               }
 
               setProcessingResult({
                 success: true,
+                isComplete: true,
                 totalProcessed: dataset.processedRows,
+                totalExpected: dataset.totalRows,
+                skipped: Math.max(0, dataset.totalRows - dataset.processedRows),
                 statistics,
-                results: convertedResults
+                results: convertedResults,
+                csvId: dataset.id,
+                progressPercent: 100,
+                statusMessage: 'Dataset histórico cargado'
               })
+              setIsLiveProcessing(false)
               setCurrentView('dashboard')
             }}
             onBack={() => setCurrentView('pipeline')}
@@ -183,6 +181,14 @@ function App() {
           <DataDashboard
             data={processingResult.results}
             statistics={processingResult.statistics}
+            totalExpected={processingResult.totalExpected}
+            skipped={processingResult.skipped}
+            isProcessing={isLiveProcessing}
+            progressPercent={processingResult.progressPercent}
+            statusMessage={processingResult.statusMessage}
+            batchLatenciesMs={processingResult.batchLatenciesMs}
+            batchDurationsMs={processingResult.batchDurationsMs}
+            totalRuntimeMs={processingResult.totalRuntimeMs}
             onBack={() => setCurrentView('pipeline')}
           />
         </main>
@@ -240,7 +246,7 @@ function App() {
       </section>
 
       {/* Main Content */}
-      <main className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 pb-16">
+      <main className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 pb-16 space-y-12">
         <div className="bg-white/70 backdrop-blur-sm rounded-3xl shadow-2xl border border-orange-100">
           <div className="p-8">
             <div>
@@ -256,14 +262,62 @@ function App() {
                 </div>
               </div>
               <UnifiedProcessor
-                onProcessingComplete={(result) => {
-                  setProcessingResult(result)
+                onProcessingStart={(state) => {
+                  setProcessingResult(state)
+                  setIsLiveProcessing(true)
+                }}
+                onProcessingProgress={(state) => {
+                  setProcessingResult(state)
+                }}
+                onProcessingComplete={(state) => {
+                  setProcessingResult(state)
+                  setIsLiveProcessing(false)
                   setCurrentView('dashboard')
+                }}
+                onProcessingError={() => {
+                  setIsLiveProcessing(false)
                 }}
               />
             </div>
           </div>
         </div>
+
+        {processingResult && (
+          <div className="bg-white/70 backdrop-blur-sm rounded-3xl shadow-xl border border-orange-100">
+            <div className="p-6">
+              <div className="flex items-center justify-between mb-6">
+                <div>
+                  <h3 className="text-xl font-bold text-gray-900">Dashboard en vivo</h3>
+                  <p className="text-sm text-gray-600">Observa cómo cada fila se agrega al tablero en tiempo real</p>
+                </div>
+                <button
+                  onClick={() => {
+                    if (!isLiveProcessing) {
+                      setCurrentView('dashboard')
+                    }
+                  }}
+                  disabled={isLiveProcessing}
+                  className={`text-sm font-medium ${isLiveProcessing ? 'text-gray-400 cursor-not-allowed' : 'text-orange-600 hover:text-orange-700'}`}
+                >
+                  {isLiveProcessing ? 'Procesando…' : 'Abrir en pantalla completa →'}
+                </button>
+              </div>
+              <DataDashboard
+                data={processingResult.results}
+                statistics={processingResult.statistics}
+                totalExpected={processingResult.totalExpected}
+                skipped={processingResult.skipped}
+                isProcessing={isLiveProcessing}
+                progressPercent={processingResult.progressPercent}
+                statusMessage={processingResult.statusMessage}
+                batchLatenciesMs={processingResult.batchLatenciesMs}
+                batchDurationsMs={processingResult.batchDurationsMs}
+                totalRuntimeMs={processingResult.totalRuntimeMs}
+                onBack={() => setCurrentView('pipeline')}
+              />
+            </div>
+          </div>
+        )}
       </main>
 
       {/* Footer */}
