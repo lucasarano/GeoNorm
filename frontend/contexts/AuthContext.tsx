@@ -13,6 +13,32 @@ import { auth, googleProvider, db } from '../lib/firebase'
 // Use the User type from the auth instance
 type User = import('firebase/auth').User
 
+const AUTH_COOKIE_NAME = 'geoAuthToken'
+const AUTH_COOKIE_MAX_AGE = 60 * 60 * 24 * 365 // 1 year in seconds
+
+const isBrowser = typeof window !== 'undefined'
+
+const writeAuthCookie = (token: string) => {
+  if (!isBrowser) return
+
+  document.cookie = `${AUTH_COOKIE_NAME}=${token};Max-Age=${AUTH_COOKIE_MAX_AGE};Path=/;SameSite=Lax`
+}
+
+const clearAuthCookie = () => {
+  if (!isBrowser) return
+
+  document.cookie = `${AUTH_COOKIE_NAME}=;Max-Age=0;Path=/;SameSite=Lax`
+}
+
+const storeAuthToken = async (user: User) => {
+  try {
+    const token = await user.getIdToken()
+    writeAuthCookie(token)
+  } catch (error) {
+    console.error('Failed to store auth token', error)
+  }
+}
+
 interface AuthContextType {
   currentUser: User | null
   loading: boolean
@@ -55,10 +81,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         lastReset: new Date().toISOString()
       }
     })
+
+    await storeAuthToken(user)
   }
 
   const login = async (email: string, password: string) => {
-    await signInWithEmailAndPassword(auth, email, password)
+    const { user } = await signInWithEmailAndPassword(auth, email, password)
+    await storeAuthToken(user)
   }
 
   const loginWithGoogle = async () => {
@@ -80,9 +109,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         }
       })
     }
+
+    await storeAuthToken(user)
   }
 
   const logout = async () => {
+    clearAuthCookie()
     await signOut(auth)
   }
 
@@ -90,6 +122,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     const unsubscribe = onAuthStateChanged(auth, (user) => {
       setCurrentUser(user)
       setLoading(false)
+
+      if (user) {
+        void storeAuthToken(user)
+      } else {
+        clearAuthCookie()
+      }
     })
 
     return unsubscribe

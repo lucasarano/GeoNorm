@@ -11,9 +11,10 @@ interface RegistrationPageProps {
 }
 
 export default function RegistrationPage({ onRegistrationComplete, onBackToHome }: RegistrationPageProps) {
-  const { signup, login, loginWithGoogle } = useAuth()
+  const { signup, login, loginWithGoogle, logout, currentUser } = useAuth()
   const [isLoading, setIsLoading] = useState(false)
   const [isSignIn, setIsSignIn] = useState(false)
+  const [isLogoutProcessing, setIsLogoutProcessing] = useState(false)
   const [formData, setFormData] = useState({
     email: '',
     password: '',
@@ -21,6 +22,20 @@ export default function RegistrationPage({ onRegistrationComplete, onBackToHome 
     name: ''
   })
   const [errors, setErrors] = useState<{[key: string]: string}>({})
+
+  const handleLogout = async () => {
+    setIsLogoutProcessing(true)
+    try {
+      await logout()
+      setIsSignIn(false)
+      setFormData({ email: '', password: '', confirmPassword: '', name: '' })
+      onBackToHome()
+    } catch (error) {
+      console.error('Logout error:', error)
+    } finally {
+      setIsLogoutProcessing(false)
+    }
+  }
 
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const { name, value } = e.target
@@ -156,22 +171,34 @@ export default function RegistrationPage({ onRegistrationComplete, onBackToHome 
         <div className="max-w-7xl mx-auto px-6 lg:px-8 py-5">
           <div className="flex items-center justify-between">
             {/* Logo & Brand - Left Side */}
-            <div className="flex items-center space-x-4 group cursor-pointer" onClick={onBackToHome}>
-              <div className="relative">
-                <div className="w-12 h-12 bg-gradient-to-br from-orange-500 via-amber-500 to-yellow-500 rounded-2xl flex items-center justify-center shadow-xl group-hover:shadow-orange-200/50 transition-all duration-300 group-hover:scale-105">
-                  <svg className="w-7 h-7 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z" />
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M15 11a3 3 0 11-6 0 3 3 0 016 0z" />
-                  </svg>
+            <div className="flex items-center space-x-6">
+              <div className="flex items-center space-x-4 group cursor-pointer" onClick={onBackToHome}>
+                <div className="relative">
+                  <div className="w-12 h-12 bg-gradient-to-br from-orange-500 via-amber-500 to-yellow-500 rounded-2xl flex items-center justify-center shadow-xl group-hover:shadow-orange-200/50 transition-all duration-300 group-hover:scale-105">
+                    <svg className="w-7 h-7 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z" />
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M15 11a3 3 0 11-6 0 3 3 0 016 0z" />
+                    </svg>
+                  </div>
+                  <div className="absolute -top-1 -right-1 w-4 h-4 bg-gradient-to-r from-emerald-400 to-teal-400 rounded-full border-2 border-white animate-pulse"></div>
                 </div>
-                <div className="absolute -top-1 -right-1 w-4 h-4 bg-gradient-to-r from-emerald-400 to-teal-400 rounded-full border-2 border-white animate-pulse"></div>
+                <div>
+                  <h1 className="text-3xl font-black tracking-tight bg-gradient-to-r from-gray-900 via-gray-800 to-gray-900 bg-clip-text text-transparent group-hover:from-orange-600 group-hover:via-amber-600 group-hover:to-yellow-600 transition-all duration-300">
+                    GeoNorm
+                  </h1>
+                  <p className="text-sm text-gray-600 font-medium tracking-wide">Inteligencia de Direcciones con IA</p>
+                </div>
               </div>
-              <div>
-                <h1 className="text-3xl font-black tracking-tight bg-gradient-to-r from-gray-900 via-gray-800 to-gray-900 bg-clip-text text-transparent group-hover:from-orange-600 group-hover:via-amber-600 group-hover:to-yellow-600 transition-all duration-300">
-                  GeoNorm
-                </h1>
-                <p className="text-sm text-gray-600 font-medium tracking-wide">Inteligencia de Direcciones con IA</p>
-              </div>
+
+              {currentUser && (
+                <Button
+                  onClick={handleLogout}
+                  disabled={isLogoutProcessing}
+                  className="bg-white/90 border border-orange-200 text-orange-600 hover:text-orange-700 hover:bg-orange-50 transition-colors duration-200 text-sm font-semibold shadow-sm px-4 py-2 rounded-lg"
+                >
+                  {isLogoutProcessing ? 'Cerrando sesión...' : 'Cerrar sesión'}
+                </Button>
+              )}
             </div>
 
             {/* Back Button */}

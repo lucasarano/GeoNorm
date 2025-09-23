@@ -1,4 +1,4 @@
-import React, { useState } from 'react'
+import React, { useEffect, useState } from 'react'
 import LandingPage from './components/LandingPage'
 import RegistrationPage from './components/auth/RegistrationPage'
 import UnifiedProcessor from './components/UnifiedProcessor'
@@ -8,6 +8,7 @@ import LocationCollection from './components/LocationCollection'
 import SMSTest from './components/SMSTest'
 import EmailTest from './components/EmailTest'
 import type { ProcessingResult } from './types/processing'
+import { useAuth } from './contexts/AuthContext'
 
 type AppState = 'landing' | 'registration' | 'pipeline' | 'dashboard' | 'data-history' | 'location-collection' | 'sms-test' | 'email-test'
 
@@ -25,6 +26,21 @@ function App() {
   })
   const [processingResult, setProcessingResult] = useState<ProcessingResult | null>(null)
   const [isLiveProcessing, setIsLiveProcessing] = useState(false)
+  const { currentUser, loading } = useAuth()
+
+  useEffect(() => {
+    if (loading) {
+      return
+    }
+
+    if (currentUser) {
+      if (currentView === 'landing') {
+        setCurrentView('pipeline')
+      }
+    } else if (['pipeline', 'dashboard', 'data-history'].includes(currentView)) {
+      setCurrentView('landing')
+    }
+  }, [currentUser, currentView, loading])
 
   if (currentView === 'landing') {
     return (
