@@ -11,15 +11,15 @@ export async function cleanParaguayAddresses(apiKey, csvData) {
     console.log(prompt)
     console.log('=== End OpenAI Request ===\n')
 
-    const response = await fetch('https://api.openai.com/v1/responses', {
+    const response = await fetch('https://api.openai.com/v1/chat/completions', {
         method: 'POST',
         headers: {
             'Content-Type': 'application/json',
             Authorization: `Bearer ${apiKey}`,
         },
         body: JSON.stringify({
-            model: 'gpt-5-mini',
-            input: [
+            model: 'gpt-4o-mini',
+            messages: [
                 {
                     role: 'system',
                     content:
@@ -27,16 +27,8 @@ export async function cleanParaguayAddresses(apiKey, csvData) {
                 },
                 { role: 'user', content: prompt }
             ],
-            // Set reasoning effort to minimal for faster processing
-            reasoning: {
-                effort: 'minimal'
-            },
-            // Set verbosity to low for concise output  
-            text: {
-                verbosity: 'low'
-            },
-            // Responses API uses max_output_tokens instead of max_tokens
-            max_output_tokens: 8000,
+            max_tokens: 8000,
+            temperature: 0.1,
         }),
     });
 
@@ -55,24 +47,8 @@ export async function cleanParaguayAddresses(apiKey, csvData) {
     // Responses API returns text in result.output array
     let content = null;
 
-    // Try different ways to extract content from GPT-5 response
-    if (result.output_text) {
-        content = result.output_text;
-    } else if (result.output && Array.isArray(result.output)) {
-        // Look for message content in the output array
-        for (const output of result.output) {
-            if (output.type === 'message' && output.content && Array.isArray(output.content)) {
-                for (const contentItem of output.content) {
-                    if (contentItem.type === 'output_text' && contentItem.text) {
-                        content = contentItem.text;
-                        break;
-                    }
-                }
-                if (content) break;
-            }
-        }
-    } else if (result?.choices?.[0]?.message?.content) {
-        // Fallback for older API format
+    // Extract content from standard chat completions response
+    if (result?.choices?.[0]?.message?.content) {
         content = result.choices[0].message.content;
     }
 

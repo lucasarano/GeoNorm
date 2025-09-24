@@ -5,6 +5,7 @@ import { Button } from './shared/ui/button'
 import { Upload, FileText, Sparkles, MapPin, CheckCircle } from 'lucide-react'
 import { DataService } from '../services/dataService'
 import { useAuth } from '../contexts/AuthContext'
+import RealTimeApiMonitor from './RealTimeApiMonitor'
 
 interface ProcessedRow {
     rowIndex: number
@@ -52,6 +53,10 @@ interface ProcessingResult {
         totalRows: number
     }
     results: ProcessedRow[]
+    debug?: {
+        batchProcessing?: any
+        geocodingInteractions?: any
+    }
 }
 
 interface UnifiedProcessorProps {
@@ -145,7 +150,11 @@ export default function UnifiedProcessor({ onProcessingComplete }: UnifiedProces
                 success: true,
                 totalProcessed: 0,
                 statistics: { highConfidence: 0, mediumConfidence: 0, lowConfidence: 0, totalRows: 0 },
-                results: []
+                results: [],
+                debug: {
+                    batchProcessing: null,
+                    geocodingInteractions: []
+                }
             }
 
             for (let b = 0; b < numBatches; b++) {
@@ -193,6 +202,16 @@ export default function UnifiedProcessor({ onProcessingComplete }: UnifiedProces
                 aggregate.statistics.mediumConfidence += result.statistics.mediumConfidence
                 aggregate.statistics.lowConfidence += result.statistics.lowConfidence
                 aggregate.statistics.totalRows += result.statistics.totalRows
+
+                // Accumulate debug information
+                if (result.debug) {
+                    if (result.debug.batchProcessing && !aggregate.debug!.batchProcessing) {
+                        aggregate.debug!.batchProcessing = result.debug.batchProcessing
+                    }
+                    if (result.debug.geocodingInteractions) {
+                        aggregate.debug!.geocodingInteractions!.push(...result.debug.geocodingInteractions)
+                    }
+                }
             }
 
             setStepDetails('Finalizando procesamiento...')
@@ -480,6 +499,9 @@ export default function UnifiedProcessor({ onProcessingComplete }: UnifiedProces
                     </div>
                 </div>
             </Card>
+
+            {/* Real-time API Monitor */}
+            <RealTimeApiMonitor isProcessing={isProcessing} />
         </div>
     )
 }

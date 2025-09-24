@@ -20,6 +20,10 @@ interface ProcessingResult {
     totalRows: number
   }
   results: any[]
+  debug?: {
+    batchProcessing?: any
+    geocodingInteractions?: any
+  }
 }
 
 function App() {
@@ -183,6 +187,7 @@ function App() {
           <DataDashboard
             data={processingResult.results}
             statistics={processingResult.statistics}
+            debug={processingResult.debug}
             onBack={() => setCurrentView('pipeline')}
           />
         </main>

@@ -19,6 +19,7 @@ import {
     Mail
 } from 'lucide-react'
 import { useAuth } from '../contexts/AuthContext'
+import ApiVisualization from './ApiVisualization'
 
 interface ProcessedRow {
     rowIndex: number
@@ -77,10 +78,14 @@ interface DataDashboardProps {
         lowConfidence: number
         totalRows: number
     }
+    debug?: {
+        batchProcessing?: any
+        geocodingInteractions?: any
+    }
     onBack: () => void
 }
 
-export default function DataDashboard({ data, statistics, onBack }: DataDashboardProps) {
+export default function DataDashboard({ data, statistics, debug, onBack }: DataDashboardProps) {
     const { currentUser } = useAuth()
     const [rows, setRows] = useState<ProcessedRow[]>(data)
     const [searchTerm, setSearchTerm] = useState('')
@@ -95,7 +100,7 @@ export default function DataDashboard({ data, statistics, onBack }: DataDashboar
     const [showEmailResults, setShowEmailResults] = useState(false)
     const [copiedLinkId, setCopiedLinkId] = useState<string | null>(null)
     const selectAllLinksRef = useRef<HTMLInputElement | null>(null)
-    const [activeTab, setActiveTab] = useState<'dashboard' | 'debug'>('dashboard')
+    const [activeTab, setActiveTab] = useState<'dashboard' | 'debug' | 'api-viz'>('dashboard')
 
     useEffect(() => {
         setRows(data)
@@ -675,6 +680,15 @@ export default function DataDashboard({ data, statistics, onBack }: DataDashboar
                         Dashboard
                     </button>
                     <button
+                        onClick={() => setActiveTab('api-viz')}
+                        className={`px-6 py-3 text-sm font-medium transition-colors ${activeTab === 'api-viz'
+                            ? 'bg-orange-500 text-white border-b-2 border-orange-600'
+                            : 'text-gray-600 hover:text-orange-600 hover:bg-orange-50'
+                            }`}
+                    >
+                        API Visualización
+                    </button>
+                    <button
                         onClick={() => setActiveTab('debug')}
                         className={`px-6 py-3 text-sm font-medium transition-colors ${activeTab === 'debug'
                             ? 'bg-orange-500 text-white border-b-2 border-orange-600'
@@ -1241,6 +1255,10 @@ export default function DataDashboard({ data, statistics, onBack }: DataDashboar
                         </div>
                     )}
                 </>
+            )}
+
+            {activeTab === 'api-viz' && (
+                <ApiVisualization debug={debug} />
             )}
 
             {activeTab === 'debug' && (
