@@ -2,10 +2,12 @@ import React, { useState } from 'react'
 import * as XLSX from 'xlsx'
 import { Card } from './shared/ui/card'
 import { Button } from './shared/ui/button'
-import { Upload, FileText, Sparkles, MapPin, CheckCircle } from 'lucide-react'
+import { Upload, FileText, Sparkles, MapPin, CheckCircle, Zap, Clock } from 'lucide-react'
 import { DataService } from '../services/dataService'
 import { useAuth } from '../contexts/AuthContext'
+import { Timestamp } from 'firebase/firestore'
 import RealTimeApiMonitor from './RealTimeApiMonitor'
+import RealTimeProcessor from './RealTimeProcessor'
 
 interface ProcessedRow {
     rowIndex: number
@@ -41,6 +43,7 @@ interface ProcessedRow {
     }
     status: 'high_confidence' | 'medium_confidence' | 'low_confidence' | 'failed'
     error?: string
+    googleMapsLink?: string | null
 }
 
 interface ProcessingResult {
@@ -56,7 +59,20 @@ interface ProcessingResult {
     debug?: {
         batchProcessing?: any
         geocodingInteractions?: any
+        rowTimelines?: RowTimelineDebug[]
     }
+}
+
+interface RowTimelineEvent {
+    phase: string
+    timestamp: number
+    duration?: number
+    details?: Record<string, unknown>
+}
+
+interface RowTimelineDebug {
+    rowIndex: number
+    events: RowTimelineEvent[]
 }
 
 interface UnifiedProcessorProps {
@@ -70,6 +86,7 @@ export default function UnifiedProcessor({ onProcessingComplete }: UnifiedProces
     const [currentStep, setCurrentStep] = useState<'upload' | 'extracting' | 'cleaning' | 'geocoding' | 'completed'>('upload')
     const [progress, setProgress] = useState(0)
     const [stepDetails, setStepDetails] = useState<string>('')
+    const [processingMode, setProcessingMode] = useState<'standard' | 'realtime'>('realtime')
 
     const handleFileUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
         const selectedFile = event.target.files?.[0]
@@ -153,7 +170,8 @@ export default function UnifiedProcessor({ onProcessingComplete }: UnifiedProces
                 results: [],
                 debug: {
                     batchProcessing: null,
-                    geocodingInteractions: []
+                    geocodingInteractions: [],
+                    rowTimelines: []
                 }
             }
 
@@ -211,11 +229,22 @@ export default function UnifiedProcessor({ onProcessingComplete }: UnifiedProces
                     if (result.debug.geocodingInteractions) {
                         aggregate.debug!.geocodingInteractions!.push(...result.debug.geocodingInteractions)
                     }
+                    if (result.debug.rowTimelines) {
+                        const offsetTimelines = result.debug.rowTimelines.map(timeline => ({
+                            rowIndex: start + timeline.rowIndex,
+                            events: timeline.events
+                        }))
+                        aggregate.debug!.rowTimelines!.push(...offsetTimelines)
+                    }
                 }
             }
 
             setStepDetails('Finalizando procesamiento...')
             setProgress(90)
+
+            if (aggregate.debug?.rowTimelines) {
+                aggregate.debug.rowTimelines.sort((a, b) => a.rowIndex - b.rowIndex)
+            }
 
             // Save to Firebase if user is authenticated
             if (currentUser && aggregate.success) {
@@ -259,15 +288,17 @@ export default function UnifiedProcessor({ onProcessingComplete }: UnifiedProces
                                 lng: row.geocoding.longitude
                             }
                         } : {}),
-                        geocodingConfidence: row.status === 'high_confidence' ? 'high' :
-                            row.status === 'medium_confidence' ? 'medium' : 'low',
+                        geocodingConfidence: row.status === 'high_confidence' ? 'high' as const :
+                            row.status === 'medium_confidence' ? 'medium' as const : 'low' as const,
                         locationType: row.geocoding.locationType,
                         formattedAddress: row.geocoding.formattedAddress,
                         zipCode: row.zipCode,
                         status: 'processed' as const,
                         needsConfirmation: row.status === 'low_confidence',
                         // Use the Google Maps link from processing
-                        googleMapsLink: row.googleMapsLink
+                        googleMapsLink: row.googleMapsLink || (row.geocoding.latitude && row.geocoding.longitude ? `https://www.google.com/maps?q=${row.geocoding.latitude},${row.geocoding.longitude}` : null),
+                        processedAt: Timestamp.now(),
+                        updatedAt: Timestamp.now()
                     }))
 
                     const recordIds = await DataService.bulkSaveAddressRecords(addressRecords)
@@ -340,8 +371,50 @@ export default function UnifiedProcessor({ onProcessingComplete }: UnifiedProces
 
     return (
         <div className="space-y-6">
-            {/* Main Upload Card */}
-            <Card className="p-8 bg-white/50 backdrop-blur-sm border border-orange-100 shadow-lg">
+            {/* Mode Selection */}
+            <Card className="p-6 bg-white/50 backdrop-blur-sm border border-orange-100 shadow-lg">
+                <h2 className="text-xl font-bold text-gray-900 mb-4 text-center">Choose Processing Mode</h2>
+                <div className="grid md:grid-cols-2 gap-4">
+                    <Button
+                        onClick={() => setProcessingMode('realtime')}
+                        variant={processingMode === 'realtime' ? 'default' : 'outline'}
+                        className={`p-6 h-auto flex flex-col items-center space-y-2 ${
+                            processingMode === 'realtime' 
+                                ? 'bg-gradient-to-r from-orange-500 to-amber-500 text-white' 
+                                : 'border-orange-200 hover:bg-orange-50'
+                        }`}
+                    >
+                        <Zap className="w-8 h-8" />
+                        <div className="text-center">
+                            <div className="font-semibold">Real-Time Processing</div>
+                            <div className="text-sm opacity-80">See results as they complete</div>
+                        </div>
+                    </Button>
+                    <Button
+                        onClick={() => setProcessingMode('standard')}
+                        variant={processingMode === 'standard' ? 'default' : 'outline'}
+                        className={`p-6 h-auto flex flex-col items-center space-y-2 ${
+                            processingMode === 'standard' 
+                                ? 'bg-gradient-to-r from-orange-500 to-amber-500 text-white' 
+                                : 'border-orange-200 hover:bg-orange-50'
+                        }`}
+                    >
+                        <Clock className="w-8 h-8" />
+                        <div className="text-center">
+                            <div className="font-semibold">Standard Processing</div>
+                            <div className="text-sm opacity-80">Process entire dataset at once</div>
+                        </div>
+                    </Button>
+                </div>
+            </Card>
+
+            {/* Conditional Rendering Based on Mode */}
+            {processingMode === 'realtime' ? (
+                <RealTimeProcessor onProcessingComplete={onProcessingComplete} />
+            ) : (
+                <>
+                    {/* Main Upload Card */}
+                    <Card className="p-8 bg-white/50 backdrop-blur-sm border border-orange-100 shadow-lg">
                 <div className="text-center">
                     <div className="w-16 h-16 bg-gradient-to-r from-orange-500 to-amber-500 rounded-2xl flex items-center justify-center mx-auto mb-6 shadow-lg">
                         <Upload className="w-8 h-8 text-white" />
@@ -500,8 +573,10 @@ export default function UnifiedProcessor({ onProcessingComplete }: UnifiedProces
                 </div>
             </Card>
 
-            {/* Real-time API Monitor */}
-            <RealTimeApiMonitor isProcessing={isProcessing} />
+                    {/* Real-time API Monitor */}
+                    <RealTimeApiMonitor isProcessing={isProcessing} />
+                </>
+            )}
         </div>
     )
 }

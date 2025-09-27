@@ -50,6 +50,35 @@ interface GeocodingInteraction {
     error?: string
 }
 
+interface RowTimelineEvent {
+    phase: string
+    timestamp: number
+    duration?: number
+    details?: Record<string, unknown>
+}
+
+interface RowTimelineDebug {
+    rowIndex: number
+    events: RowTimelineEvent[]
+}
+
+interface RowTimelineSegment {
+    label: string
+    duration: number
+    color: string
+}
+
+interface RowTimelineVisualization {
+    rowIndex: number
+    status: 'completed' | 'failed' | 'in_progress'
+    totalDuration: number
+    startTimestamp: number
+    endTimestamp: number
+    events: RowTimelineEvent[]
+    segments: RowTimelineSegment[]
+    queueWait?: number | null
+}
+
 interface BatchProcessingDebug {
     totalBatches: number
     successfulBatches: number
@@ -66,11 +95,12 @@ interface ApiVisualizationProps {
     debug?: {
         batchProcessing?: BatchProcessingDebug
         geocodingInteractions?: GeocodingInteraction[]
+        rowTimelines?: RowTimelineDebug[]
     }
 }
 
 export default function ApiVisualization({ debug }: ApiVisualizationProps) {
-    const [activeView, setActiveView] = useState<'timeline' | 'batches' | 'geocoding' | 'performance'>('timeline')
+    const [activeView, setActiveView] = useState<'rows' | 'timeline' | 'batches' | 'geocoding' | 'performance'>('rows')
     const [expandedBatch, setExpandedBatch] = useState<number | null>(null)
     const [expandedGeocoding, setExpandedGeocoding] = useState<number | null>(null)
 
@@ -134,11 +164,103 @@ export default function ApiVisualization({ debug }: ApiVisualizationProps) {
             }
         }
 
+        const rowTimeline: RowTimelineVisualization[] = (debug.rowTimelines ?? []).map(row => {
+            const events = [...row.events].sort((a, b) => a.timestamp - b.timestamp)
+            if (!events.length) {
+                return {
+                    rowIndex: row.rowIndex,
+                    status: 'in_progress',
+                    totalDuration: 0,
+                    startTimestamp: Date.now(),
+                    endTimestamp: Date.now(),
+                    events,
+                    segments: [],
+                    queueWait: null
+                }
+            }
+
+            const startTimestamp = events[0].timestamp
+            const endTimestamp = events[events.length - 1].timestamp
+            const totalDuration = Math.max(1, endTimestamp - startTimestamp)
+
+            const findEvent = (phase: string) => events.find(event => event.phase === phase)
+            const segments: RowTimelineSegment[] = []
+
+            const cleaningStart = findEvent('cleaning_started')
+            const cleaningEnd = findEvent('cleaning_completed')
+            if (cleaningStart && cleaningEnd) {
+                segments.push({
+                    label: 'Cleaning',
+                    duration: Math.max(0, cleaningEnd.timestamp - cleaningStart.timestamp),
+                    color: 'bg-blue-500'
+                })
+            }
+
+            const queueStart = findEvent('geocode_enqueued')
+            const queueEnd = findEvent('geocode_started')
+            let queueWait: number | null = null
+            if (queueStart && queueEnd) {
+                queueWait = Math.max(0, queueEnd.timestamp - queueStart.timestamp)
+                if (queueWait > 0) {
+                    segments.push({
+                        label: 'Queue',
+                        duration: queueWait,
+                        color: 'bg-amber-500'
+                    })
+                }
+            }
+
+            const geocodeStart = queueEnd || findEvent('geocode_started')
+            const geocodeEnd = findEvent('geocode_completed') || findEvent('geocode_failed')
+            if (geocodeStart && geocodeEnd) {
+                segments.push({
+                    label: 'Geocoding',
+                    duration: Math.max(0, geocodeEnd.timestamp - geocodeStart.timestamp),
+                    color: 'bg-green-500'
+                })
+            }
+
+            const zipStart = findEvent('zip_lookup_started')
+            const zipEnd = findEvent('zip_lookup_completed') || findEvent('zip_lookup_failed')
+            if (zipStart && zipEnd) {
+                segments.push({
+                    label: 'Zip Lookup',
+                    duration: Math.max(0, zipEnd.timestamp - zipStart.timestamp),
+                    color: 'bg-purple-500'
+                })
+            }
+
+            const status: RowTimelineVisualization['status'] = findEvent('row_completed')
+                ? 'completed'
+                : findEvent('row_failed')
+                    ? 'failed'
+                    : 'in_progress'
+
+            return {
+                rowIndex: row.rowIndex,
+                status,
+                totalDuration,
+                startTimestamp,
+                endTimestamp,
+                events,
+                segments,
+                queueWait
+            }
+        }).sort((a, b) => a.rowIndex - b.rowIndex)
+
         return {
             timelineEvents,
-            performanceMetrics
+            performanceMetrics,
+            rowTimeline
         }
     }, [debug])
+
+    const formatTimestamp = (timestamp: number) => new Date(timestamp).toLocaleTimeString()
+    const formatDuration = (ms?: number | null) => {
+        if (ms === undefined || ms === null) return '—'
+        if (ms < 1000) return `${ms.toFixed(0)} ms`
+        return `${(ms / 1000).toFixed(1)} s`
+    }
 
     if (!debug || !processedData) {
         return (
@@ -151,6 +273,90 @@ export default function ApiVisualization({ debug }: ApiVisualizationProps) {
             </Card>
         )
     }
+
+    const renderRowsView = () => (
+        <div className="space-y-4">
+            {processedData.rowTimeline.length === 0 ? (
+                <div className="p-6 text-center text-gray-500 bg-gray-50 rounded-lg border border-dashed">
+                    <p>No row timeline data captured yet.</p>
+                </div>
+            ) : (
+                processedData.rowTimeline.map(row => {
+                    const totalDuration = Math.max(1, row.totalDuration)
+                    return (
+                        <div key={row.rowIndex} className="bg-white border border-gray-200 rounded-lg p-4 shadow-sm">
+                            <div className="flex flex-wrap items-center justify-between gap-2">
+                                <div>
+                                    <h4 className="font-semibold text-gray-900">Row {row.rowIndex + 1}</h4>
+                                    <p className="text-xs text-gray-500">Total time: {formatDuration(row.totalDuration)}</p>
+                                </div>
+                                <div className="flex items-center space-x-2">
+                                    {row.queueWait !== null && (
+                                        <span className="px-2 py-0.5 text-xs bg-amber-100 text-amber-700 rounded-full">
+                                            Queue wait: {formatDuration(row.queueWait)}
+                                        </span>
+                                    )}
+                                    <span className={`px-2 py-0.5 text-xs font-medium rounded-full ${row.status === 'completed'
+                                        ? 'bg-green-100 text-green-700'
+                                        : row.status === 'failed'
+                                            ? 'bg-red-100 text-red-700'
+                                            : 'bg-gray-100 text-gray-700'
+                                        }`}>
+                                        {row.status.replace('_', ' ')}
+                                    </span>
+                                </div>
+                            </div>
+
+                            <div className="mt-3">
+                                <div className="flex h-4 rounded overflow-hidden bg-gray-100">
+                                    {row.segments.length === 0 ? (
+                                        <div className="flex-1 bg-gray-300" title="No timing data captured"></div>
+                                    ) : (
+                                        row.segments.map((segment, index) => (
+                                            <div
+                                                key={index}
+                                                className={`${segment.color} h-full transition-all duration-200`}
+                                                style={{
+                                                    width: `${Math.max((segment.duration / totalDuration) * 100, segment.duration > 0 ? 2 : 0.5)}%`,
+                                                    minWidth: segment.duration > 0 ? '6px' : '2px'
+                                                }}
+                                                title={`${segment.label}: ${formatDuration(segment.duration)}`}
+                                            ></div>
+                                        ))
+                                    )}
+                                </div>
+                                <div className="mt-2 flex flex-wrap gap-2 text-xs text-gray-500">
+                                    {row.segments.map((segment, index) => (
+                                        <span key={index} className="inline-flex items-center space-x-1">
+                                            <span className={`inline-block w-2 h-2 rounded ${segment.color}`}></span>
+                                            <span>{segment.label}</span>
+                                        </span>
+                                    ))}
+                                </div>
+                            </div>
+
+                            <div className="mt-3 bg-gray-50 rounded-md p-3">
+                                <h5 className="text-xs font-semibold text-gray-600 uppercase tracking-wide mb-2">Events</h5>
+                                <div className="space-y-1 max-h-40 overflow-y-auto text-xs text-gray-600">
+                                    {row.events.map((event, index) => (
+                                        <div key={index} className="flex items-center justify-between">
+                                            <span className="font-medium text-gray-700">{event.phase.replace(/_/g, ' ')}</span>
+                                            <span className="text-gray-500">
+                                                {formatTimestamp(event.timestamp)}
+                                                {event.duration !== undefined && event.duration !== null && (
+                                                    <span className="ml-1 text-gray-400">({formatDuration(event.duration)})</span>
+                                                )}
+                                            </span>
+                                        </div>
+                                    ))}
+                                </div>
+                            </div>
+                        </div>
+                    )
+                })
+            )}
+        </div>
+    )
 
     const renderTimelineView = () => (
         <div className="space-y-4">
@@ -663,7 +869,8 @@ export default function ApiVisualization({ debug }: ApiVisualizationProps) {
             {/* Tab Navigation */}
             <div className="flex border-b border-gray-200 bg-gray-50">
                 {[
-                    { id: 'timeline', label: 'Timeline', icon: Activity },
+                    { id: 'rows', label: 'Row Timeline', icon: Activity },
+                    { id: 'timeline', label: 'Event Stream', icon: Clock },
                     { id: 'batches', label: 'OpenAI Batches', icon: Database },
                     { id: 'geocoding', label: 'Geocoding', icon: MapPin },
                     { id: 'performance', label: 'Performance', icon: BarChart3 }
@@ -684,6 +891,7 @@ export default function ApiVisualization({ debug }: ApiVisualizationProps) {
 
             {/* Content */}
             <div className="p-6">
+                {activeView === 'rows' && renderRowsView()}
                 {activeView === 'timeline' && renderTimelineView()}
                 {activeView === 'batches' && renderBatchesView()}
                 {activeView === 'geocoding' && renderGeocodingView()}

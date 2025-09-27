@@ -2,6 +2,7 @@ import { VercelRequest, VercelResponse } from '@vercel/node'
 import dotenv from 'dotenv'
 import { randomUUID } from 'crypto'
 import { zipCodeService } from '../backend/services/zipCodeService.js'
+import { cleanParaguayAddresses } from '../backend/cleanParaguayAddresses.js'
 
 // Load environment variables
 dotenv.config()
@@ -10,6 +11,18 @@ dotenv.config()
 const BATCH_SIZE = 50 // rows per batch
 const MAX_CONCURRENT_BATCHES = 8 // simultaneous OpenAI requests
 const BATCH_TIMEOUT = 60000 // 60 seconds per batch
+
+interface RowTimelineEvent {
+  phase: string
+  timestamp: number
+  duration?: number
+  details?: Record<string, unknown>
+}
+
+interface RowTimeline {
+  rowIndex: number
+  events: RowTimelineEvent[]
+}
 
 interface BatchResult {
   batchIndex: number
@@ -20,6 +33,7 @@ interface BatchResult {
   error?: string
   processingTime?: number
   retryCount?: number
+  rowTimelines?: RowTimeline[]
 }
 
 // Utility function to split CSV into batches
@@ -59,9 +73,9 @@ async function processBatch(batchInfo: any, openaiApiKey: string, maxRetries = 3
       result.status = attempt > 0 ? 'retrying' : 'processing'
       result.retryCount = attempt
 
-      // Dynamically import the cleaning module
-      const cleanerModule: any = await import('../backend/cleanParaguayAddresses.js')
-      const cleanedCsv: string = await cleanerModule.cleanParaguayAddresses(openaiApiKey, batchInfo.csvData)
+      const cleaningStart = Date.now()
+      const cleanedCsv: string = await cleanParaguayAddresses(openaiApiKey, batchInfo.csvData)
+      const cleaningEnd = Date.now()
 
       // Parse the cleaned CSV
       const cleanedLines = cleanedCsv.trim().split('\n')
@@ -85,6 +99,18 @@ async function processBatch(batchInfo: any, openaiApiKey: string, maxRetries = 3
       result.status = 'completed'
       result.data = batchData
       result.processingTime = Date.now() - startTime
+      const baseRowIndex = Math.max(0, (batchInfo.startRow ?? 1) - 1)
+      result.rowTimelines = batchData.map((_, rowIdx) => ({
+        rowIndex: baseRowIndex + rowIdx,
+        events: [
+          { phase: 'cleaning_started', timestamp: cleaningStart },
+          {
+            phase: 'cleaning_completed',
+            timestamp: cleaningEnd,
+            duration: cleaningEnd - cleaningStart
+          }
+        ]
+      }))
 
       console.log(`[BATCH][${result.batchIndex}] Successfully processed ${batchData.length} rows in ${result.processingTime}ms`)
       return result
@@ -109,57 +135,66 @@ async function processBatch(batchInfo: any, openaiApiKey: string, maxRetries = 3
 }
 
 // Process batches with concurrency control
-async function processBatchesConcurrently(batches: any[], openaiApiKey: string): Promise<BatchResult[]> {
-  const results: BatchResult[] = []
-  const processingQueue: Promise<BatchResult>[] = []
-
+async function processBatchesConcurrently(
+  batches: any[],
+  openaiApiKey: string,
+  onBatchCompleted?: (batchResult: BatchResult) => void | Promise<void>
+): Promise<BatchResult[]> {
   console.log(`[BATCH_MANAGER] Processing ${batches.length} batches with max concurrency ${MAX_CONCURRENT_BATCHES}`)
 
-  for (let i = 0; i < batches.length; i += MAX_CONCURRENT_BATCHES) {
-    const batchGroup = batches.slice(i, Math.min(i + MAX_CONCURRENT_BATCHES, batches.length))
+  const results: BatchResult[] = new Array(batches.length)
+  let nextBatchIndex = 0
 
-    console.log(`[BATCH_MANAGER] Starting batch group ${Math.floor(i / MAX_CONCURRENT_BATCHES) + 1}: batches ${i} to ${Math.min(i + MAX_CONCURRENT_BATCHES - 1, batches.length - 1)}`)
+  const runNext = async (): Promise<void> => {
+    const currentIndex = nextBatchIndex++
+    if (currentIndex >= batches.length) {
+      return
+    }
 
-    // Process this group of batches concurrently
-    const groupPromises = batchGroup.map(batch =>
-      Promise.race([
-        processBatch(batch, openaiApiKey),
-        new Promise<BatchResult>((_, reject) =>
-          setTimeout(() => reject(new Error('Batch timeout')), BATCH_TIMEOUT)
-        )
-      ])
+    const batchInfo = batches[currentIndex]
+
+    const timeoutPromise = new Promise<BatchResult>((_, reject) =>
+      setTimeout(() => reject(new Error('Batch timeout')), BATCH_TIMEOUT)
     )
 
-    // Wait for all batches in this group to complete
-    const groupResults = await Promise.allSettled(groupPromises)
+    try {
+      const batchResult = await Promise.race([
+        processBatch(batchInfo, openaiApiKey),
+        timeoutPromise
+      ])
 
-    // Process results
-    groupResults.forEach((result, index) => {
-      const batchIndex = i + index
-      if (result.status === 'fulfilled') {
-        results.push(result.value)
-        console.log(`[BATCH_MANAGER] Batch ${batchIndex} completed: ${result.value.status}`)
-      } else {
-        const failedResult: BatchResult = {
-          batchIndex,
-          startRow: batchGroup[index].startRow,
-          endRow: batchGroup[index].endRow,
-          status: 'failed',
-          error: result.reason?.message || 'Unknown error',
-          processingTime: BATCH_TIMEOUT
-        }
-        results.push(failedResult)
-        console.error(`[BATCH_MANAGER] Batch ${batchIndex} failed:`, result.reason)
+      results[currentIndex] = batchResult
+      console.log(`[BATCH_MANAGER] Batch ${currentIndex} completed: ${batchResult.status}`)
+      if (onBatchCompleted) {
+        await onBatchCompleted(batchResult)
       }
-    })
-
-    // Small delay between batch groups to be nice to the API
-    if (i + MAX_CONCURRENT_BATCHES < batches.length) {
-      await new Promise(resolve => setTimeout(resolve, 1000))
+    } catch (error: any) {
+      const failedResult: BatchResult = {
+        batchIndex: batchInfo.batchIndex,
+        startRow: batchInfo.startRow,
+        endRow: batchInfo.endRow,
+        status: 'failed',
+        error: error?.message || 'Batch timeout',
+        processingTime: BATCH_TIMEOUT
+      }
+      results[currentIndex] = failedResult
+      console.error(`[BATCH_MANAGER] Batch ${currentIndex} failed:`, error)
+      if (onBatchCompleted) {
+        await onBatchCompleted(failedResult)
+      }
     }
+
+    await runNext()
   }
 
-  return results.sort((a, b) => a.batchIndex - b.batchIndex)
+  const workers = Array.from(
+    { length: Math.min(MAX_CONCURRENT_BATCHES, batches.length) },
+    () => runNext()
+  )
+
+  await Promise.all(workers)
+
+  return results.filter(Boolean).sort((a, b) => a.batchIndex - b.batchIndex)
 }
 
 // Parser that strips surrounding quotes when pushing
@@ -287,61 +322,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const batches = createBatches(csvLines, headerLine)
     console.log(`[BATCH][SETUP] Created ${batches.length} batches`)
 
-    // Track OpenAI interactions for all batches
-    const openaiStartTime = Date.now()
-    let batchInteractions: any[] = []
-
-    // Process all batches concurrently
-    console.log('\n=== PARALLEL BATCH PROCESSING: Execution ===')
-    const batchResults = await processBatchesConcurrently(batches, openaiApiKey)
-
-    // Aggregate results and create final cleaned data
-    const cleanedData: any[] = []
-    let successfulBatches = 0
-    let failedBatches = 0
-    let totalProcessingTime = Date.now() - openaiStartTime
-
-    console.log('\n=== PARALLEL BATCH PROCESSING: Results ===')
-    batchResults.forEach((result) => {
-      console.log(`[BATCH][RESULT] Batch ${result.batchIndex}: ${result.status} (rows ${result.startRow}-${result.endRow}, ${result.processingTime}ms)`)
-
-      if (result.status === 'completed' && result.data) {
-        cleanedData.push(...result.data)
-        successfulBatches++
-      } else {
-        failedBatches++
-        console.error(`[BATCH][RESULT] Batch ${result.batchIndex} failed: ${result.error}`)
-      }
-
-      // Track this batch interaction for debugging
-      batchInteractions.push({
-        batchIndex: result.batchIndex,
-        startRow: result.startRow,
-        endRow: result.endRow,
-        status: result.status,
-        processingTime: result.processingTime,
-        error: result.error,
-        retryCount: result.retryCount
-      })
-    })
-
-    console.log(`[BATCH][SUMMARY] Successful batches: ${successfulBatches}/${batches.length}`)
-    console.log(`[BATCH][SUMMARY] Failed batches: ${failedBatches}/${batches.length}`)
-    console.log(`[BATCH][SUMMARY] Total processing time: ${totalProcessingTime}ms`)
-    console.log(`[BATCH][SUMMARY] Average time per batch: ${Math.round(totalProcessingTime / batches.length)}ms`)
-    console.log(`[BATCH][SUMMARY] Success rate: ${Math.round((successfulBatches / batches.length) * 100)}%`)
-    console.log('=== End Parallel Batch Processing ===\n')
-
-    // Handle fallback for failed batches using raw data
-    if (failedBatches > 0) {
-      console.log(`[BATCH][FALLBACK] Processing ${failedBatches} failed batches using raw data fallback`)
-      // Implementation would extract from raw CSV for failed batches
-      // For now, we'll continue with successful data only
-    }
-
     // Prepare original CSV rows for per-row fallback when LLM skipped rows
-    const rawAllLines = csvForCleaning.trim().split('\n')
-    const rawHeader = parseCleanCSVLine(rawAllLines[0] || '')
+    const rawHeader = parseCleanCSVLine(headerLine || '')
     const rawLower = rawHeader.map(h => (h || '').toLowerCase())
     const idxOf = (keys: string[]) => rawLower.findIndex(h => keys.some(k => h.includes(k)))
     const idxAddress = idxOf(['address', 'direc', 'buyer address1', 'direccion'])
@@ -349,17 +331,36 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const idxState = idxOf(['state', 'estado', 'provincia', 'department'])
     const idxPhone = idxOf(['phone', 'tel'])
     const idxEmail = idxOf(['email', 'correo'])
-    const rawDataRows = rawAllLines.slice(1).filter(l => l && l.trim().length > 0).map(parseCleanCSVLine)
+    const rawDataRows = csvLines.slice(1)
+      .filter(line => line && line.trim().length > 0)
+      .map(parseCleanCSVLine)
 
-    console.log('[DEBUG] Cleaned rows:', cleanedData.length, 'Raw rows:', rawDataRows.length)
+    const cleanedData: any[] = []
 
-    // Step 3: Real geocoding results via Google Maps
-    console.log('[UNIFIED_PROCESS] Step 3/3: Geocoding addresses...')
+    const rowTimelines = new Map<number, RowTimeline>()
+    const ensureRowTimeline = (rowIndex: number): RowTimeline => {
+      const existing = rowTimelines.get(rowIndex)
+      if (existing) return existing
+      const timeline: RowTimeline = { rowIndex, events: [] }
+      rowTimelines.set(rowIndex, timeline)
+      return timeline
+    }
+    const recordRowEvent = (rowIndex: number, event: RowTimelineEvent) => {
+      const timeline = ensureRowTimeline(rowIndex)
+      timeline.events.push(event)
+    }
+    const recordRowEvents = (rowIndex: number, events: RowTimelineEvent[]) => {
+      events.forEach(event => recordRowEvent(rowIndex, event))
+    }
 
     const mapsApiKey = process.env.GOOGLE_MAPS_API_KEY || process.env.VITE_GOOGLE_MAPS_API_KEY
     if (!mapsApiKey) {
       return res.status(500).json({ error: 'Google Maps API key not configured' })
     }
+
+    // Track OpenAI interactions for all batches
+    const openaiStartTime = Date.now()
+    let batchInteractions: any[] = []
 
     const confidenceFor = (locationType: string | undefined) => {
       const map: Record<string, number> = {
@@ -384,7 +385,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const geocode = async (address: string, city?: string, state?: string) => {
       if (!address || address.trim().length < 3) return null
 
-      console.log(`[GEOCODE][INPUT] Address: "${address}"`)
+      console.log(`\n[GEOCODE][INPUT] Address: "${address}"`)
       console.log(`[GEOCODE][INPUT] City: "${city}"`)
       console.log(`[GEOCODE][INPUT] State: "${state}"`)
 
@@ -459,23 +460,47 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       }
     }
 
-    const results: any[] = []
-    const geocodingInteractions: any[] = []
+    const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms))
+    const MAX_GEOCODE_CALLS_PER_SECOND = Number(process.env.GEOCODE_RATE_LIMIT_PER_SEC) || 50
+    const BATCH_DELAY_MS = 1000
+
+    type GeocodeTask = { index: number, cleaned: any }
+    type GeocodeTaskResult = {
+      rowIndex: number
+      result: any
+      interaction: any
+      confidenceLevel: 'high' | 'medium' | 'low'
+    }
+
+    const geocodeResults: any[] = []
+    const geocodingInteractionsByIndex: any[] = []
+
     let highConfidence = 0
     let mediumConfidence = 0
     let lowConfidence = 0
+    let processedGeocodeCount = 0
+    let geocodeBatchCounter = 0
+    let cleaningCompleted = false
 
-    console.log('\n=== BATCH PROCESSING: Starting Geocoding ===')
-    console.log(`[GEOCODING][BATCH] Processing ${cleanedData.length} addresses`)
-    console.log('[GEOCODING][BATCH] Addresses to geocode:')
-    cleanedData.forEach((item, idx) => {
-      console.log(`  [${idx}]: "${item.address}" (city: "${item.city}", state: "${item.state}")`)
-    })
-    console.log('=== Starting Individual Geocoding ===\n')
+    const geocodeQueue: GeocodeTask[] = []
+    let geocodeQueueResolver: (() => void) | null = null
 
-    for (let i = 0; i < cleanedData.length; i++) {
-      const cleaned = cleanedData[i]
-      // Per-row fallback: if cleaned row is empty, backfill from raw data
+    const resolveQueue = () => {
+      if (geocodeQueueResolver) {
+        geocodeQueueResolver()
+        geocodeQueueResolver = null
+      }
+    }
+
+    const enqueueGeocodeTask = (task: GeocodeTask) => {
+      geocodeQueue.push(task)
+      resolveQueue()
+    }
+
+    const processGeocodeTask = async (task: GeocodeTask): Promise<GeocodeTaskResult> => {
+      const i = task.index
+      const cleaned = task.cleaned
+
       if ((!cleaned.address || cleaned.address.trim() === '') && rawDataRows[i]) {
         const raw = rawDataRows[i]
         cleaned.address = idxAddress >= 0 ? (raw[idxAddress] || '') : ''
@@ -491,19 +516,26 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       console.log(`[GEOCODE][${i}][INPUT] Cleaned: "${cleaned.address}"`)
       console.log(`[GEOCODE][${i}][INPUT] City: "${cleaned.city}"`)
       console.log(`[GEOCODE][${i}][INPUT] State: "${cleaned.state}"`)
-      // Use AI-extracted ORIGINAL fields (uncleaned)
+
       const original = {
         address: cleaned.originalAddress,
         city: cleaned.originalCity,
         state: cleaned.originalState,
         phone: cleaned.originalPhone
       }
+
       try {
         const geocodeStartTime = Date.now()
+        recordRowEvent(i, { phase: 'geocode_started', timestamp: geocodeStartTime })
         const geo = await geocode(cleaned.address, cleaned.city, cleaned.state)
         const geocodeEndTime = Date.now()
+        recordRowEvent(i, {
+          phase: 'geocode_completed',
+          timestamp: geocodeEndTime,
+          duration: geocodeEndTime - geocodeStartTime,
+          details: { status: geo?.status ?? 'UNKNOWN' }
+        })
 
-        // Capture geocoding interaction
         const geocodingInteraction = {
           timestamp: new Date().toISOString(),
           rowIndex: i,
@@ -534,7 +566,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             error: geo?.error || null
           }
         }
-        geocodingInteractions.push(geocodingInteraction)
+
         console.log(`[GEOCODE][${i}][OUTPUT] Status: ${geo?.status}`)
         console.log(`[GEOCODE][${i}][OUTPUT] Raw results count: ${geo?.rawCount}`)
         if (geo?.best) {
@@ -548,37 +580,48 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         } else {
           console.log(`[GEOCODE][${i}][OUTPUT] No best result found`)
         }
-        const geoConfidence = geo?.best?.confidence_score || 0
-        const confidenceScore = geoConfidence
 
+        const geoConfidence = geo?.best?.confidence_score || 0
         console.log(`[GEOCODE][${i}][CALCULATION] Geo Confidence: ${geoConfidence}`)
 
-        if (confidenceScore >= 0.8) {
-          highConfidence++
+        let confidenceLevel: 'high' | 'medium' | 'low' = 'low'
+        if (geoConfidence >= 0.8) {
+          confidenceLevel = 'high'
           console.log(`[GEOCODE][${i}][RESULT] HIGH CONFIDENCE`)
-        } else if (confidenceScore >= 0.6) {
-          mediumConfidence++
+        } else if (geoConfidence >= 0.6) {
+          confidenceLevel = 'medium'
           console.log(`[GEOCODE][${i}][RESULT] MEDIUM CONFIDENCE`)
         } else {
-          lowConfidence++
           console.log(`[GEOCODE][${i}][RESULT] LOW CONFIDENCE`)
         }
 
-        // Extract zip code if we have coordinates
         let zipCodeResult: any = null
         if (geo?.best?.latitude && geo?.best?.longitude) {
           try {
             console.log(`[ZIPCODE][${i}][INPUT] Coordinates: ${geo.best.latitude}, ${geo.best.longitude}`)
+            const zipLookupStart = Date.now()
+            recordRowEvent(i, { phase: 'zip_lookup_started', timestamp: zipLookupStart })
             zipCodeResult = await zipCodeService.getZipCode(geo.best.latitude, geo.best.longitude)
+            const zipLookupEnd = Date.now()
+            recordRowEvent(i, {
+              phase: 'zip_lookup_completed',
+              timestamp: zipLookupEnd,
+              duration: zipLookupEnd - zipLookupStart
+            })
             console.log(`[ZIPCODE][${i}][OUTPUT] Result:`, zipCodeResult)
           } catch (zipError) {
             console.warn(`[ZIPCODE][${i}][ERROR] Failed to get zip code:`, zipError)
+            recordRowEvent(i, {
+              phase: 'zip_lookup_failed',
+              timestamp: Date.now(),
+              details: { message: (zipError as Error)?.message ?? 'Unknown error' }
+            })
           }
         } else {
           console.log(`[ZIPCODE][${i}][SKIP] No coordinates available`)
         }
 
-        results.push({
+        const result = {
           rowIndex: i,
           original: {
             address: original?.address || '',
@@ -609,16 +652,32 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             neighborhood: zipCodeResult.neighborhood,
             confidence: zipCodeResult.confidence
           } : null,
-          status: confidenceScore >= 0.8 ? 'high_confidence' : confidenceScore >= 0.6 ? 'medium_confidence' : 'low_confidence',
-          // Generate simple Google Maps link
+          status: geoConfidence >= 0.8 ? 'high_confidence' : geoConfidence >= 0.6 ? 'medium_confidence' : 'low_confidence',
           googleMapsLink: geo?.best?.latitude && geo?.best?.longitude
             ? `https://www.google.com/maps?q=${geo.best.latitude},${geo.best.longitude}`
             : null
+        }
+
+        recordRowEvent(i, {
+          phase: 'row_completed',
+          timestamp: Date.now(),
+          details: {
+            status: result.status,
+            confidence: geoConfidence
+          }
         })
+
+        return { rowIndex: i, result, interaction: geocodingInteraction, confidenceLevel }
       } catch (error: any) {
         console.error(`[GEOCODE][${i}][ERROR] Processing failed:`, error)
+        recordRowEvent(i, {
+          phase: 'geocode_failed',
+          timestamp: Date.now(),
+          details: {
+            message: error?.message || 'Unknown geocode error'
+          }
+        })
 
-        // Capture failed geocoding interaction
         const failedGeocodingInteraction = {
           timestamp: new Date().toISOString(),
           rowIndex: i,
@@ -640,10 +699,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           },
           error: error.message
         }
-        geocodingInteractions.push(failedGeocodingInteraction)
 
-        lowConfidence++
-        results.push({
+        const failedResult = {
           rowIndex: i,
           original: {
             address: original?.address || '',
@@ -670,37 +727,199 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           zipCode: null,
           status: 'failed',
           error: error.message,
-          // No Google Maps link for failed geocoding
           googleMapsLink: null
+        }
+
+        recordRowEvent(i, {
+          phase: 'row_failed',
+          timestamp: Date.now(),
+          details: {
+            error: error?.message || 'Unknown geocode failure'
+          }
         })
+
+        return { rowIndex: i, result: failedResult, interaction: failedGeocodingInteraction, confidenceLevel: 'low' }
+      } finally {
+        console.log(`--- END ROW ${i} ---\n`)
       }
-      console.log(`--- END ROW ${i} ---\n`)
     }
 
+    const geocodeScheduler = async () => {
+      console.log('\n=== BATCH PROCESSING: Starting Geocoding ===')
+      console.log(`[GEOCODING][BATCH] Rate limit: ${MAX_GEOCODE_CALLS_PER_SECOND} req/sec`)
+      console.log(`[GEOCODING][BATCH] Initial rows discovered: ${rawDataRows.length}`)
+
+      while (!cleaningCompleted || geocodeQueue.length > 0) {
+        if (geocodeQueue.length === 0) {
+          await new Promise<void>(resolve => {
+            geocodeQueueResolver = resolve
+          })
+          continue
+        }
+
+        geocodeBatchCounter++
+        const batchSize = Math.min(MAX_GEOCODE_CALLS_PER_SECOND, geocodeQueue.length)
+        const batch = geocodeQueue.splice(0, batchSize)
+        console.log(`[GEOCODING][BATCH] Starting batch ${geocodeBatchCounter} (${batch.length} addresses)`)
+
+        const batchResults = await Promise.all(batch.map(processGeocodeTask))
+
+        batchResults.forEach(({ rowIndex, result, interaction, confidenceLevel }) => {
+          geocodeResults[rowIndex] = result
+          if (interaction) {
+            geocodingInteractionsByIndex[rowIndex] = interaction
+          }
+          processedGeocodeCount++
+
+          if (confidenceLevel === 'high') {
+            highConfidence++
+          } else if (confidenceLevel === 'medium') {
+            mediumConfidence++
+          } else {
+            lowConfidence++
+          }
+        })
+
+        if (!cleaningCompleted || geocodeQueue.length > 0) {
+          console.log(`[GEOCODING][BATCH] Waiting ${BATCH_DELAY_MS}ms before next batch to respect rate limits`)
+          await sleep(BATCH_DELAY_MS)
+        }
+      }
+
+      console.log(`[GEOCODING][BATCH] Parallel processing completed for ${processedGeocodeCount} addresses`)
+    }
+
+    console.log('\n=== PARALLEL BATCH PROCESSING: Execution ===')
+    console.log('[UNIFIED_PROCESS] Step 3/3: Geocoding addresses...')
+
+    const pendingBatchRows = new Map<number, any[]>()
+    let nextBatchToFlush = 0
+
+    const geocodePipelinePromise = geocodeScheduler()
+
+    const batchResults = await processBatchesConcurrently(
+      batches,
+      openaiApiKey,
+      async (batchResult) => {
+        if (batchResult.rowTimelines) {
+          batchResult.rowTimelines.forEach(timeline => {
+            const target = ensureRowTimeline(timeline.rowIndex)
+            target.events.push(...timeline.events)
+          })
+        }
+        if (batchResult.status === 'completed' && Array.isArray(batchResult.data)) {
+          pendingBatchRows.set(batchResult.batchIndex, batchResult.data)
+
+          let flushed = 0
+          while (pendingBatchRows.has(nextBatchToFlush)) {
+            const rows = pendingBatchRows.get(nextBatchToFlush) || []
+            pendingBatchRows.delete(nextBatchToFlush)
+
+            rows.forEach((row: any) => {
+              cleanedData.push(row)
+              const rowIndex = cleanedData.length - 1
+              recordRowEvent(rowIndex, { phase: 'geocode_enqueued', timestamp: Date.now() })
+              enqueueGeocodeTask({ index: rowIndex, cleaned: row })
+            })
+
+            console.log(`[PIPELINE] Flushed batch ${nextBatchToFlush} (${rows.length} rows). Cleaned total: ${cleanedData.length}`)
+            nextBatchToFlush++
+            flushed++
+          }
+
+          if (flushed === 0) {
+            console.log(`[PIPELINE] Batch ${batchResult.batchIndex} ready; awaiting earlier batches for ordered flush.`)
+          }
+        } else {
+          console.error(`[PIPELINE] Batch ${batchResult.batchIndex} failed or returned no data; skipping geocoding enqueue.`)
+        }
+      }
+    )
+
+    while (pendingBatchRows.has(nextBatchToFlush)) {
+      const rows = pendingBatchRows.get(nextBatchToFlush) || []
+      pendingBatchRows.delete(nextBatchToFlush)
+
+      rows.forEach((row: any) => {
+        cleanedData.push(row)
+        const rowIndex = cleanedData.length - 1
+        recordRowEvent(rowIndex, { phase: 'geocode_enqueued', timestamp: Date.now() })
+        enqueueGeocodeTask({ index: rowIndex, cleaned: row })
+      })
+
+      console.log(`[PIPELINE] Flushed batch ${nextBatchToFlush} (${rows.length} rows) during cleanup. Cleaned total: ${cleanedData.length}`)
+      nextBatchToFlush++
+    }
+
+    cleaningCompleted = true
+    resolveQueue()
+    await geocodePipelinePromise
+
+    const totalProcessingTime = Date.now() - openaiStartTime
+    let successfulBatches = 0
+    let failedBatches = 0
+
+    console.log('\n=== PARALLEL BATCH PROCESSING: Results ===')
+    batchResults.sort((a, b) => a.batchIndex - b.batchIndex).forEach((result) => {
+      console.log(`[BATCH][RESULT] Batch ${result.batchIndex}: ${result.status} (rows ${result.startRow}-${result.endRow}, ${result.processingTime}ms)`)
+
+      if (result.status === 'completed' && result.data) {
+        successfulBatches++
+      } else {
+        failedBatches++
+        console.error(`[BATCH][RESULT] Batch ${result.batchIndex} failed: ${result.error}`)
+      }
+
+      batchInteractions.push({
+        batchIndex: result.batchIndex,
+        startRow: result.startRow,
+        endRow: result.endRow,
+        status: result.status,
+        processingTime: result.processingTime,
+        error: result.error,
+        retryCount: result.retryCount
+      })
+    })
+
+    console.log(`[BATCH][SUMMARY] Successful batches: ${successfulBatches}/${batches.length}`)
+    console.log(`[BATCH][SUMMARY] Failed batches: ${failedBatches}/${batches.length}`)
+    console.log(`[BATCH][SUMMARY] Total processing time: ${totalProcessingTime}ms`)
+    console.log(`[BATCH][SUMMARY] Average time per batch: ${Math.round(totalProcessingTime / batches.length)}ms`)
+    console.log(`[BATCH][SUMMARY] Success rate: ${Math.round((successfulBatches / batches.length) * 100)}%`)
+    console.log('=== End Parallel Batch Processing ===\n')
+
+    console.log('[DEBUG] Cleaned rows:', cleanedData.length, 'Raw rows:', rawDataRows.length)
+
+    const finalResults = geocodeResults.filter(Boolean)
+    const geocodingInteractions = geocodingInteractionsByIndex.filter(Boolean)
+    const finalRowTimelines = Array.from(rowTimelines.values())
+      .map(timeline => ({
+        rowIndex: timeline.rowIndex,
+        events: [...timeline.events].sort((a, b) => a.timestamp - b.timestamp)
+      }))
+      .sort((a, b) => a.rowIndex - b.rowIndex)
+
     console.log('\n=== BATCH PROCESSING: Final Summary ===')
-    console.log(`[SUMMARY] Total addresses processed: ${results.length}`)
+    console.log(`[SUMMARY] Total addresses processed: ${finalResults.length}`)
     console.log(`[SUMMARY] High confidence: ${highConfidence}`)
     console.log(`[SUMMARY] Medium confidence: ${mediumConfidence}`)
     console.log(`[SUMMARY] Low confidence: ${lowConfidence}`)
-    console.log(`[SUMMARY] Success rate: ${((highConfidence + mediumConfidence) / results.length * 100).toFixed(1)}%`)
+    const successRate = finalResults.length ? ((highConfidence + mediumConfidence) / finalResults.length * 100).toFixed(1) : '0.0'
+    console.log(`[SUMMARY] Success rate: ${successRate}%`)
     console.log('=== End Batch Processing ===\n')
 
-    console.log(`[UNIFIED_PROCESS] Processed ${results.length} addresses`)
-
-    // Note: Data will be saved to Firebase by the frontend after processing
-    // The frontend will handle the Firebase integration using the existing DataService
+    console.log(`[UNIFIED_PROCESS] Processed ${finalResults.length} addresses`)
 
     return res.json({
       success: true,
-      totalProcessed: results.length,
+      totalProcessed: finalResults.length,
       statistics: {
         highConfidence,
         mediumConfidence,
         lowConfidence,
-        totalRows: results.length
+        totalRows: finalResults.length
       },
-      results,
-      // Enhanced debug information for frontend visualization
+      results: finalResults,
       debug: {
         batchProcessing: {
           totalBatches: batches.length,
@@ -713,7 +932,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           successRate: Math.round((successfulBatches / batches.length) * 100),
           batchDetails: batchInteractions
         },
-        geocodingInteractions: geocodingInteractions
+        geocodingInteractions,
+        rowTimelines: finalRowTimelines
       }
     })
 
