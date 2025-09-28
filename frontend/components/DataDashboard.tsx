@@ -16,7 +16,8 @@ import {
     Copy,
     Link,
     Loader2,
-    Mail
+    Mail,
+    Sparkles
 } from 'lucide-react'
 import { useAuth } from '../contexts/AuthContext'
 import ApiVisualization from './ApiVisualization'
@@ -60,11 +61,6 @@ export default function DataDashboard({ data, statistics, debug, meta, onBack }:
     const [copiedLinkId, setCopiedLinkId] = useState<string | null>(null)
     const selectAllLinksRef = useRef<HTMLInputElement | null>(null)
     const [activeTab, setActiveTab] = useState<'dashboard' | 'debug' | 'api-viz'>('dashboard')
-    const statusConfig: Record<'completed' | 'failed' | 'in_progress', { label: string; badge: string }> = {
-        completed: { label: 'Completado', badge: 'bg-green-100 text-green-700' },
-        failed: { label: 'Error', badge: 'bg-red-100 text-red-700' },
-        in_progress: { label: 'En progreso', badge: 'bg-blue-100 text-blue-700' }
-    }
     const stepLabels: Record<string, string> = {
         extracting: 'Extrayendo datos',
         cleaning: 'Limpiando con IA',
@@ -115,85 +111,6 @@ export default function DataDashboard({ data, statistics, debug, meta, onBack }:
             return true
         })
     }, [rows, searchTerm, statusFilter])
-
-    const timelineRows = useMemo(() => {
-        const timelines = debug?.rowTimelines ?? []
-        return timelines.map(timeline => {
-            const events = [...timeline.events].sort((a, b) => a.timestamp - b.timestamp)
-            const start = events[0]?.timestamp ?? 0
-            const end = events[events.length - 1]?.timestamp ?? start
-            const totalDuration = Math.max(1, end - start)
-
-            const findEvent = (phase: string) => events.find(event => event.phase === phase)
-
-            const segments: { label: string; duration: number; color: string }[] = []
-
-            const cleaningStart = findEvent('cleaning_started')
-            const cleaningEnd = findEvent('cleaning_completed')
-            if (cleaningStart && cleaningEnd) {
-                segments.push({
-                    label: 'Limpieza',
-                    duration: Math.max(0, cleaningEnd.timestamp - cleaningStart.timestamp),
-                    color: 'bg-blue-500'
-                })
-            }
-
-            const queueStart = findEvent('geocode_enqueued')
-            const geocodeStart = findEvent('geocode_started')
-            let queueWait: number | null = null
-            if (queueStart && geocodeStart) {
-                queueWait = Math.max(0, geocodeStart.timestamp - queueStart.timestamp)
-                if (queueWait > 0) {
-                    segments.push({
-                        label: 'Espera',
-                        duration: queueWait,
-                        color: 'bg-amber-500'
-                    })
-                }
-            }
-
-            const geocodeEnd = findEvent('geocode_completed') || findEvent('geocode_failed')
-            if (geocodeStart && geocodeEnd) {
-                segments.push({
-                    label: 'Geocoding',
-                    duration: Math.max(0, geocodeEnd.timestamp - geocodeStart.timestamp),
-                    color: 'bg-green-500'
-                })
-            }
-
-            const zipStart = findEvent('zip_lookup_started')
-            const zipEnd = findEvent('zip_lookup_completed') || findEvent('zip_lookup_failed')
-            if (zipStart && zipEnd) {
-                segments.push({
-                    label: 'CP',
-                    duration: Math.max(0, zipEnd.timestamp - zipStart.timestamp),
-                    color: 'bg-purple-500'
-                })
-            }
-
-            const status: 'completed' | 'failed' | 'in_progress' = findEvent('row_failed')
-                ? 'failed'
-                : findEvent('row_completed')
-                    ? 'completed'
-                    : 'in_progress'
-
-            return {
-                rowIndex: timeline.rowIndex,
-                status,
-                totalDuration,
-                segments,
-                queueWait
-            }
-        }).sort((a, b) => a.rowIndex - b.rowIndex)
-    }, [debug?.rowTimelines])
-
-    const displayedTimelineRows = useMemo(() => timelineRows.slice(0, 30), [timelineRows])
-
-    const formatDuration = (ms?: number | null) => {
-        if (ms === undefined || ms === null) return '—'
-        if (ms < 1000) return `${ms.toFixed(0)} ms`
-        return `${(ms / 1000).toFixed(1)} s`
-    }
 
     // Track recently updated rows for animations
     const [updatedRows, setUpdatedRows] = useState<Set<string>>(new Set())
@@ -705,6 +622,32 @@ export default function DataDashboard({ data, statistics, debug, meta, onBack }:
     const totalRowsCount = (statistics && statistics.totalRows) || rows.length || 0
     const pct = (n: number) => totalRowsCount ? Math.round((n / totalRowsCount) * 100) : 0
 
+    const skipCleaningMode = debug?.skipCleaningMode ?? false
+
+    const totalBatches = meta?.totalBatches ?? debug?.batchProcessing?.totalBatches ?? 0
+    const processedBatches = meta?.processedBatches ?? 0
+    const currentBatchNumber = meta
+        ? meta.isComplete
+            ? Math.min(Math.max(processedBatches, 1), totalBatches || processedBatches || 1)
+            : Math.min(processedBatches + 1, totalBatches || processedBatches + 1)
+        : 0
+    const friendlyStep = meta ? (stepLabels[meta.currentStep] ?? meta.currentStep) : ''
+    const batchStatusText = meta
+        ? meta.isComplete
+            ? 'Todos los lotes procesados'
+            : totalBatches > 0
+                ? `Procesando lote ${currentBatchNumber} de ${totalBatches}`
+                : friendlyStep
+        : ''
+    const secondaryStatusLine = meta
+        ? meta.detail && meta.detail !== batchStatusText
+            ? meta.detail
+            : friendlyStep && friendlyStep !== batchStatusText
+                ? friendlyStep
+                : ''
+        : ''
+    const progressPercent = meta ? Math.min(100, Math.max(0, meta.progress)) : 0
+
     return (
         <div className="space-y-6">
             {/* Header */}
@@ -804,105 +747,69 @@ export default function DataDashboard({ data, statistics, debug, meta, onBack }:
                 <>
                     {meta && (
                         <Card className="p-6 bg-white/50 backdrop-blur-sm border border-orange-100 shadow-lg">
-                            <div className="flex flex-col lg:flex-row gap-6">
-                                <div className="flex-1 space-y-3">
-                                    <div className="flex items-center justify-between">
-                                        <h4 className="text-lg font-semibold text-gray-900">Estado del procesamiento en tiempo real</h4>
-                                        <span className={`px-2 py-0.5 text-xs font-medium rounded-full ${meta.isComplete ? 'bg-green-100 text-green-700' : 'bg-orange-100 text-orange-700'}`}>
-                                            {meta.isComplete ? 'Completado' : 'Procesando'}
+                            <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+                                <div>
+                                    <h4 className="text-lg font-semibold text-gray-900">Estado del procesamiento</h4>
+                                    {batchStatusText && (
+                                        <p className="text-sm text-gray-500">{batchStatusText}</p>
+                                    )}
+                                    {secondaryStatusLine && (
+                                        <p className="text-xs text-gray-400 mt-1">{secondaryStatusLine}</p>
+                                    )}
+                                    {skipCleaningMode && (
+                                        <span className="inline-flex items-center gap-1 mt-2 px-2 py-1 text-xs font-medium rounded-full bg-orange-100 text-orange-700">
+                                            <Sparkles className="w-3 h-3" />
+                                            Modo sin limpieza
                                         </span>
-                                    </div>
-                                    <div className="text-sm text-gray-600">
-                                        Filas procesadas: <span className="font-semibold text-gray-900">{meta.processedRows}</span> / {meta.totalRows}
-                                    </div>
-                                    <div className="w-full bg-gray-200 rounded-full h-3 overflow-hidden">
-                                        <div
-                                            className="h-full bg-gradient-to-r from-orange-500 to-amber-500 transition-all duration-500"
-                                            style={{ width: `${Math.min(100, Math.max(0, meta.progress))}%` }}
-                                        ></div>
-                                    </div>
-                                    <div className="flex items-center justify-between text-xs text-gray-500">
-                                        <span>Paso actual: {stepLabels[meta.currentStep] ?? meta.currentStep}</span>
-                                        {meta.detail && (
-                                            <span className="text-right text-gray-500">{meta.detail}</span>
+                                    )}
+                                </div>
+                                <div className="flex items-center gap-6">
+                                    <div className="text-right">
+                                        <p className="text-xs uppercase tracking-wide text-gray-500">Lotes completados</p>
+                                        <p className="text-2xl font-semibold text-gray-900">{processedBatches}</p>
+                                        {totalBatches > 0 && (
+                                            <p className="text-xs text-gray-500">de {totalBatches}</p>
                                         )}
                                     </div>
-                                    <div className="flex items-center justify-between text-xs text-gray-500">
-                                        <span>Lotes: {meta.processedBatches}/{meta.totalBatches}</span>
-                                        {!meta.isComplete && <span>Actualizando en tiempo real…</span>}
-                                    </div>
-                                </div>
-                                <div className="grid grid-cols-2 gap-4 lg:w-72">
-                                    <div className="bg-green-50 p-3 rounded border border-green-200">
-                                        <p className="text-xs text-green-600 uppercase tracking-wide">Alta confianza</p>
-                                        <p className="text-xl font-semibold text-green-700">{statistics.highConfidence}</p>
-                                    </div>
-                                    <div className="bg-yellow-50 p-3 rounded border border-yellow-200">
-                                        <p className="text-xs text-yellow-600 uppercase tracking-wide">Confianza media</p>
-                                        <p className="text-xl font-semibold text-yellow-700">{statistics.mediumConfidence}</p>
-                                    </div>
-                                    <div className="bg-orange-50 p-3 rounded border border-orange-200">
-                                        <p className="text-xs text-orange-600 uppercase tracking-wide">Baja confianza</p>
-                                        <p className="text-xl font-semibold text-orange-700">{statistics.lowConfidence}</p>
-                                    </div>
-                                    <div className="bg-blue-50 p-3 rounded border border-blue-200">
-                                        <p className="text-xs text-blue-600 uppercase tracking-wide">Total esperado</p>
-                                        <p className="text-xl font-semibold text-blue-700">{statistics.totalRows}</p>
-                                    </div>
+                                    <span className={`px-3 py-1 text-sm font-medium rounded-full ${meta.isComplete ? 'bg-green-100 text-green-700' : 'bg-orange-100 text-orange-700'}`}>
+                                        {meta.isComplete ? 'Completado' : 'Procesando'}
+                                    </span>
                                 </div>
                             </div>
 
-                            {displayedTimelineRows.length > 0 && (
-                                <div className="mt-6">
-                                    <h5 className="text-sm font-semibold text-gray-900 mb-3">
-                                        Timeline de filas (primeras {displayedTimelineRows.length})
-                                    </h5>
-                                    <div className="space-y-2 max-h-64 overflow-y-auto pr-1">
-                                        {displayedTimelineRows.map(row => {
-                                            const segments = row.segments.length ? row.segments : [{
-                                                label: 'Total',
-                                                duration: row.totalDuration,
-                                                color: 'bg-gray-300'
-                                            }]
-                                            const status = statusConfig[row.status]
-                                            return (
-                                                <div key={row.rowIndex} className="bg-white border border-gray-200 rounded-lg p-3 shadow-sm">
-                                                    <div className="flex items-center justify-between text-xs text-gray-600">
-                                                        <span className="font-semibold text-gray-800">Fila {row.rowIndex + 1}</span>
-                                                        <span>{formatDuration(row.totalDuration)}</span>
-                                                    </div>
-                                                    <div className="flex items-center mt-2">
-                                                        <div className="flex-1 h-2 bg-gray-100 rounded overflow-hidden flex">
-                                                            {segments.map((segment, index) => (
-                                                                <div
-                                                                    key={index}
-                                                                    className={`${segment.color} h-full`}
-                                                                    style={{
-                                                                        width: `${Math.max(segment.duration / Math.max(1, row.totalDuration) * 100, segment.duration > 0 ? 2 : 1)}%`
-                                                                    }}
-                                                                    title={`${segment.label}: ${formatDuration(segment.duration)}`}
-                                                                ></div>
-                                                            ))}
-                                                        </div>
-                                                        <span className={`ml-3 px-2 py-0.5 text-xs font-medium rounded-full ${status.badge}`}>
-                                                            {status.label}
-                                                        </span>
-                                                    </div>
-                                                    <div className="flex items-center justify-between text-[11px] text-gray-500 mt-1">
-                                                        <span>{row.queueWait ? `Espera: ${formatDuration(row.queueWait)}` : 'Sin espera en cola'}</span>
-                                                        <span>Segmentos: {segments.length}</span>
-                                                    </div>
-                                                </div>
-                                            )
-                                        })}
-                                    </div>
-                                    {timelineRows.length > displayedTimelineRows.length && (
-                                        <p className="text-xs text-gray-500 mt-2">
-                                            Mostrando {displayedTimelineRows.length} de {timelineRows.length} filas procesadas. Consulta la pestaña "API Visualización" para el detalle completo.
-                                        </p>
-                                    )}
+                            <div className="mt-6 space-y-4">
+                                <div className="w-full bg-gray-200 rounded-full h-2.5 overflow-hidden">
+                                    <div
+                                        className="h-full bg-gradient-to-r from-orange-500 to-amber-500 transition-all duration-500"
+                                        style={{ width: `${progressPercent}%` }}
+                                    ></div>
                                 </div>
-                            )}
+                                <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                                    <div className="rounded-lg border border-orange-100 bg-white/60 p-4">
+                                        <p className="text-xs uppercase tracking-wide text-gray-500">Lote en curso</p>
+                                        <p className="text-xl font-semibold text-gray-900">{meta.isComplete ? '—' : currentBatchNumber}</p>
+                                        {!meta.isComplete && totalBatches > 0 && (
+                                            <p className="text-xs text-gray-500">de {totalBatches}</p>
+                                        )}
+                                    </div>
+                                    <div className="rounded-lg border border-orange-100 bg-white/60 p-4">
+                                        <p className="text-xs uppercase tracking-wide text-gray-500">Filas procesadas</p>
+                                        <p className="text-xl font-semibold text-gray-900">
+                                            {meta.processedRows}
+                                            {meta.totalRows ? (
+                                                <span className="text-sm text-gray-500"> / {meta.totalRows}</span>
+                                            ) : null}
+                                        </p>
+                                    </div>
+                                    <div className="rounded-lg border border-orange-100 bg-white/60 p-4">
+                                        <p className="text-xs uppercase tracking-wide text-gray-500">Progreso</p>
+                                        <p className="text-xl font-semibold text-gray-900">{progressPercent.toFixed(0)}%</p>
+                                        {!meta.isComplete && (
+                                            <p className="text-xs text-gray-500">Actualizando en tiempo real…</p>
+                                        )}
+                                    </div>
+                                </div>
+                            </div>
                         </Card>
                     )}
 

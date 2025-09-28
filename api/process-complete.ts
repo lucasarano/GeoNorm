@@ -8,7 +8,7 @@ dotenv.config()
 
 // Batch processing configuration
 const BATCH_SIZE = 50 // rows per batch
-const MAX_CONCURRENT_BATCHES = 8 // simultaneous OpenAI requests
+const MAX_CONCURRENT_BATCHES = 10 // simultaneous OpenAI requests
 const BATCH_TIMEOUT = Number(process.env.CLEANING_BATCH_TIMEOUT_MS) || 180000 // configurable timeout per batch (default 3 minutes)
 
 interface RowTimelineEvent {
@@ -259,6 +259,22 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     console.log('[DEBUG] Body type:', typeof req.body)
     console.log('[DEBUG] Body has length:', req.body && typeof (req.body as any).length === 'number')
 
+    const resolveHeaderValue = (value: string | string[] | undefined): string | undefined => {
+      if (!value) return undefined
+      return Array.isArray(value) ? value[0] : value
+    }
+
+    const requestUrl = req.url ? new URL(req.url, 'http://localhost') : null
+    const skipCleaningHeader = resolveHeaderValue(req.headers['x-geonorm-skip-cleaning'])
+    const skipCleaningParam = requestUrl?.searchParams.get('skipCleaning') ?? requestUrl?.searchParams.get('skip_cleaning')
+    const isTruthy = (value: string | null | undefined) => {
+      if (!value) return false
+      const normalized = value.trim().toLowerCase()
+      return ['1', 'true', 'yes', 'on', 'skip'].includes(normalized)
+    }
+    const skipCleaning = isTruthy(skipCleaningHeader) || isTruthy(skipCleaningParam)
+    console.log('[PIPELINE] Skip cleaning flag:', skipCleaning)
+
     // Helper to read raw body when body parser didn't populate req.body
     const readRawBody = async (request: any): Promise<string> => {
       return await new Promise((resolve, reject) => {
@@ -313,7 +329,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     // Step 2: Clean with OpenAI using parallel batch processing
     console.log('[UNIFIED_PROCESS] Step 2/3: Cleaning with OpenAI using parallel batches...')
     const openaiApiKey = process.env.OPENAI_API_KEY
-    if (!openaiApiKey) {
+    if (!skipCleaning && !openaiApiKey) {
       return res.status(500).json({ error: 'OpenAI API key not configured' })
     }
 
@@ -456,9 +472,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const geocode = async (address: string, city?: string, state?: string) => {
       if (!address || address.trim().length < 3) return null
 
-      console.log(`\n[GEOCODE][INPUT] Address: "${address}"`)
-      console.log(`[GEOCODE][INPUT] City: "${city}"`)
-      console.log(`[GEOCODE][INPUT] State: "${state}"`)
+      const startTime = Date.now()
+      console.log(`\n[GEOCODE] 🚀 STARTING GEOCODING REQUEST`)
+      console.log(`[GEOCODE] 📍 INPUT DATA:`, {
+        address: `"${address}"`,
+        city: `"${city || 'N/A'}"`,
+        state: `"${state || 'N/A'}"`,
+        timestamp: new Date().toISOString()
+      })
 
       let url = `https://maps.googleapis.com/maps/api/geocode/json?address=${encodeURIComponent(address)}&key=${mapsApiKey}`
       const componentsUsed: string[] = ['country:PY']
@@ -468,22 +489,36 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         url += `&components=${encodeURIComponent(componentsUsed.join('|'))}`
       }
 
-      console.log(`[GEOCODE][API_CALL] Full URL: ${url}`)
-      console.log(`[GEOCODE][API_CALL] Components: ${componentsUsed.join(' | ')}`)
+      console.log(`[GEOCODE] 🌐 API REQUEST DETAILS:`, {
+        url: url.replace(mapsApiKey, '[API_KEY]'),
+        components: componentsUsed.join(' | '),
+        encodedAddress: encodeURIComponent(address)
+      })
 
       const requestUrl = url
       const response = await fetch(requestUrl)
+      const responseTime = Date.now() - startTime
+      
+      console.log(`[GEOCODE] 📥 RECEIVED RESPONSE:`, {
+        status: response.status,
+        statusText: response.statusText,
+        responseTime: `${responseTime}ms`,
+        headers: Object.fromEntries(response.headers.entries())
+      })
+      
       let data: any = null
       try {
         data = await response.json()
-        console.log(`[GEOCODE][API_RESPONSE] Status: ${data?.status}`)
-        console.log(`[GEOCODE][API_RESPONSE] Results count: ${data?.results?.length || 0}`)
-        console.log(`[GEOCODE][API_RESPONSE] HTTP Status: ${response.status}`)
-        if (data?.error_message) {
-          console.log(`[GEOCODE][API_RESPONSE] Error: ${data.error_message}`)
-        }
+        console.log(`[GEOCODE] 📊 RESPONSE DATA:`, {
+          status: data?.status,
+          resultsCount: data?.results?.length || 0,
+          errorMessage: data?.error_message || 'None',
+          httpStatus: response.status,
+          rawData: data
+        })
       } catch (parseError) {
-        console.warn('[GEOCODE][PARSE_ERROR] Unable to parse Google response as JSON', parseError)
+        console.warn('[GEOCODE] ❌ JSON PARSE ERROR:', parseError)
+        return { status: 'ERROR', error: 'Invalid JSON response' }
       }
 
       const rawResults = Array.isArray(data?.results) ? data.results : []
@@ -676,14 +711,28 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             console.log(`[ZIPCODE][${rowIndex}][INPUT] Coordinates: ${geo.best.latitude}, ${geo.best.longitude}`)
             const zipLookupStart = Date.now()
             recordRowEvent(rowIndex, { phase: 'zip_lookup_started', timestamp: zipLookupStart })
+            console.log(`[ZIPCODE] 🔍 STARTING ZIP CODE LOOKUP`, {
+              rowIndex,
+              latitude: geo.best.latitude,
+              longitude: geo.best.longitude,
+              timestamp: new Date().toISOString()
+            })
+            
             zipCodeResult = await zipCodeService.getZipCode(geo.best.latitude, geo.best.longitude)
             const zipLookupEnd = Date.now()
+            const zipLookupDuration = zipLookupEnd - zipLookupStart
+            
+            console.log(`[ZIPCODE] ✅ ZIP CODE LOOKUP COMPLETED`, {
+              rowIndex,
+              result: zipCodeResult,
+              duration: `${zipLookupDuration}ms`
+            })
+            
             recordRowEvent(rowIndex, {
               phase: 'zip_lookup_completed',
               timestamp: zipLookupEnd,
-              duration: zipLookupEnd - zipLookupStart
+              duration: zipLookupDuration
             })
-            console.log(`[ZIPCODE][${rowIndex}][OUTPUT] Result:`, zipCodeResult)
           } catch (zipError) {
             console.warn(`[ZIPCODE][${rowIndex}][ERROR] Failed to get zip code:`, zipError)
             recordRowEvent(rowIndex, {
@@ -836,9 +885,27 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         const desiredBatchSize = Math.max(1, Math.min(GEOCODE_BATCH_SIZE, MAX_GEOCODE_CALLS_PER_SECOND))
         const batchSize = Math.min(desiredBatchSize, geocodeQueue.length)
         const batch = geocodeQueue.splice(0, batchSize)
-        console.log(`[GEOCODING][BATCH] Starting batch ${geocodeBatchCounter} (${batch.length}/${desiredBatchSize} addresses)`)
+        const batchStartTime = Date.now()
+        console.log(`[GEOCODING] 🚀 STARTING BATCH ${geocodeBatchCounter}`, {
+          batchSize: batch.length,
+          desiredBatchSize,
+          addresses: batch.map(({ rowIndex, cleaned }) => ({
+            rowIndex,
+            address: cleaned.address,
+            city: cleaned.city,
+            state: cleaned.state
+          })),
+          timestamp: new Date().toISOString()
+        })
 
         const batchResults = await Promise.all(batch.map(processGeocodeTask))
+        const batchDuration = Date.now() - batchStartTime
+        
+        console.log(`[GEOCODING] ✅ BATCH ${geocodeBatchCounter} COMPLETED`, {
+          duration: `${batchDuration}ms`,
+          resultsCount: batchResults.length,
+          successfulResults: batchResults.filter(r => r.result?.status === 'OK').length
+        })
 
         batchResults.forEach(({ rowIndex, result, interaction, confidenceLevel }) => {
           geocodeResults[rowIndex] = result
@@ -868,8 +935,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         })
 
         if (!cleaningCompleted || geocodeQueue.length > 0) {
-          console.log(`[GEOCODING][BATCH] Waiting ${BATCH_DELAY_MS}ms before next batch to respect rate limits`)
-          await sleep(BATCH_DELAY_MS)
+          const waitMs = Math.max(0, BATCH_DELAY_MS - batchDuration)
+          console.log(`[GEOCODING][BATCH] Waiting ${waitMs}ms before next batch (rate pacing)`) 
+          await sleep(waitMs)
         }
       }
 
@@ -883,76 +951,148 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     const geocodePipelinePromise = geocodeScheduler()
 
-    const batchResults = await processBatchesConcurrently(
-      batches,
-      openaiApiKey,
-      async (batchResult) => {
-        if (batchResult.rowTimelines) {
-          batchResult.rowTimelines.forEach(timeline => {
-            const target = ensureRowTimeline(timeline.rowIndex)
-            target.events.push(...timeline.events)
-          })
-        }
+    let batchResults: BatchResult[] = []
 
-        const startRow = batchResult.startRow ?? (batchResult.batchIndex * BATCH_SIZE + 1)
-        const endRow = batchResult.endRow ?? (startRow + Math.max(0, (batchResult.data?.length ?? 0) - 1))
+    if (skipCleaning) {
+      console.log('[PIPELINE] Skip cleaning mode enabled. Bypassing LLM cleaning and using raw rows for geocoding input.')
+      emitMeta('Modo sin limpieza: preparando lotes para geocodificación...')
+      const skipPrepStart = Date.now()
+
+      batches.forEach(batchInfo => {
+        const batchPrepStart = Date.now()
+        const startRow = batchInfo.startRow ?? (batchInfo.batchIndex * BATCH_SIZE + 1)
+        const endRow = batchInfo.endRow ?? Math.min(startRow + BATCH_SIZE - 1, rawDataRows.length)
         const batchStartIndex = Math.max(0, startRow - 1)
         const batchEndIndex = Math.min(rawDataRows.length - 1, Math.max(batchStartIndex, endRow - 1))
-        const expectedRowCount = batchEndIndex >= batchStartIndex ? (batchEndIndex - batchStartIndex + 1) : 0
-        const enqueuedIndexes = new Set<number>()
+        const rowTimelinesForBatch: RowTimeline[] = []
+        const batchData: any[] = []
 
-        if (batchResult.status === 'completed' && Array.isArray(batchResult.data) && batchResult.data.length > 0) {
-          batchResult.data.forEach((row: any, localIdx: number) => {
-            const globalIndex = batchStartIndex + localIdx
-            if (expectedRowCount > 0 && globalIndex > batchEndIndex) {
-              console.warn(`[PIPELINE] Ignoring extraneous cleaned row at global index ${globalIndex} from batch ${batchResult.batchIndex}`)
-              return
-            }
-            cleanedData[globalIndex] = row
-            enqueuedIndexes.add(globalIndex)
-            recordRowEvent(globalIndex, { phase: 'geocode_enqueued', timestamp: Date.now() })
-            enqueueGeocodeTask({ rowIndex: globalIndex, cleaned: row })
+        if (batchEndIndex < batchStartIndex) {
+          console.warn(`[PIPELINE] Batch ${batchInfo.batchIndex} has no rows in skip-cleaning mode.`)
+        }
+
+        for (let globalIndex = batchStartIndex; globalIndex <= batchEndIndex; globalIndex++) {
+          if (globalIndex < 0 || globalIndex >= rawDataRows.length) continue
+
+          const fallbackRow = buildFallbackCleanedRow(globalIndex)
+          cleanedData[globalIndex] = fallbackRow
+          batchData.push(fallbackRow)
+
+          const timelineEvents: RowTimelineEvent[] = []
+          const timestamp = Date.now()
+          timelineEvents.push({ phase: 'cleaning_started', timestamp, details: { skipped: true } })
+          timelineEvents.push({ phase: 'cleaning_completed', timestamp, duration: 0, details: { skipped: true } })
+          timelineEvents.push({ phase: 'cleaning_skipped', timestamp, details: { reason: 'skip_cleaning_mode' } })
+
+          timelineEvents.forEach(event => recordRowEvent(globalIndex, event))
+
+          const enqueueTimestamp = Date.now()
+          const enqueueEvent: RowTimelineEvent = {
+            phase: 'geocode_enqueued',
+            timestamp: enqueueTimestamp,
+            details: { reason: 'skip_cleaning_mode' }
+          }
+          recordRowEvent(globalIndex, enqueueEvent)
+
+          rowTimelinesForBatch.push({
+            rowIndex: globalIndex,
+            events: [...ensureRowTimeline(globalIndex).events]
           })
 
-          const missingCount = Math.max(0, expectedRowCount - enqueuedIndexes.size)
-          if (missingCount > 0) {
-            console.warn(`[PIPELINE] Batch ${batchResult.batchIndex} returned ${enqueuedIndexes.size}/${expectedRowCount} rows. Filling ${missingCount} with raw-data fallback.`)
-          } else {
-            console.log(`[PIPELINE] Dispatched batch ${batchResult.batchIndex} (${enqueuedIndexes.size} rows) directly to geocoding queue`)
-          }
-        } else {
-          console.error(`[PIPELINE] Batch ${batchResult.batchIndex} failed or returned no data (${batchResult.status}). Using fallback rows.`)
+          enqueueGeocodeTask({ rowIndex: globalIndex, cleaned: fallbackRow })
         }
 
-        if (expectedRowCount > enqueuedIndexes.size) {
-          const fallbackStart = batchStartIndex
-          const fallbackEnd = Math.min(batchStartIndex + expectedRowCount - 1, rawDataRows.length - 1)
-          let fallbackCounter = 0
-          for (let globalIndex = fallbackStart; globalIndex <= fallbackEnd; globalIndex++) {
-            if (enqueuedIndexes.has(globalIndex)) continue
-            const fallbackRow = buildFallbackCleanedRow(globalIndex)
-            cleanedData[globalIndex] = fallbackRow
-            recordRowEvent(globalIndex, {
-              phase: 'cleaning_fallback',
-              timestamp: Date.now(),
-              details: {
-                batchIndex: batchResult.batchIndex,
-                reason: batchResult.status === 'completed' ? 'missing_cleaned_row' : batchResult.error || 'cleaning_failed'
-              }
-            })
-            enqueueGeocodeTask({ rowIndex: globalIndex, cleaned: fallbackRow })
-            enqueuedIndexes.add(globalIndex)
-            fallbackCounter++
-          }
-          fallbackRowCount += fallbackCounter
-          console.log(`[PIPELINE] Fallback enqueued ${fallbackCounter} raw rows for batch ${batchResult.batchIndex}`)
-        }
+        const processingTime = Date.now() - batchPrepStart
+        batchResults.push({
+          batchIndex: batchInfo.batchIndex,
+          startRow,
+          endRow,
+          status: 'completed',
+          data: batchData,
+          processingTime,
+          retryCount: 0,
+          rowTimelines: rowTimelinesForBatch
+        })
 
         completedCleaningBatches++
         progressMeta.processedBatches = completedCleaningBatches
-        emitMeta(`Lote ${completedCleaningBatches}/${batches.length} listo para geocodificación`)
-      }
-    )
+        emitMeta(`Lote ${completedCleaningBatches}/${batches.length} enviado directo a geocodificación`)
+      })
+
+      console.log(`[PIPELINE] Skip cleaning mode prepared ${rawDataRows.length} filas en ${Date.now() - skipPrepStart}ms`)
+      emitMeta('Geocodificación en curso (modo sin limpieza)...')
+    } else {
+      batchResults = await processBatchesConcurrently(
+        batches,
+        openaiApiKey!,
+        async (batchResult) => {
+          if (batchResult.rowTimelines) {
+            batchResult.rowTimelines.forEach(timeline => {
+              const target = ensureRowTimeline(timeline.rowIndex)
+              target.events.push(...timeline.events)
+            })
+          }
+
+          const startRow = batchResult.startRow ?? (batchResult.batchIndex * BATCH_SIZE + 1)
+          const endRow = batchResult.endRow ?? (startRow + Math.max(0, (batchResult.data?.length ?? 0) - 1))
+          const batchStartIndex = Math.max(0, startRow - 1)
+          const batchEndIndex = Math.min(rawDataRows.length - 1, Math.max(batchStartIndex, endRow - 1))
+          const expectedRowCount = batchEndIndex >= batchStartIndex ? (batchEndIndex - batchStartIndex + 1) : 0
+          const enqueuedIndexes = new Set<number>()
+
+          if (batchResult.status === 'completed' && Array.isArray(batchResult.data) && batchResult.data.length > 0) {
+            batchResult.data.forEach((row: any, localIdx: number) => {
+              const globalIndex = batchStartIndex + localIdx
+              if (expectedRowCount > 0 && globalIndex > batchEndIndex) {
+                console.warn(`[PIPELINE] Ignoring extraneous cleaned row at global index ${globalIndex} from batch ${batchResult.batchIndex}`)
+                return
+              }
+              cleanedData[globalIndex] = row
+              enqueuedIndexes.add(globalIndex)
+              recordRowEvent(globalIndex, { phase: 'geocode_enqueued', timestamp: Date.now() })
+              enqueueGeocodeTask({ rowIndex: globalIndex, cleaned: row })
+            })
+
+            const missingCount = Math.max(0, expectedRowCount - enqueuedIndexes.size)
+            if (missingCount > 0) {
+              console.warn(`[PIPELINE] Batch ${batchResult.batchIndex} returned ${enqueuedIndexes.size}/${expectedRowCount} rows. Filling ${missingCount} with raw-data fallback.`)
+            } else {
+              console.log(`[PIPELINE] Dispatched batch ${batchResult.batchIndex} (${enqueuedIndexes.size} rows) directly to geocoding queue`)
+            }
+          } else {
+            console.error(`[PIPELINE] Batch ${batchResult.batchIndex} failed or returned no data (${batchResult.status}). Using fallback rows.`)
+          }
+
+          if (expectedRowCount > enqueuedIndexes.size) {
+            const fallbackStart = batchStartIndex
+            const fallbackEnd = Math.min(batchStartIndex + expectedRowCount - 1, rawDataRows.length - 1)
+            let fallbackCounter = 0
+            for (let globalIndex = fallbackStart; globalIndex <= fallbackEnd; globalIndex++) {
+              if (enqueuedIndexes.has(globalIndex)) continue
+              const fallbackRow = buildFallbackCleanedRow(globalIndex)
+              cleanedData[globalIndex] = fallbackRow
+              recordRowEvent(globalIndex, {
+                phase: 'cleaning_fallback',
+                timestamp: Date.now(),
+                details: {
+                  batchIndex: batchResult.batchIndex,
+                  reason: batchResult.status === 'completed' ? 'missing_cleaned_row' : batchResult.error || 'cleaning_failed'
+                }
+              })
+              enqueueGeocodeTask({ rowIndex: globalIndex, cleaned: fallbackRow })
+              enqueuedIndexes.add(globalIndex)
+              fallbackCounter++
+            }
+            fallbackRowCount += fallbackCounter
+            console.log(`[PIPELINE] Fallback enqueued ${fallbackCounter} raw rows for batch ${batchResult.batchIndex}`)
+          }
+
+          completedCleaningBatches++
+          progressMeta.processedBatches = completedCleaningBatches
+          emitMeta(`Lote ${completedCleaningBatches}/${batches.length} listo para geocodificación`)
+        }
+      )
+    }
 
     cleaningCompleted = true
     resolveQueue()
@@ -1015,7 +1155,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     console.log(`[UNIFIED_PROCESS] Processed ${finalResults.length} addresses`)
     progressMeta.isComplete = true
     progressMeta.processedRows = processedGeocodeCount
-    progressMeta.detail = '¡Procesamiento completado con éxito!'
+    const completionDetail = skipCleaning ? '¡Procesamiento completado (modo sin limpieza)!' : '¡Procesamiento completado con éxito!'
+    progressMeta.detail = completionDetail
     progressMeta.progress = totalRows ? Math.min(100, Math.round((processedGeocodeCount / totalRows) * 100)) : 100
     const jobCompleted = processedGeocodeCount >= totalRows
     if (!jobCompleted) {
@@ -1049,8 +1190,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           fallbackRows: fallbackRowCount
         },
         geocodingInteractions,
-        rowTimelines: finalRowTimelines
-      }
+        rowTimelines: finalRowTimelines,
+        skipCleaningMode: skipCleaning
+      },
+      meta: { ...progressMeta }
     }
 
     sendEvent({ type: 'complete', result: finalPayload })

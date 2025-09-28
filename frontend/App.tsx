@@ -1,4 +1,4 @@
-import React, { useState } from 'react'
+import React, { useEffect, useState } from 'react'
 import LandingPage from './components/LandingPage'
 import RegistrationPage from './components/auth/RegistrationPage'
 import UnifiedProcessor from './components/UnifiedProcessor'
@@ -8,6 +8,7 @@ import LocationCollection from './components/LocationCollection'
 import SMSTest from './components/SMSTest'
 import EmailTest from './components/EmailTest'
 import type { ProcessedRow, ProcessingResult } from './types/processing'
+import { Sparkles } from 'lucide-react'
 
 type AppState = 'landing' | 'registration' | 'pipeline' | 'dashboard' | 'data-history' | 'location-collection' | 'sms-test' | 'email-test'
 
@@ -24,19 +25,45 @@ function App() {
     return 'landing'
   })
   const [processingResult, setProcessingResult] = useState<ProcessingResult | null>(null)
+  const [dashboardIntroStage, setDashboardIntroStage] = useState<'hidden' | 'enter' | 'exiting'>('hidden')
 
-  const handleProcessingProgress = (result: ProcessingResult) => {
-    setProcessingResult(result)
-    if (currentView !== 'dashboard') {
-      setCurrentView('dashboard')
+  useEffect(() => {
+    if (dashboardIntroStage === 'enter') {
+      const exitTimer = window.setTimeout(() => setDashboardIntroStage('exiting'), 700)
+      return () => {
+        window.clearTimeout(exitTimer)
+      }
     }
+    if (dashboardIntroStage === 'exiting') {
+      const hideTimer = window.setTimeout(() => setDashboardIntroStage('hidden'), 400)
+      return () => {
+        window.clearTimeout(hideTimer)
+      }
+    }
+    return undefined
+  }, [dashboardIntroStage])
+
+  useEffect(() => {
+    if (currentView !== 'dashboard' && dashboardIntroStage !== 'hidden') {
+      setDashboardIntroStage('hidden')
+    }
+  }, [currentView, dashboardIntroStage])
+
+  const handleProcessingProgress = (result: ProcessingResult, _options?: { done?: boolean }) => {
+    setProcessingResult(result)
+    setCurrentView(prev => {
+      if (prev !== 'dashboard') {
+        setDashboardIntroStage('enter')
+        return 'dashboard'
+      }
+      return prev
+    })
   }
 
   const handleProcessingComplete = (result: ProcessingResult) => {
     setProcessingResult(result)
-    if (currentView !== 'dashboard') {
-      setCurrentView('dashboard')
-    }
+    setDashboardIntroStage('enter')
+    setCurrentView(prev => (prev !== 'dashboard' ? 'dashboard' : prev))
   }
 
   if (currentView === 'landing') {
@@ -161,10 +188,46 @@ function App() {
 
 
   if (currentView === 'dashboard' && processingResult) {
+    const meta = processingResult.meta
+    const showIntroOverlay = dashboardIntroStage !== 'hidden'
+    const introStateClass = dashboardIntroStage === 'enter'
+      ? 'opacity-100 scale-100 pointer-events-auto'
+      : 'opacity-0 scale-95 pointer-events-none'
+    const overlayProgress = Math.min(100, Math.max(0, meta?.progress ?? 0))
+    const overlayDetail = meta?.detail || 'Organizando resultados para tu dashboard...'
+    const overlayBatchSummary = meta?.totalBatches && meta.totalBatches > 0
+      ? `Lotes procesados ${Math.min(meta.processedBatches ?? 0, meta.totalBatches)} de ${meta.totalBatches}`
+      : 'Preparando visualización interactiva'
+
     return (
-      <div className="min-h-screen bg-gradient-to-br from-orange-50 via-amber-50 to-yellow-50">
+      <div className="relative min-h-screen bg-gradient-to-br from-orange-50 via-amber-50 to-yellow-50">
+        {showIntroOverlay && (
+          <div className={`fixed inset-0 z-50 flex items-center justify-center bg-white/90 backdrop-blur-xl transition-all duration-500 ease-out transform ${introStateClass}`}>
+            <div className="bg-white/80 border border-orange-100 rounded-3xl shadow-2xl px-10 py-12 max-w-md w-full text-center space-y-6">
+              <div className="w-16 h-16 mx-auto rounded-2xl bg-gradient-to-r from-orange-500 to-amber-500 flex items-center justify-center shadow-lg">
+                <Sparkles className="w-8 h-8 text-white" />
+              </div>
+              <div className="space-y-2">
+                <h2 className="text-2xl font-semibold text-gray-900">Preparando tu dashboard</h2>
+                <p className="text-sm text-gray-600">{overlayDetail}</p>
+              </div>
+              <div className="space-y-3">
+                <div className="w-full bg-gray-200 rounded-full h-2 overflow-hidden">
+                  <div
+                    className="h-full bg-gradient-to-r from-orange-500 to-amber-500 transition-all duration-500"
+                    style={{ width: `${overlayProgress}%` }}
+                  ></div>
+                </div>
+                <div className="text-xs uppercase tracking-wide text-gray-500">
+                  {overlayBatchSummary}
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
         {/* Header */}
-        <header className="bg-white/90 backdrop-blur-md border-b border-orange-100 sticky top-0 z-50">
+        <header className="bg-white/90 backdrop-blur-md border-b border-orange-100 sticky top-0 z-40">
           <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4">
             <div className="flex items-center justify-between">
               <div className="flex items-center space-x-3">
@@ -190,7 +253,10 @@ function App() {
             statistics={processingResult.statistics}
             debug={processingResult.debug}
             meta={processingResult.meta}
-            onBack={() => setCurrentView('pipeline')}
+            onBack={() => {
+              setDashboardIntroStage('hidden')
+              setCurrentView('pipeline')
+            }}
           />
         </main>
       </div>

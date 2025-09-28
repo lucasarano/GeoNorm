@@ -1334,4 +1334,8 @@ app.get('/api/address-updates/stream', (req, res) => {
 
 app.listen(PORT, () => {
     console.log(`Server running on http://localhost:${PORT}`)
+  // Preload postal zones once at startup to avoid first-request lag
+  zipCodeService.loadPostalZones()
+    .then(() => console.log('[ZIP_CODE_SERVICE] Preload completed'))
+    .catch((err: any) => console.error('[ZIP_CODE_SERVICE] Preload failed:', err))
 })

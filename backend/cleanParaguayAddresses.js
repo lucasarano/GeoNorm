@@ -18,7 +18,7 @@ export async function cleanParaguayAddresses(apiKey, csvData) {
             Authorization: `Bearer ${apiKey}`,
         },
         body: JSON.stringify({
-            model: 'gpt-4o-mini',
+            model: 'gpt-5-mini',
             messages: [
                 {
                     role: 'system',
@@ -27,8 +27,9 @@ export async function cleanParaguayAddresses(apiKey, csvData) {
                 },
                 { role: 'user', content: prompt }
             ],
-            max_tokens: 8000,
-            temperature: 0.1,
+            // Modern OpenAI responses use max_completion_tokens (max_tokens unsupported)
+            max_completion_tokens: 15000,
+            // temperature not supported on this model; use default
         }),
     });
 

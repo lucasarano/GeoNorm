@@ -26,6 +26,7 @@ export default function UnifiedProcessor({ onProcessingComplete, onProcessingPro
     const [currentStep, setCurrentStep] = useState<'upload' | 'extracting' | 'cleaning' | 'geocoding' | 'completed'>('upload')
     const [progress, setProgress] = useState(0)
     const [stepDetails, setStepDetails] = useState<string>('')
+    const [skipCleaning, setSkipCleaning] = useState(false)
 
     const handleFileUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
         const selectedFile = event.target.files?.[0]
@@ -78,22 +79,28 @@ export default function UnifiedProcessor({ onProcessingComplete, onProcessingPro
             setProgress(10)
 
             await new Promise(resolve => setTimeout(resolve, 500))
-            setStepDetails('Extrayendo campos de dirección...')
-            setProgress(25)
+            setStepDetails(skipCleaning ? 'Preparando filas sin limpieza...' : 'Extrayendo campos de dirección...')
+            setProgress(skipCleaning ? 30 : 25)
 
-            // Step 2: Cleaning
-            setCurrentStep('cleaning')
-            setStepDetails('Enviando datos a OpenAI para limpieza...')
-            setProgress(40)
+            if (!skipCleaning) {
+                // Step 2: Cleaning
+                setCurrentStep('cleaning')
+                setStepDetails('Enviando datos a OpenAI para limpieza...')
+                setProgress(40)
 
-            await new Promise(resolve => setTimeout(resolve, 1000))
-            setStepDetails('Procesando con inteligencia artificial...')
-            setProgress(55)
+                await new Promise(resolve => setTimeout(resolve, 1000))
+                setStepDetails('Procesando con inteligencia artificial...')
+                setProgress(55)
+            } else {
+                setStepDetails('Modo sin limpieza: se usará el CSV original para geocodificar.')
+                setProgress(45)
+                await new Promise(resolve => setTimeout(resolve, 400))
+            }
 
             // Step 3: Geocoding (streaming)
             setCurrentStep('geocoding')
-            setStepDetails('Procesamiento continuo en el servidor...')
-            setProgress(70)
+            setStepDetails(skipCleaning ? 'Enviando datos crudos a geocodificación...' : 'Procesamiento continuo en el servidor...')
+            setProgress(skipCleaning ? 65 : 70)
 
             const allLines = fullCsvContent.trim().split('\n')
             const dataLines = allLines.slice(1).filter(l => l && l.trim().length > 0)
@@ -107,12 +114,13 @@ export default function UnifiedProcessor({ onProcessingComplete, onProcessingPro
                 debug: {
                     batchProcessing: null,
                     geocodingInteractions: [],
-                    rowTimelines: []
+                    rowTimelines: [],
+                    skipCleaningMode: skipCleaning
                 },
                 meta: {
                     progress: 0,
                     currentStep: 'geocoding',
-                    detail: 'Procesamiento en curso...',
+                    detail: skipCleaning ? 'Procesamiento en curso (modo sin limpieza)...' : 'Procesamiento en curso...',
                     totalRows,
                     processedRows: 0,
                     processedBatches: 0,
@@ -185,11 +193,16 @@ export default function UnifiedProcessor({ onProcessingComplete, onProcessingPro
 
             emitProgress(false)
 
+            const headers: Record<string, string> = {
+                'Content-Type': 'text/csv'
+            }
+            if (skipCleaning) {
+                headers['X-Geonorm-Skip-Cleaning'] = 'true'
+            }
+
             const response = await fetch('/api/process-complete', {
                 method: 'POST',
-                headers: {
-                    'Content-Type': 'text/csv'
-                },
+                headers,
                 body: fullCsvContent
             })
 
@@ -539,6 +552,22 @@ export default function UnifiedProcessor({ onProcessingComplete, onProcessingPro
                                     <span className="text-sm text-gray-500">
                                         Haz clic para seleccionar o arrastra tu archivo aquí
                                     </span>
+                                </label>
+                            </div>
+
+                            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 bg-orange-50/70 border border-orange-200 rounded-xl p-4">
+                                <div>
+                                    <p className="text-sm font-semibold text-orange-700">Modo sin limpieza (pruebas)</p>
+                                    <p className="text-xs text-orange-600">Omite la limpieza con IA y envía los datos crudos directamente a geocodificación.</p>
+                                </div>
+                                <label className="inline-flex items-center gap-2">
+                                    <input
+                                        type="checkbox"
+                                        className="h-4 w-4 rounded border-orange-300 text-orange-500 focus:ring-orange-400"
+                                        checked={skipCleaning}
+                                        onChange={(event) => setSkipCleaning(event.target.checked)}
+                                    />
+                                    <span className="text-sm text-gray-700">{skipCleaning ? 'Activado' : 'Desactivado'}</span>
                                 </label>
                             </div>
 

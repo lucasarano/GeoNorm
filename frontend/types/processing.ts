@@ -135,6 +135,7 @@ export interface ProcessingDebug {
     batchProcessing?: BatchProcessingDebug | null
     geocodingInteractions?: GeocodingInteraction[]
     rowTimelines?: RowTimelineDebug[]
+    skipCleaningMode?: boolean
 }
 
 export interface ProcessingResult {
