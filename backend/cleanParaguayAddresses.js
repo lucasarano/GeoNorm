@@ -1,97 +1,158 @@
-// cleanParaguayAddresses.js
-// Minimal, deterministic caller + robust CSV extraction
-import { buildPrompt } from './buildPrompt.js';
+import { parseCsv, toCsv } from './paraguay/csv.js';
+import { deterministicStage } from './paraguay/deterministic.js';
+import { needsLLM, runStageBLLM } from './paraguay/llm.js';
+import { filterAndDedupeRows, toFinalCsvRows, validateRows } from './paraguay/validators.js';
+import { normalizeWhitespace } from './paraguay/utils.js';
+
+const OUTPUT_HEADERS = [
+  'Original_Address',
+  'Original_City',
+  'Original_State',
+  'Original_Phone',
+  'Address',
+  'City',
+  'State',
+  'Phone',
+  'Email'
+];
 
 export async function cleanParaguayAddresses(apiKey, csvData) {
-    const prompt = buildPrompt(csvData);
+  if (!apiKey) throw new Error('OpenAI API key is required');
+  const logger = createLogger();
+  logger.log('INIT', 'Starting cleanParaguayAddresses pipeline');
+  const { headers, records } = parseCsv(csvData);
+  if (!headers.length) throw new Error('Input CSV must include a header row');
+  logger.log('INIT', 'Parsed CSV headers', { headers });
 
-    console.log('\n=== OpenAI Request Details ===')
-    console.log('[OPENAI][REQUEST] Prompt length:', prompt.length)
-    console.log('[OPENAI][REQUEST] Full prompt:')
-    console.log(prompt)
-    console.log('=== End OpenAI Request ===\n')
+  const stageAContexts = deterministicStage(records, headers, {
+    logRow: logger.logRow
+  });
 
-    const response = await fetch('https://api.openai.com/v1/chat/completions', {
-        method: 'POST',
-        headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${apiKey}`,
-        },
-        body: JSON.stringify({
-            model: 'gpt-5-mini',
-            messages: [
-                {
-                    role: 'system',
-                    content:
-                        'You are a meticulous CSV transformer. You MUST: 1) output exactly one RFC-4180 CSV code block with header Original_Address,Original_City,Original_State,Original_Phone,Address,City,State,Phone,Email; 2) when an email is present in any field (especially Address), extract it to the Email column and remove it from Address; 3) keep Phone and Email separate; 4) leave fields blank if unknown; 5) never add commentary outside the CSV code block.'
-                },
-                { role: 'user', content: prompt }
-            ],
-            // Modern OpenAI responses use max_completion_tokens (max_tokens unsupported)
-            max_completion_tokens: 15000,
-            // temperature not supported on this model; use default
-        }),
+  let llmUses = 0;
+  for (const context of stageAContexts) {
+    context.llmUsed = false;
+    if (!needsLLM(context)) {
+      logger.logRow(context.index, 'StageB', 'Skipping LLM - deterministic metrics satisfied', {
+        metrics: context.metrics
+      });
+      continue;
+    }
+    logger.logRow(context.index, 'StageB', 'Invoking LLM fallback', {
+      metrics: context.metrics,
+      partialCleaned: context.cleaned
     });
-
-    if (!response.ok) {
-        const txt = await response.text().catch(() => '');
-        throw new Error(`OpenAI API error: ${response.status} ${txt}`);
+    try {
+      const llmResult = await runStageBLLM(apiKey, context);
+      applyLlmPatch(context, llmResult);
+      context.llmUsed = true;
+      llmUses += 1;
+      logger.logRow(context.index, 'StageB', 'LLM response applied', {
+        llmResult
+      });
+    } catch (error) {
+      console.error(`[STAGE-B] Row ${context.index} LLM fallback failed:`, error.message);
+      logger.logRow(context.index, 'StageB', 'LLM invocation failed, proceeding with deterministic data', {
+        error: error.message
+      });
     }
+  }
 
-    const result = await response.json();
+  const validated = await validateRows(apiKey, stageAContexts, {
+    logRow: logger.logRow
+  });
+  const filtered = filterAndDedupeRows(validated, {
+    logRow: logger.logRow
+  });
+  const csvRows = toFinalCsvRows(filtered);
+  const csv = toCsv(csvRows, OUTPUT_HEADERS);
 
-    console.log('\n=== OpenAI Response Details ===')
-    console.log('[OPENAI][RESPONSE] Full API response:')
-    console.log(JSON.stringify(result, null, 2))
-    console.log('=== End OpenAI Response ===\n')
+  logSummary({
+    totalRows: stageAContexts.length,
+    llmUses,
+    filteredOut: stageAContexts.length - filtered.length
+  });
 
-    // Responses API returns text in result.output array
-    let content = null;
+  return csv;
+}
 
-    // Extract content from standard chat completions response
-    if (result?.choices?.[0]?.message?.content) {
-        content = result.choices[0].message.content;
+function applyLlmPatch(context, llmResult) {
+  const evidence = new Set(context.evidence || []);
+  if (Array.isArray(llmResult.evidence_fields_used)) {
+    for (const value of llmResult.evidence_fields_used) {
+      evidence.add(String(value));
     }
+  }
 
-    console.log('[OPENAI][CONTENT] Extracted content length:', content?.length || 0);
-    console.log('[OPENAI][CONTENT] Content preview:', content?.substring(0, 200) || 'No content found');
+  const original = context.original;
+  if (!original.address && llmResult.Original_Address) original.address = llmResult.Original_Address;
+  if (!original.city && llmResult.Original_City) original.city = llmResult.Original_City;
+  if (!original.state && llmResult.Original_State) original.state = llmResult.Original_State;
+  if (!original.phone && llmResult.Original_Phone) original.phone = llmResult.Original_Phone;
 
-    if (!content) throw new Error('Empty response from OpenAI');
+  const cleaned = context.cleaned;
+  cleaned.address = pickOverride(cleaned.address, llmResult.Address);
+  cleaned.city = pickOverride(cleaned.city, llmResult.City);
+  cleaned.state = pickOverride(cleaned.state, llmResult.State);
+  cleaned.phone = pickOverride(cleaned.phone, llmResult.Phone);
+  cleaned.email = pickOverride(cleaned.email, llmResult.Email ? llmResult.Email.toLowerCase() : llmResult.Email);
 
-    // Extract CSV from a fenced block; be forgiving on whitespace/labels
-    const fenced =
-        content.match(/```(?:csv)?\s*([\s\S]*?)\s*```/i)?.[1] ??
-        content.match(/```([\s\S]*?)```/i)?.[1] ??
-        content;
+  context.cleaned = cleaned;
+  context.original = original;
+  context.evidence = Array.from(evidence);
 
-    // Normalize and finalize
-    let csv = fenced.replace(/^\uFEFF/, '') // strip BOM
-        .replace(/\r\n/g, '\n') // normalize EOL
-        .trimEnd() + '\n';      // ensure single final newline
+  if (llmResult.Phone) {
+    context.candidates = context.candidates || {};
+    const existing = new Set(context.candidates.phones || []);
+    existing.add(llmResult.Phone);
+    context.candidates.phones = Array.from(existing);
+  }
+}
 
-    // Sanity checks
-    const header = csv.split('\n', 1)[0].trim();
-    const expectedHeader = 'Original_Address,Original_City,Original_State,Original_Phone,Address,City,State,Phone,Email';
-    if (header !== expectedHeader) {
-        throw new Error(`Unexpected header. Got "${header}", expected "${expectedHeader}"`);
+function pickOverride(primary, fallback) {
+  const fallbackValue = normalizeWhitespace(fallback || '');
+  if (fallbackValue) return fallbackValue;
+  return normalizeWhitespace(primary || '');
+}
+
+function logSummary(stats) {
+  console.log('[PIPELINE] Rows processed:', stats.totalRows);
+  console.log('[PIPELINE] Stage B LLM calls:', stats.llmUses);
+  console.log('[PIPELINE] Rows removed after filters/dedup:', stats.filteredOut);
+}
+
+function createLogger() {
+  const rawFlag = process.env.GEONORM_DEBUG;
+  const enabled = rawFlag ? !['false', '0', 'off', 'no'].includes(rawFlag.toLowerCase()) : true;
+
+  const formatPayload = (payload) => {
+    if (payload === undefined) return '';
+    if (typeof payload === 'string') return payload;
+    try {
+      return JSON.stringify(payload, null, 2);
+    } catch (error) {
+      return String(payload);
     }
+  };
 
-    // Optional: quick structural check for 10 columns on non-empty rows.
-    // NOTE: This is a lightweight check; prefer a real CSV parser downstream.
-    const lines = csv.split('\n').slice(1).filter(Boolean);
-    const bad = lines.find(line => {
-        // Rough check: count commas not inside quotes
-        let commas = 0, inQuotes = false;
-        for (let i = 0; i < line.length; i++) {
-            const ch = line[i];
-            if (ch === '"') inQuotes = !inQuotes;
-            else if (ch === ',' && !inQuotes) commas++;
-        }
-        return commas !== 9; // 10 columns => 9 commas
-    });
-    if (bad) {
-        console.warn('Row with unexpected column structure detected:', bad);
+  const log = (stage, message, payload) => {
+    if (!enabled) return;
+    const formatted = formatPayload(payload);
+    if (formatted) {
+      console.log(`[DEBUG][${stage}] ${message}\n${formatted}`);
+    } else {
+      console.log(`[DEBUG][${stage}] ${message}`);
     }
+  };
 
-    return csv;
+  const logRow = (index, stage, message, payload) => {
+    if (!enabled) return;
+    const formatted = formatPayload(payload);
+    if (formatted) {
+      console.log(`[DEBUG][Row ${index}][${stage}] ${message}\n${formatted}`);
+    } else {
+      console.log(`[DEBUG][Row ${index}][${stage}] ${message}`);
+    }
+  };
+
+  return { enabled, log, logRow };
 }
