@@ -1,6 +1,5 @@
 import { useState, useMemo } from 'react'
 import { Card } from './shared/ui/card'
-import { Button } from './shared/ui/button'
 import {
     Activity,
     Clock,
@@ -14,53 +13,13 @@ import {
     RefreshCw,
     ChevronDown,
     ChevronRight,
-    Eye,
-    Code
+    Eye
 } from 'lucide-react'
-
-interface BatchDetail {
-    batchIndex: number
-    startRow: number
-    endRow: number
-    status: 'pending' | 'processing' | 'completed' | 'failed' | 'retrying'
-    processingTime?: number
-    error?: string
-    retryCount?: number
-}
-
-interface GeocodingInteraction {
-    timestamp: string
-    rowIndex: number
-    request: {
-        address: string
-        city: string
-        state: string
-        components: string[]
-        url: string
-    }
-    response: {
-        status: string
-        results: any[]
-        bestResult: any
-        rawResponse: any
-        responseTime: number
-        httpStatus: number | null
-        error: string | null
-    }
-    error?: string
-}
-
-interface RowTimelineEvent {
-    phase: string
-    timestamp: number
-    duration?: number
-    details?: Record<string, unknown>
-}
-
-interface RowTimelineDebug {
-    rowIndex: number
-    events: RowTimelineEvent[]
-}
+import type {
+    GeocodingInteraction,
+    ProcessingDebug,
+    RowTimelineEvent
+} from '../types/processing'
 
 interface RowTimelineSegment {
     label: string
@@ -79,24 +38,8 @@ interface RowTimelineVisualization {
     queueWait?: number | null
 }
 
-interface BatchProcessingDebug {
-    totalBatches: number
-    successfulBatches: number
-    failedBatches: number
-    batchSize: number
-    maxConcurrentBatches: number
-    totalProcessingTime: number
-    averageTimePerBatch: number
-    successRate: number
-    batchDetails: BatchDetail[]
-}
-
 interface ApiVisualizationProps {
-    debug?: {
-        batchProcessing?: BatchProcessingDebug
-        geocodingInteractions?: GeocodingInteraction[]
-        rowTimelines?: RowTimelineDebug[]
-    }
+    debug?: ProcessingDebug
 }
 
 export default function ApiVisualization({ debug }: ApiVisualizationProps) {

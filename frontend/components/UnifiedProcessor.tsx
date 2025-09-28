@@ -1,92 +1,31 @@
 import React, { useState } from 'react'
+import { Timestamp } from 'firebase/firestore'
 import * as XLSX from 'xlsx'
 import { Card } from './shared/ui/card'
 import { Button } from './shared/ui/button'
-import { Upload, FileText, Sparkles, MapPin, CheckCircle, Zap, Clock } from 'lucide-react'
+import { Upload, FileText, Sparkles, MapPin, CheckCircle } from 'lucide-react'
 import { DataService } from '../services/dataService'
 import { useAuth } from '../contexts/AuthContext'
-import { Timestamp } from 'firebase/firestore'
 import RealTimeApiMonitor from './RealTimeApiMonitor'
-import RealTimeProcessor from './RealTimeProcessor'
-
-interface ProcessedRow {
-    rowIndex: number
-    recordId?: string
-    original: {
-        address: string
-        city: string
-        state: string
-        phone: string
-    }
-    cleaned: {
-        address: string
-        city: string
-        state: string
-        phone: string
-        email: string
-    }
-    geocoding: {
-        latitude: number | null
-        longitude: number | null
-        formattedAddress: string
-        confidence: number
-        confidenceDescription: string
-        locationType: string
-        staticMapUrl: string | null
-    }
-    zipCode?: {
-        zipCode: string | null
-        department: string | null
-        district: string | null
-        neighborhood: string | null
-        confidence: 'high' | 'medium' | 'low' | 'none'
-    }
-    status: 'high_confidence' | 'medium_confidence' | 'low_confidence' | 'failed'
-    error?: string
-    googleMapsLink?: string | null
-}
-
-interface ProcessingResult {
-    success: boolean
-    totalProcessed: number
-    statistics: {
-        highConfidence: number
-        mediumConfidence: number
-        lowConfidence: number
-        totalRows: number
-    }
-    results: ProcessedRow[]
-    debug?: {
-        batchProcessing?: any
-        geocodingInteractions?: any
-        rowTimelines?: RowTimelineDebug[]
-    }
-}
-
-interface RowTimelineEvent {
-    phase: string
-    timestamp: number
-    duration?: number
-    details?: Record<string, unknown>
-}
-
-interface RowTimelineDebug {
-    rowIndex: number
-    events: RowTimelineEvent[]
-}
+import type {
+    ProcessedRow,
+    ProcessingResult,
+    ProcessingMeta,
+    RowTimelineDebug
+} from '../types/processing'
 
 interface UnifiedProcessorProps {
     onProcessingComplete: (result: ProcessingResult) => void
+    onProcessingProgress?: (result: ProcessingResult, options?: { done?: boolean }) => void
 }
 
-export default function UnifiedProcessor({ onProcessingComplete }: UnifiedProcessorProps) {
+export default function UnifiedProcessor({ onProcessingComplete, onProcessingProgress }: UnifiedProcessorProps) {
     const { currentUser } = useAuth()
     const [file, setFile] = useState<File | null>(null)
     const [isProcessing, setIsProcessing] = useState(false)
     const [currentStep, setCurrentStep] = useState<'upload' | 'extracting' | 'cleaning' | 'geocoding' | 'completed'>('upload')
     const [progress, setProgress] = useState(0)
     const [stepDetails, setStepDetails] = useState<string>('')
-    const [processingMode, setProcessingMode] = useState<'standard' | 'realtime'>('realtime')
 
     const handleFileUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
         const selectedFile = event.target.files?.[0]
@@ -151,105 +90,254 @@ export default function UnifiedProcessor({ onProcessingComplete }: UnifiedProces
             setStepDetails('Procesando con inteligencia artificial...')
             setProgress(55)
 
-            // Step 3: Geocoding (batched)
+            // Step 3: Geocoding (streaming)
             setCurrentStep('geocoding')
-            setStepDetails('Dividiendo en lotes y geocodificando...')
+            setStepDetails('Procesamiento continuo en el servidor...')
             setProgress(70)
 
-            // Split CSV into batches of 30 data rows (keep header per batch)
             const allLines = fullCsvContent.trim().split('\n')
-            const header = allLines[0]
             const dataLines = allLines.slice(1).filter(l => l && l.trim().length > 0)
-            const batchSize = 30
-            const numBatches = Math.max(1, Math.ceil(dataLines.length / batchSize))
+            const totalRows = dataLines.length
 
             const aggregate: ProcessingResult = {
                 success: true,
                 totalProcessed: 0,
-                statistics: { highConfidence: 0, mediumConfidence: 0, lowConfidence: 0, totalRows: 0 },
+                statistics: { highConfidence: 0, mediumConfidence: 0, lowConfidence: 0, totalRows },
                 results: [],
                 debug: {
                     batchProcessing: null,
                     geocodingInteractions: [],
                     rowTimelines: []
+                },
+                meta: {
+                    progress: 0,
+                    currentStep: 'geocoding',
+                    detail: 'Procesamiento en curso...',
+                    totalRows,
+                    processedRows: 0,
+                    processedBatches: 0,
+                    totalBatches: Math.max(1, Math.ceil(totalRows / 50)),
+                    isComplete: false
                 }
             }
 
-            for (let b = 0; b < numBatches; b++) {
-                const start = b * batchSize
-                const end = Math.min(start + batchSize, dataLines.length)
-                const batchCsv = [header, ...dataLines.slice(start, end)].join('\n')
+            const rowsByIndex = new Map<number, ProcessedRow>()
+            const timelinesByIndex = new Map<number, RowTimelineDebug>()
 
-                setStepDetails(`Procesando lote ${b + 1} de ${numBatches} (${end - start} filas)`)
-                setProgress(70 + Math.round(((b + 1) / numBatches) * 20))
+            const recomputeAggregates = () => {
+                const sortedRows = Array.from(rowsByIndex.values()).sort((a, b) => a.rowIndex - b.rowIndex)
+                aggregate.results = sortedRows
+                aggregate.totalProcessed = sortedRows.length
 
-                // Client-side logs for visibility
-                console.log(`[BATCH] Sending batch ${b + 1}/${numBatches}: rows ${start + 1}-${end} of ${dataLines.length}`)
-                console.log('[BATCH] Header:', header)
-                console.log('[BATCH] First 3 data lines:', dataLines.slice(start, Math.min(end, start + 3)))
+                let highConfidence = 0
+                let mediumConfidence = 0
+                let lowConfidence = 0
 
-                const response = await fetch('/api/process-complete', {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'text/csv',
-                        'X-GeoNorm-Batch-Index': String(b),
-                        'X-GeoNorm-Batch-Start': String(start),
-                        'X-GeoNorm-Batch-End': String(end),
-                        'X-GeoNorm-Batch-TotalRows': String(dataLines.length)
-                    },
-                    body: batchCsv
+                sortedRows.forEach(row => {
+                    if (row.status === 'high_confidence') {
+                        highConfidence++
+                    } else if (row.status === 'medium_confidence') {
+                        mediumConfidence++
+                    } else if (row.status === 'low_confidence') {
+                        lowConfidence++
+                    }
                 })
 
-                if (!response.ok) {
-                    const errorBody = await response.text()
-                    console.error('Server error response (batch):', errorBody)
-                    throw new Error(errorBody || `Error en el servidor: ${response.status}`)
+                aggregate.statistics = {
+                    highConfidence,
+                    mediumConfidence,
+                    lowConfidence,
+                    totalRows
                 }
 
-                const result: ProcessingResult = await response.json()
-
-                // Reindex results to global row indices based on original order
-                const adjusted = result.results.map(r => ({
-                    ...r,
-                    rowIndex: start + r.rowIndex
-                }))
-
-                aggregate.results.push(...adjusted)
-                aggregate.totalProcessed += result.totalProcessed
-                aggregate.statistics.highConfidence += result.statistics.highConfidence
-                aggregate.statistics.mediumConfidence += result.statistics.mediumConfidence
-                aggregate.statistics.lowConfidence += result.statistics.lowConfidence
-                aggregate.statistics.totalRows += result.statistics.totalRows
-
-                // Accumulate debug information
-                if (result.debug) {
-                    if (result.debug.batchProcessing && !aggregate.debug!.batchProcessing) {
-                        aggregate.debug!.batchProcessing = result.debug.batchProcessing
+                if (!aggregate.debug) {
+                    aggregate.debug = {
+                        batchProcessing: null,
+                        geocodingInteractions: [],
+                        rowTimelines: []
                     }
-                    if (result.debug.geocodingInteractions) {
-                        aggregate.debug!.geocodingInteractions!.push(...result.debug.geocodingInteractions)
+                }
+
+                aggregate.debug.rowTimelines = Array.from(timelinesByIndex.values()).sort((a, b) => a.rowIndex - b.rowIndex)
+
+                if (aggregate.meta) {
+                    aggregate.meta.processedRows = aggregate.totalProcessed
+                }
+            }
+
+            const buildSnapshot = (done = false): ProcessingResult => {
+                if (aggregate.meta) {
+                    aggregate.meta.isComplete = done
+                }
+                recomputeAggregates()
+                return JSON.parse(JSON.stringify(aggregate)) as ProcessingResult
+            }
+
+            const emitProgress = (done = false) => {
+                const snapshot = buildSnapshot(done)
+                if (done) {
+                    onProcessingProgress?.(snapshot, { done: true })
+                    onProcessingComplete(snapshot)
+                } else {
+                    onProcessingProgress?.(snapshot, { done: false })
+                }
+            }
+
+            emitProgress(false)
+
+            const response = await fetch('/api/process-complete', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'text/csv'
+                },
+                body: fullCsvContent
+            })
+
+            if (!response.ok || !response.body) {
+                const errorBody = await response.text()
+                console.error('Server error response:', errorBody)
+                throw new Error(errorBody || `Error en el servidor: ${response.status}`)
+            }
+
+            type StreamRowEvent = { type: 'row'; rowIndex: number; row: ProcessedRow; timeline?: RowTimelineDebug }
+            type StreamMetaEvent = { type: 'meta'; meta: ProcessingMeta }
+            type StreamCompleteEvent = { type: 'complete'; result: ProcessingResult }
+            type StreamErrorEvent = { type: 'error'; message: string }
+            type StreamEvent = StreamRowEvent | StreamMetaEvent | StreamCompleteEvent | StreamErrorEvent
+
+            const reader = response.body.getReader()
+            const decoder = new TextDecoder()
+            let buffer = ''
+            let finalEvent: ProcessingResult | null = null
+            let completed = false
+
+            const processEventLine = (line: string) => {
+                const trimmed = line.trim()
+                if (!trimmed) return
+
+                let event: StreamEvent
+                try {
+                    event = JSON.parse(trimmed) as StreamEvent
+                } catch (error) {
+                    console.error('Error parsing stream chunk:', error, 'Chunk:', trimmed)
+                    return
+                }
+
+                if (event.type === 'row') {
+                    const rowIndex = event.row.rowIndex ?? event.rowIndex
+                    rowsByIndex.set(rowIndex, {
+                        ...event.row,
+                        rowIndex
+                    })
+                    if (event.timeline) {
+                        timelinesByIndex.set(event.timeline.rowIndex, event.timeline)
                     }
-                    if (result.debug.rowTimelines) {
-                        const offsetTimelines = result.debug.rowTimelines.map(timeline => ({
-                            rowIndex: start + timeline.rowIndex,
-                            events: timeline.events
-                        }))
-                        aggregate.debug!.rowTimelines!.push(...offsetTimelines)
+                    emitProgress(false)
+                } else if (event.type === 'meta') {
+                    aggregate.meta = {
+                        ...aggregate.meta,
+                        ...event.meta,
+                        isComplete: false
                     }
+                    setProgress(event.meta.progress)
+                    setStepDetails(event.meta.detail ?? '')
+                    emitProgress(false)
+                } else if (event.type === 'complete') {
+                    finalEvent = event.result
+                    completed = true
+                    aggregate.success = event.result.success
+                    aggregate.totalProcessed = event.result.totalProcessed
+                    aggregate.statistics = event.result.statistics
+                    aggregate.results = event.result.results
+                    aggregate.debug = event.result.debug
+                    if (event.result.debug?.rowTimelines) {
+                        event.result.debug.rowTimelines.forEach(timeline => {
+                            timelinesByIndex.set(timeline.rowIndex, timeline)
+                        })
+                    }
+                    if (aggregate.meta && event.result.meta) {
+                        aggregate.meta = {
+                            ...event.result.meta,
+                            isComplete: false
+                        }
+                        setProgress(event.result.meta.progress)
+                        setStepDetails(event.result.meta.detail ?? '')
+                    }
+                    rowsByIndex.clear()
+                    event.result.results.forEach(row => rowsByIndex.set(row.rowIndex, row))
+                    emitProgress(false)
+                } else if (event.type === 'error') {
+                    const message = event.message && event.message.trim().length > 0
+                        ? event.message
+                        : 'Error desconocido en el procesamiento del servidor'
+                    throw new Error(message)
+                }
+            }
+
+            while (true) {
+                const { value, done } = await reader.read()
+                if (done) break
+
+                buffer += decoder.decode(value, { stream: true })
+                let newlineIndex = buffer.indexOf('\n')
+                while (newlineIndex >= 0) {
+                    const line = buffer.slice(0, newlineIndex)
+                    buffer = buffer.slice(newlineIndex + 1)
+                    processEventLine(line)
+                    newlineIndex = buffer.indexOf('\n')
+                }
+            }
+
+            buffer += decoder.decode()
+            if (buffer.trim().length > 0) {
+                processEventLine(buffer)
+                buffer = ''
+            }
+
+            if (!completed || !finalEvent) {
+                const processedRows = aggregate.meta?.processedRows ?? rowsByIndex.size
+                if (processedRows >= totalRows) {
+                    completed = true
+                    finalEvent = {
+                        success: true,
+                        totalProcessed: processedRows,
+                        statistics: aggregate.statistics,
+                        results: Array.from(rowsByIndex.values()).sort((a, b) => a.rowIndex - b.rowIndex),
+                        debug: aggregate.debug,
+                        meta: aggregate.meta
+                    }
+                    aggregate.success = true
+                } else {
+                    throw new Error('El servidor terminó la transmisión sin enviar un evento de finalización.')
                 }
             }
 
             setStepDetails('Finalizando procesamiento...')
-            setProgress(90)
+            setProgress(prev => Math.max(prev, 90))
 
-            if (aggregate.debug?.rowTimelines) {
-                aggregate.debug.rowTimelines.sort((a, b) => a.rowIndex - b.rowIndex)
+            if (aggregate.meta) {
+                aggregate.meta = {
+                    ...aggregate.meta,
+                    currentStep: 'finalizando',
+                    detail: 'Finalizando procesamiento...',
+                    isComplete: false
+                }
             }
+
+            emitProgress(false)
 
             // Save to Firebase if user is authenticated
             if (currentUser && aggregate.success) {
                 try {
                     setStepDetails('Guardando datos en Firebase...')
+                    if (aggregate.meta) {
+                        aggregate.meta = {
+                            ...aggregate.meta,
+                            detail: 'Guardando datos en Firebase...',
+                            isComplete: false
+                        }
+                    }
+                    emitProgress(false)
 
                     // Create CSV dataset
                     const csvId = await DataService.createCSVDataset(
@@ -265,7 +353,7 @@ export default function UnifiedProcessor({ onProcessingComplete }: UnifiedProces
                         mediumConfidenceAddresses: aggregate.statistics.mediumConfidence,
                         lowConfidenceAddresses: aggregate.statistics.lowConfidence,
                         processingStatus: 'completed',
-                        completedAt: new Date() as any
+                        completedAt: Timestamp.now()
                     })
 
                     // Save address records
@@ -288,17 +376,15 @@ export default function UnifiedProcessor({ onProcessingComplete }: UnifiedProces
                                 lng: row.geocoding.longitude
                             }
                         } : {}),
-                        geocodingConfidence: row.status === 'high_confidence' ? 'high' as const :
-                            row.status === 'medium_confidence' ? 'medium' as const : 'low' as const,
+                        geocodingConfidence: row.status === 'high_confidence' ? 'high' :
+                            row.status === 'medium_confidence' ? 'medium' : 'low',
                         locationType: row.geocoding.locationType,
                         formattedAddress: row.geocoding.formattedAddress,
                         zipCode: row.zipCode,
                         status: 'processed' as const,
                         needsConfirmation: row.status === 'low_confidence',
                         // Use the Google Maps link from processing
-                        googleMapsLink: row.googleMapsLink || (row.geocoding.latitude && row.geocoding.longitude ? `https://www.google.com/maps?q=${row.geocoding.latitude},${row.geocoding.longitude}` : null),
-                        processedAt: Timestamp.now(),
-                        updatedAt: Timestamp.now()
+                        googleMapsLink: row.googleMapsLink
                     }))
 
                     const recordIds = await DataService.bulkSaveAddressRecords(addressRecords)
@@ -308,10 +394,33 @@ export default function UnifiedProcessor({ onProcessingComplete }: UnifiedProces
                         recordId: recordIds[index]
                     }))
 
+                    rowsByIndex.clear()
+                    aggregate.results.forEach(row => {
+                        rowsByIndex.set(row.rowIndex, row)
+                    })
+
+                    if (aggregate.meta) {
+                        aggregate.meta = {
+                            ...aggregate.meta,
+                            detail: 'Datos guardados exitosamente',
+                            isComplete: false
+                        }
+                    }
+                    emitProgress(false)
+
                     setStepDetails('Datos guardados exitosamente')
                 } catch (error) {
                     console.error('Error saving to Firebase:', error)
+                    const message = error instanceof Error ? error.message : null
                     setStepDetails('Procesamiento completado (error guardando en Firebase)')
+                    if (aggregate.meta) {
+                        aggregate.meta = {
+                            ...aggregate.meta,
+                            detail: `Procesamiento completado (error guardando en Firebase${message ? `: ${message}` : ''})`,
+                            isComplete: false
+                        }
+                    }
+                    emitProgress(false)
                 }
             }
 
@@ -319,16 +428,36 @@ export default function UnifiedProcessor({ onProcessingComplete }: UnifiedProces
 
             setCurrentStep('completed')
             setProgress(100)
-            setStepDetails('¡Procesamiento completado con éxito!')
+            const finalMeta = finalEvent.meta ?? null
+            const existingMeta = aggregate.meta ?? finalMeta ?? {
+                progress: 0,
+                currentStep: 'completed',
+                detail: '¡Procesamiento completado con éxito!',
+                totalRows,
+                processedRows: rowsByIndex.size,
+                processedBatches: 0,
+                totalBatches: Math.max(1, Math.ceil(totalRows / 50)),
+                isComplete: false
+            }
 
-            // Wait a moment before showing results
-            setTimeout(() => {
-                onProcessingComplete(aggregate)
-            }, 1000)
+            aggregate.meta = {
+                ...existingMeta,
+                progress: 100,
+                currentStep: 'completed',
+                detail: finalMeta?.detail ?? existingMeta.detail ?? '¡Procesamiento completado con éxito!',
+                totalRows: existingMeta.totalRows ?? totalRows,
+                processedRows: rowsByIndex.size,
+                isComplete: true
+            }
 
-        } catch (error: any) {
+            setStepDetails(aggregate.meta.detail ?? '¡Procesamiento completado con éxito!')
+
+            emitProgress(true)
+
+        } catch (error: unknown) {
             console.error('Error processing CSV:', error)
-            alert(`Error procesando CSV: ${error.message}`)
+            const message = error instanceof Error ? error.message : 'Error desconocido'
+            alert(`Error procesando CSV: ${message}`)
             setCurrentStep('upload')
             setProgress(0)
             setStepDetails('')
@@ -371,50 +500,8 @@ export default function UnifiedProcessor({ onProcessingComplete }: UnifiedProces
 
     return (
         <div className="space-y-6">
-            {/* Mode Selection */}
-            <Card className="p-6 bg-white/50 backdrop-blur-sm border border-orange-100 shadow-lg">
-                <h2 className="text-xl font-bold text-gray-900 mb-4 text-center">Choose Processing Mode</h2>
-                <div className="grid md:grid-cols-2 gap-4">
-                    <Button
-                        onClick={() => setProcessingMode('realtime')}
-                        variant={processingMode === 'realtime' ? 'default' : 'outline'}
-                        className={`p-6 h-auto flex flex-col items-center space-y-2 ${
-                            processingMode === 'realtime' 
-                                ? 'bg-gradient-to-r from-orange-500 to-amber-500 text-white' 
-                                : 'border-orange-200 hover:bg-orange-50'
-                        }`}
-                    >
-                        <Zap className="w-8 h-8" />
-                        <div className="text-center">
-                            <div className="font-semibold">Real-Time Processing</div>
-                            <div className="text-sm opacity-80">See results as they complete</div>
-                        </div>
-                    </Button>
-                    <Button
-                        onClick={() => setProcessingMode('standard')}
-                        variant={processingMode === 'standard' ? 'default' : 'outline'}
-                        className={`p-6 h-auto flex flex-col items-center space-y-2 ${
-                            processingMode === 'standard' 
-                                ? 'bg-gradient-to-r from-orange-500 to-amber-500 text-white' 
-                                : 'border-orange-200 hover:bg-orange-50'
-                        }`}
-                    >
-                        <Clock className="w-8 h-8" />
-                        <div className="text-center">
-                            <div className="font-semibold">Standard Processing</div>
-                            <div className="text-sm opacity-80">Process entire dataset at once</div>
-                        </div>
-                    </Button>
-                </div>
-            </Card>
-
-            {/* Conditional Rendering Based on Mode */}
-            {processingMode === 'realtime' ? (
-                <RealTimeProcessor onProcessingComplete={onProcessingComplete} />
-            ) : (
-                <>
-                    {/* Main Upload Card */}
-                    <Card className="p-8 bg-white/50 backdrop-blur-sm border border-orange-100 shadow-lg">
+            {/* Main Upload Card */}
+            <Card className="p-8 bg-white/50 backdrop-blur-sm border border-orange-100 shadow-lg">
                 <div className="text-center">
                     <div className="w-16 h-16 bg-gradient-to-r from-orange-500 to-amber-500 rounded-2xl flex items-center justify-center mx-auto mb-6 shadow-lg">
                         <Upload className="w-8 h-8 text-white" />
@@ -573,10 +660,8 @@ export default function UnifiedProcessor({ onProcessingComplete }: UnifiedProces
                 </div>
             </Card>
 
-                    {/* Real-time API Monitor */}
-                    <RealTimeApiMonitor isProcessing={isProcessing} />
-                </>
-            )}
+            {/* Real-time API Monitor */}
+            <RealTimeApiMonitor isProcessing={isProcessing} />
         </div>
     )
 }

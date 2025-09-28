@@ -1,6 +1,5 @@
 import { VercelRequest, VercelResponse } from '@vercel/node'
 import dotenv from 'dotenv'
-import { randomUUID } from 'crypto'
 import { zipCodeService } from '../backend/services/zipCodeService.js'
 import { cleanParaguayAddresses } from '../backend/cleanParaguayAddresses.js'
 
@@ -10,7 +9,7 @@ dotenv.config()
 // Batch processing configuration
 const BATCH_SIZE = 50 // rows per batch
 const MAX_CONCURRENT_BATCHES = 8 // simultaneous OpenAI requests
-const BATCH_TIMEOUT = 60000 // 60 seconds per batch
+const BATCH_TIMEOUT = Number(process.env.CLEANING_BATCH_TIMEOUT_MS) || 180000 // configurable timeout per batch (default 3 minutes)
 
 interface RowTimelineEvent {
   phase: string
@@ -74,8 +73,10 @@ async function processBatch(batchInfo: any, openaiApiKey: string, maxRetries = 3
       result.retryCount = attempt
 
       const cleaningStart = Date.now()
+      console.log(`[BATCH][${batchInfo.batchIndex}] Cleaning started at`, new Date(cleaningStart).toISOString())
       const cleanedCsv: string = await cleanParaguayAddresses(openaiApiKey, batchInfo.csvData)
       const cleaningEnd = Date.now()
+      console.log(`[BATCH][${batchInfo.batchIndex}] Cleaning finished at`, new Date(cleaningEnd).toISOString(), 'duration', cleaningEnd - cleaningStart, 'ms')
 
       // Parse the cleaned CSV
       const cleanedLines = cleanedCsv.trim().split('\n')
@@ -152,16 +153,23 @@ async function processBatchesConcurrently(
     }
 
     const batchInfo = batches[currentIndex]
+    console.log(`[BATCH_MANAGER] Worker picked batch index ${currentIndex}`, 'queue position', nextBatchIndex - 1)
 
-    const timeoutPromise = new Promise<BatchResult>((_, reject) =>
-      setTimeout(() => reject(new Error('Batch timeout')), BATCH_TIMEOUT)
-    )
+    let timeoutHandle: NodeJS.Timeout | null = null
+    const timeoutPromise = new Promise<BatchResult>((_, reject) => {
+      timeoutHandle = setTimeout(() => reject(new Error('Batch timeout')), BATCH_TIMEOUT)
+    })
 
     try {
       const batchResult = await Promise.race([
         processBatch(batchInfo, openaiApiKey),
         timeoutPromise
       ])
+
+      if (timeoutHandle) {
+        clearTimeout(timeoutHandle)
+        timeoutHandle = null
+      }
 
       results[currentIndex] = batchResult
       console.log(`[BATCH_MANAGER] Batch ${currentIndex} completed: ${batchResult.status}`)
@@ -176,6 +184,10 @@ async function processBatchesConcurrently(
         status: 'failed',
         error: error?.message || 'Batch timeout',
         processingTime: BATCH_TIMEOUT
+      }
+      if (timeoutHandle) {
+        clearTimeout(timeoutHandle)
+        timeoutHandle = null
       }
       results[currentIndex] = failedResult
       console.error(`[BATCH_MANAGER] Batch ${currentIndex} failed:`, error)
@@ -322,6 +334,49 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const batches = createBatches(csvLines, headerLine)
     console.log(`[BATCH][SETUP] Created ${batches.length} batches`)
 
+    let streamingStarted = false
+    const startStreaming = () => {
+      if (!streamingStarted) {
+        res.writeHead(200, {
+          'Content-Type': 'application/x-ndjson',
+          'Cache-Control': 'no-cache, no-transform',
+          Connection: 'keep-alive',
+          'Transfer-Encoding': 'chunked'
+        })
+        streamingStarted = true
+      }
+    }
+
+    const sendEvent = (event: unknown) => {
+      if (res.writableEnded) {
+        return
+      }
+      startStreaming()
+      res.write(`${JSON.stringify(event)}\n`)
+    }
+
+    const totalRows = totalDataRows
+    const progressMeta = {
+      progress: 0,
+      currentStep: 'geocoding',
+      detail: 'Inicializando procesamiento...',
+      totalRows,
+      processedRows: 0,
+      processedBatches: 0,
+      totalBatches: batches.length,
+      isComplete: false
+    }
+
+    sendEvent({ type: 'meta', meta: progressMeta })
+
+    const emitMeta = (detail?: string) => {
+      if (detail) {
+        progressMeta.detail = detail
+      }
+      progressMeta.progress = totalRows ? Math.min(100, Math.round((progressMeta.processedRows / totalRows) * 100)) : 0
+      sendEvent({ type: 'meta', meta: { ...progressMeta } })
+    }
+
     // Prepare original CSV rows for per-row fallback when LLM skipped rows
     const rawHeader = parseCleanCSVLine(headerLine || '')
     const rawLower = rawHeader.map(h => (h || '').toLowerCase())
@@ -337,6 +392,26 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     const cleanedData: any[] = []
 
+    const pickRawValue = (row: string[], index: number): string => {
+      if (!row || index < 0 || index >= row.length) return ''
+      return row[index] || ''
+    }
+
+    const buildFallbackCleanedRow = (rowIndex: number) => {
+      const rawRow = rawDataRows[rowIndex] || []
+      return {
+        originalAddress: pickRawValue(rawRow, idxAddress),
+        originalCity: pickRawValue(rawRow, idxCity),
+        originalState: pickRawValue(rawRow, idxState),
+        originalPhone: pickRawValue(rawRow, idxPhone),
+        address: pickRawValue(rawRow, idxAddress),
+        city: pickRawValue(rawRow, idxCity),
+        state: pickRawValue(rawRow, idxState),
+        phone: pickRawValue(rawRow, idxPhone),
+        email: pickRawValue(rawRow, idxEmail)
+      }
+    }
+
     const rowTimelines = new Map<number, RowTimeline>()
     const ensureRowTimeline = (rowIndex: number): RowTimeline => {
       const existing = rowTimelines.get(rowIndex)
@@ -349,10 +424,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       const timeline = ensureRowTimeline(rowIndex)
       timeline.events.push(event)
     }
-    const recordRowEvents = (rowIndex: number, events: RowTimelineEvent[]) => {
-      events.forEach(event => recordRowEvent(rowIndex, event))
-    }
-
     const mapsApiKey = process.env.GOOGLE_MAPS_API_KEY || process.env.VITE_GOOGLE_MAPS_API_KEY
     if (!mapsApiKey) {
       return res.status(500).json({ error: 'Google Maps API key not configured' })
@@ -360,7 +431,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     // Track OpenAI interactions for all batches
     const openaiStartTime = Date.now()
-    let batchInteractions: any[] = []
+    const batchInteractions: any[] = []
 
     const confidenceFor = (locationType: string | undefined) => {
       const map: Record<string, number> = {
@@ -461,10 +532,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }
 
     const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms))
-    const MAX_GEOCODE_CALLS_PER_SECOND = Number(process.env.GEOCODE_RATE_LIMIT_PER_SEC) || 50
+    const GEOCODE_BATCH_SIZE = Number(process.env.GEOCODE_BATCH_SIZE) || 50
+    const MAX_GEOCODE_CALLS_PER_SECOND = Number(process.env.GEOCODE_RATE_LIMIT_PER_SEC) || GEOCODE_BATCH_SIZE
     const BATCH_DELAY_MS = 1000
 
-    type GeocodeTask = { index: number, cleaned: any }
+    type GeocodeTask = { rowIndex: number, cleaned: any }
     type GeocodeTaskResult = {
       rowIndex: number
       result: any
@@ -478,6 +550,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     let highConfidence = 0
     let mediumConfidence = 0
     let lowConfidence = 0
+    let fallbackRowCount = 0
     let processedGeocodeCount = 0
     let geocodeBatchCounter = 0
     let cleaningCompleted = false
@@ -498,24 +571,24 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }
 
     const processGeocodeTask = async (task: GeocodeTask): Promise<GeocodeTaskResult> => {
-      const i = task.index
+      const rowIndex = task.rowIndex
       const cleaned = task.cleaned
 
-      if ((!cleaned.address || cleaned.address.trim() === '') && rawDataRows[i]) {
-        const raw = rawDataRows[i]
+      if ((!cleaned.address || cleaned.address.trim() === '') && rawDataRows[rowIndex]) {
+        const raw = rawDataRows[rowIndex]
         cleaned.address = idxAddress >= 0 ? (raw[idxAddress] || '') : ''
         cleaned.city = idxCity >= 0 ? (raw[idxCity] || '') : ''
         cleaned.state = idxState >= 0 ? (raw[idxState] || '') : ''
         cleaned.phone = idxPhone >= 0 ? (raw[idxPhone] || '') : ''
         cleaned.email = idxEmail >= 0 ? (raw[idxEmail] || '') : ''
-        console.warn(`[ROW_FALLBACK] Filled cleaned fields for row ${i} from raw CSV`)
+        console.warn(`[ROW_FALLBACK] Filled cleaned fields for row ${rowIndex} from raw CSV`)
       }
 
-      console.log(`\n--- GEOCODING ROW ${i} ---`)
-      console.log(`[GEOCODE][${i}][INPUT] Original: "${cleaned.originalAddress}"`)
-      console.log(`[GEOCODE][${i}][INPUT] Cleaned: "${cleaned.address}"`)
-      console.log(`[GEOCODE][${i}][INPUT] City: "${cleaned.city}"`)
-      console.log(`[GEOCODE][${i}][INPUT] State: "${cleaned.state}"`)
+      console.log(`\n--- GEOCODING ROW ${rowIndex} ---`)
+      console.log(`[GEOCODE][${rowIndex}][INPUT] Original: "${cleaned.originalAddress}"`)
+      console.log(`[GEOCODE][${rowIndex}][INPUT] Cleaned: "${cleaned.address}"`)
+      console.log(`[GEOCODE][${rowIndex}][INPUT] City: "${cleaned.city}"`)
+      console.log(`[GEOCODE][${rowIndex}][INPUT] State: "${cleaned.state}"`)
 
       const original = {
         address: cleaned.originalAddress,
@@ -526,10 +599,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
       try {
         const geocodeStartTime = Date.now()
-        recordRowEvent(i, { phase: 'geocode_started', timestamp: geocodeStartTime })
+        console.log(`[GEOCODE][${rowIndex}] Starting geocode at`, new Date(geocodeStartTime).toISOString(), 'queue size:', geocodeQueue.length)
+        recordRowEvent(rowIndex, { phase: 'geocode_started', timestamp: geocodeStartTime })
         const geo = await geocode(cleaned.address, cleaned.city, cleaned.state)
+        console.log(`[GEOCODE][${rowIndex}] Finished geocode request in`, Date.now() - geocodeStartTime, 'ms')
         const geocodeEndTime = Date.now()
-        recordRowEvent(i, {
+        recordRowEvent(rowIndex, {
           phase: 'geocode_completed',
           timestamp: geocodeEndTime,
           duration: geocodeEndTime - geocodeStartTime,
@@ -538,7 +613,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
         const geocodingInteraction = {
           timestamp: new Date().toISOString(),
-          rowIndex: i,
+          rowIndex,
           request: {
             address: cleaned.address,
             city: cleaned.city,
@@ -567,10 +642,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           }
         }
 
-        console.log(`[GEOCODE][${i}][OUTPUT] Status: ${geo?.status}`)
-        console.log(`[GEOCODE][${i}][OUTPUT] Raw results count: ${geo?.rawCount}`)
+        console.log(`[GEOCODE][${rowIndex}][OUTPUT] Status: ${geo?.status}`)
+        console.log(`[GEOCODE][${rowIndex}][OUTPUT] Raw results count: ${geo?.rawCount}`)
         if (geo?.best) {
-          console.log(`[GEOCODE][${i}][OUTPUT] Best result:`)
+          console.log(`[GEOCODE][${rowIndex}][OUTPUT] Best result:`)
           console.log(`  - Latitude: ${geo.best.latitude}`)
           console.log(`  - Longitude: ${geo.best.longitude}`)
           console.log(`  - Formatted: "${geo.best.formatted_address}"`)
@@ -578,51 +653,51 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           console.log(`  - Confidence Score: ${geo.best.confidence_score}`)
           console.log(`  - Description: ${geo.best.confidence_description}`)
         } else {
-          console.log(`[GEOCODE][${i}][OUTPUT] No best result found`)
+          console.log(`[GEOCODE][${rowIndex}][OUTPUT] No best result found`)
         }
 
         const geoConfidence = geo?.best?.confidence_score || 0
-        console.log(`[GEOCODE][${i}][CALCULATION] Geo Confidence: ${geoConfidence}`)
+        console.log(`[GEOCODE][${rowIndex}][CALCULATION] Geo Confidence: ${geoConfidence}`)
 
         let confidenceLevel: 'high' | 'medium' | 'low' = 'low'
         if (geoConfidence >= 0.8) {
           confidenceLevel = 'high'
-          console.log(`[GEOCODE][${i}][RESULT] HIGH CONFIDENCE`)
+          console.log(`[GEOCODE][${rowIndex}][RESULT] HIGH CONFIDENCE`)
         } else if (geoConfidence >= 0.6) {
           confidenceLevel = 'medium'
-          console.log(`[GEOCODE][${i}][RESULT] MEDIUM CONFIDENCE`)
+          console.log(`[GEOCODE][${rowIndex}][RESULT] MEDIUM CONFIDENCE`)
         } else {
-          console.log(`[GEOCODE][${i}][RESULT] LOW CONFIDENCE`)
+          console.log(`[GEOCODE][${rowIndex}][RESULT] LOW CONFIDENCE`)
         }
 
         let zipCodeResult: any = null
         if (geo?.best?.latitude && geo?.best?.longitude) {
           try {
-            console.log(`[ZIPCODE][${i}][INPUT] Coordinates: ${geo.best.latitude}, ${geo.best.longitude}`)
+            console.log(`[ZIPCODE][${rowIndex}][INPUT] Coordinates: ${geo.best.latitude}, ${geo.best.longitude}`)
             const zipLookupStart = Date.now()
-            recordRowEvent(i, { phase: 'zip_lookup_started', timestamp: zipLookupStart })
+            recordRowEvent(rowIndex, { phase: 'zip_lookup_started', timestamp: zipLookupStart })
             zipCodeResult = await zipCodeService.getZipCode(geo.best.latitude, geo.best.longitude)
             const zipLookupEnd = Date.now()
-            recordRowEvent(i, {
+            recordRowEvent(rowIndex, {
               phase: 'zip_lookup_completed',
               timestamp: zipLookupEnd,
               duration: zipLookupEnd - zipLookupStart
             })
-            console.log(`[ZIPCODE][${i}][OUTPUT] Result:`, zipCodeResult)
+            console.log(`[ZIPCODE][${rowIndex}][OUTPUT] Result:`, zipCodeResult)
           } catch (zipError) {
-            console.warn(`[ZIPCODE][${i}][ERROR] Failed to get zip code:`, zipError)
-            recordRowEvent(i, {
+            console.warn(`[ZIPCODE][${rowIndex}][ERROR] Failed to get zip code:`, zipError)
+            recordRowEvent(rowIndex, {
               phase: 'zip_lookup_failed',
               timestamp: Date.now(),
               details: { message: (zipError as Error)?.message ?? 'Unknown error' }
             })
           }
         } else {
-          console.log(`[ZIPCODE][${i}][SKIP] No coordinates available`)
+          console.log(`[ZIPCODE][${rowIndex}][SKIP] No coordinates available`)
         }
 
         const result = {
-          rowIndex: i,
+          rowIndex,
           original: {
             address: original?.address || '',
             city: original?.city || '',
@@ -658,7 +733,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             : null
         }
 
-        recordRowEvent(i, {
+        recordRowEvent(rowIndex, {
           phase: 'row_completed',
           timestamp: Date.now(),
           details: {
@@ -667,10 +742,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           }
         })
 
-        return { rowIndex: i, result, interaction: geocodingInteraction, confidenceLevel }
+        return { rowIndex, result, interaction: geocodingInteraction, confidenceLevel }
       } catch (error: any) {
-        console.error(`[GEOCODE][${i}][ERROR] Processing failed:`, error)
-        recordRowEvent(i, {
+        console.error(`[GEOCODE][${rowIndex}][ERROR] Processing failed:`, error)
+        recordRowEvent(rowIndex, {
           phase: 'geocode_failed',
           timestamp: Date.now(),
           details: {
@@ -680,7 +755,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
         const failedGeocodingInteraction = {
           timestamp: new Date().toISOString(),
-          rowIndex: i,
+          rowIndex,
           request: {
             address: cleaned.address,
             city: cleaned.city,
@@ -701,7 +776,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         }
 
         const failedResult = {
-          rowIndex: i,
+          rowIndex,
           original: {
             address: original?.address || '',
             city: original?.city || '',
@@ -729,8 +804,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           error: error.message,
           googleMapsLink: null
         }
-
-        recordRowEvent(i, {
+        recordRowEvent(rowIndex, {
           phase: 'row_failed',
           timestamp: Date.now(),
           details: {
@@ -738,14 +812,15 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           }
         })
 
-        return { rowIndex: i, result: failedResult, interaction: failedGeocodingInteraction, confidenceLevel: 'low' }
+        return { rowIndex, result: failedResult, interaction: failedGeocodingInteraction, confidenceLevel: 'low' }
       } finally {
-        console.log(`--- END ROW ${i} ---\n`)
+        console.log(`--- END ROW ${rowIndex} ---\n`)
       }
     }
 
     const geocodeScheduler = async () => {
       console.log('\n=== BATCH PROCESSING: Starting Geocoding ===')
+    console.log('[DEBUG] Current geocode queue length before loop:', geocodeQueue.length)
       console.log(`[GEOCODING][BATCH] Rate limit: ${MAX_GEOCODE_CALLS_PER_SECOND} req/sec`)
       console.log(`[GEOCODING][BATCH] Initial rows discovered: ${rawDataRows.length}`)
 
@@ -758,9 +833,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         }
 
         geocodeBatchCounter++
-        const batchSize = Math.min(MAX_GEOCODE_CALLS_PER_SECOND, geocodeQueue.length)
+        const desiredBatchSize = Math.max(1, Math.min(GEOCODE_BATCH_SIZE, MAX_GEOCODE_CALLS_PER_SECOND))
+        const batchSize = Math.min(desiredBatchSize, geocodeQueue.length)
         const batch = geocodeQueue.splice(0, batchSize)
-        console.log(`[GEOCODING][BATCH] Starting batch ${geocodeBatchCounter} (${batch.length} addresses)`)
+        console.log(`[GEOCODING][BATCH] Starting batch ${geocodeBatchCounter} (${batch.length}/${desiredBatchSize} addresses)`)
 
         const batchResults = await Promise.all(batch.map(processGeocodeTask))
 
@@ -778,6 +854,17 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           } else {
             lowConfidence++
           }
+
+          const timeline = rowTimelines.get(rowIndex)
+          sendEvent({
+            type: 'row',
+            rowIndex,
+            row: result,
+            timeline: timeline ? { rowIndex, events: timeline.events } : undefined
+          })
+
+          progressMeta.processedRows = processedGeocodeCount
+          emitMeta(`Geocodificada fila ${rowIndex + 1}`)
         })
 
         if (!cleaningCompleted || geocodeQueue.length > 0) {
@@ -792,8 +879,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     console.log('\n=== PARALLEL BATCH PROCESSING: Execution ===')
     console.log('[UNIFIED_PROCESS] Step 3/3: Geocoding addresses...')
 
-    const pendingBatchRows = new Map<number, any[]>()
-    let nextBatchToFlush = 0
+    let completedCleaningBatches = 0
 
     const geocodePipelinePromise = geocodeScheduler()
 
@@ -807,49 +893,66 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             target.events.push(...timeline.events)
           })
         }
-        if (batchResult.status === 'completed' && Array.isArray(batchResult.data)) {
-          pendingBatchRows.set(batchResult.batchIndex, batchResult.data)
 
-          let flushed = 0
-          while (pendingBatchRows.has(nextBatchToFlush)) {
-            const rows = pendingBatchRows.get(nextBatchToFlush) || []
-            pendingBatchRows.delete(nextBatchToFlush)
+        const startRow = batchResult.startRow ?? (batchResult.batchIndex * BATCH_SIZE + 1)
+        const endRow = batchResult.endRow ?? (startRow + Math.max(0, (batchResult.data?.length ?? 0) - 1))
+        const batchStartIndex = Math.max(0, startRow - 1)
+        const batchEndIndex = Math.min(rawDataRows.length - 1, Math.max(batchStartIndex, endRow - 1))
+        const expectedRowCount = batchEndIndex >= batchStartIndex ? (batchEndIndex - batchStartIndex + 1) : 0
+        const enqueuedIndexes = new Set<number>()
 
-            rows.forEach((row: any) => {
-              cleanedData.push(row)
-              const rowIndex = cleanedData.length - 1
-              recordRowEvent(rowIndex, { phase: 'geocode_enqueued', timestamp: Date.now() })
-              enqueueGeocodeTask({ index: rowIndex, cleaned: row })
-            })
+        if (batchResult.status === 'completed' && Array.isArray(batchResult.data) && batchResult.data.length > 0) {
+          batchResult.data.forEach((row: any, localIdx: number) => {
+            const globalIndex = batchStartIndex + localIdx
+            if (expectedRowCount > 0 && globalIndex > batchEndIndex) {
+              console.warn(`[PIPELINE] Ignoring extraneous cleaned row at global index ${globalIndex} from batch ${batchResult.batchIndex}`)
+              return
+            }
+            cleanedData[globalIndex] = row
+            enqueuedIndexes.add(globalIndex)
+            recordRowEvent(globalIndex, { phase: 'geocode_enqueued', timestamp: Date.now() })
+            enqueueGeocodeTask({ rowIndex: globalIndex, cleaned: row })
+          })
 
-            console.log(`[PIPELINE] Flushed batch ${nextBatchToFlush} (${rows.length} rows). Cleaned total: ${cleanedData.length}`)
-            nextBatchToFlush++
-            flushed++
-          }
-
-          if (flushed === 0) {
-            console.log(`[PIPELINE] Batch ${batchResult.batchIndex} ready; awaiting earlier batches for ordered flush.`)
+          const missingCount = Math.max(0, expectedRowCount - enqueuedIndexes.size)
+          if (missingCount > 0) {
+            console.warn(`[PIPELINE] Batch ${batchResult.batchIndex} returned ${enqueuedIndexes.size}/${expectedRowCount} rows. Filling ${missingCount} with raw-data fallback.`)
+          } else {
+            console.log(`[PIPELINE] Dispatched batch ${batchResult.batchIndex} (${enqueuedIndexes.size} rows) directly to geocoding queue`)
           }
         } else {
-          console.error(`[PIPELINE] Batch ${batchResult.batchIndex} failed or returned no data; skipping geocoding enqueue.`)
+          console.error(`[PIPELINE] Batch ${batchResult.batchIndex} failed or returned no data (${batchResult.status}). Using fallback rows.`)
         }
+
+        if (expectedRowCount > enqueuedIndexes.size) {
+          const fallbackStart = batchStartIndex
+          const fallbackEnd = Math.min(batchStartIndex + expectedRowCount - 1, rawDataRows.length - 1)
+          let fallbackCounter = 0
+          for (let globalIndex = fallbackStart; globalIndex <= fallbackEnd; globalIndex++) {
+            if (enqueuedIndexes.has(globalIndex)) continue
+            const fallbackRow = buildFallbackCleanedRow(globalIndex)
+            cleanedData[globalIndex] = fallbackRow
+            recordRowEvent(globalIndex, {
+              phase: 'cleaning_fallback',
+              timestamp: Date.now(),
+              details: {
+                batchIndex: batchResult.batchIndex,
+                reason: batchResult.status === 'completed' ? 'missing_cleaned_row' : batchResult.error || 'cleaning_failed'
+              }
+            })
+            enqueueGeocodeTask({ rowIndex: globalIndex, cleaned: fallbackRow })
+            enqueuedIndexes.add(globalIndex)
+            fallbackCounter++
+          }
+          fallbackRowCount += fallbackCounter
+          console.log(`[PIPELINE] Fallback enqueued ${fallbackCounter} raw rows for batch ${batchResult.batchIndex}`)
+        }
+
+        completedCleaningBatches++
+        progressMeta.processedBatches = completedCleaningBatches
+        emitMeta(`Lote ${completedCleaningBatches}/${batches.length} listo para geocodificación`)
       }
     )
-
-    while (pendingBatchRows.has(nextBatchToFlush)) {
-      const rows = pendingBatchRows.get(nextBatchToFlush) || []
-      pendingBatchRows.delete(nextBatchToFlush)
-
-      rows.forEach((row: any) => {
-        cleanedData.push(row)
-        const rowIndex = cleanedData.length - 1
-        recordRowEvent(rowIndex, { phase: 'geocode_enqueued', timestamp: Date.now() })
-        enqueueGeocodeTask({ index: rowIndex, cleaned: row })
-      })
-
-      console.log(`[PIPELINE] Flushed batch ${nextBatchToFlush} (${rows.length} rows) during cleanup. Cleaned total: ${cleanedData.length}`)
-      nextBatchToFlush++
-    }
 
     cleaningCompleted = true
     resolveQueue()
@@ -904,20 +1007,32 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     console.log(`[SUMMARY] High confidence: ${highConfidence}`)
     console.log(`[SUMMARY] Medium confidence: ${mediumConfidence}`)
     console.log(`[SUMMARY] Low confidence: ${lowConfidence}`)
+    console.log(`[SUMMARY] Fallback rows used: ${fallbackRowCount}`)
     const successRate = finalResults.length ? ((highConfidence + mediumConfidence) / finalResults.length * 100).toFixed(1) : '0.0'
     console.log(`[SUMMARY] Success rate: ${successRate}%`)
     console.log('=== End Batch Processing ===\n')
 
     console.log(`[UNIFIED_PROCESS] Processed ${finalResults.length} addresses`)
+    progressMeta.isComplete = true
+    progressMeta.processedRows = processedGeocodeCount
+    progressMeta.detail = '¡Procesamiento completado con éxito!'
+    progressMeta.progress = totalRows ? Math.min(100, Math.round((processedGeocodeCount / totalRows) * 100)) : 100
+    const jobCompleted = processedGeocodeCount >= totalRows
+    if (!jobCompleted) {
+      console.warn(`[SUMMARY] Incomplete processing detected: ${processedGeocodeCount}/${totalRows} rows geocoded`)
+    }
+    sendEvent({ type: 'meta', meta: { ...progressMeta } })
 
-    return res.json({
-      success: true,
+    const finalPayload = {
+      success: jobCompleted,
       totalProcessed: finalResults.length,
       statistics: {
         highConfidence,
         mediumConfidence,
         lowConfidence,
-        totalRows: finalResults.length
+        totalRows,
+        processedRows: processedGeocodeCount,
+        fallbackRows: fallbackRowCount
       },
       results: finalResults,
       debug: {
@@ -928,17 +1043,29 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           batchSize: BATCH_SIZE,
           maxConcurrentBatches: MAX_CONCURRENT_BATCHES,
           totalProcessingTime,
-          averageTimePerBatch: Math.round(totalProcessingTime / batches.length),
-          successRate: Math.round((successfulBatches / batches.length) * 100),
-          batchDetails: batchInteractions
+          averageTimePerBatch: Math.round(totalProcessingTime / Math.max(batches.length, 1)),
+          successRate: Math.round((successfulBatches / Math.max(batches.length, 1)) * 100),
+          batchDetails: batchInteractions,
+          fallbackRows: fallbackRowCount
         },
         geocodingInteractions,
         rowTimelines: finalRowTimelines
       }
-    })
+    }
+
+    sendEvent({ type: 'complete', result: finalPayload })
+    res.end()
 
   } catch (error: any) {
     console.error('[UNIFIED_PROCESS] Error:', error)
+    if (streamingStarted && !res.writableEnded) {
+      sendEvent({
+        type: 'error',
+        message: error?.message || 'Failed to process CSV data'
+      })
+      res.end()
+      return
+    }
     return res.status(500).json({ error: 'Failed to process CSV data', details: error.message })
   }
 }

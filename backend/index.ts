@@ -1,40 +1,66 @@
 import dotenv from 'dotenv'
 
-// Load environment variables FIRST
+// Load environment variables FIRST - try both .env and .env.local
 dotenv.config()
 dotenv.config({ path: '.env.local' })
 
 import express from 'express'
 import cors from 'cors'
-import multer from 'multer'
-import * as XLSX from 'xlsx'
 import { randomUUID } from 'crypto'
+import { doc, getDoc, updateDoc, setDoc, collection, query, where, getDocs, Timestamp, serverTimestamp } from 'firebase/firestore'
+import { db } from './config/firebase.js'
+import { smsService } from './services/smsService'
+import { emailService } from './services/emailService'
+import { zipCodeService } from './services/zipCodeService'
+import type { VercelRequest, VercelResponse } from '@vercel/node'
+import processCompleteHandler from '../api/process-complete'
+// Note: dynamically import the cleaner to avoid TS type declaration issues for .js module
 
 const app = express()
 const PORT = process.env.PORT || 3001
-const upload = multer()
 
-// Debug logging flag and helper
-const DEBUG_PIPELINE = process.env.DEBUG_PIPELINE === '1' || process.env.DEBUG === '1'
-function debugLog(message: string, details?: any, reqId?: string) {
-    if (!DEBUG_PIPELINE) return
-    const prefix = reqId ? `[${reqId}]` : ''
-    if (details === undefined) {
-        console.log(prefix, message)
-    } else {
-        try {
-            console.log(prefix, message, JSON.stringify(details))
-        } catch {
-            console.log(prefix, message, details)
-        }
-    }
+// Real-time updates infrastructure
+interface SSEClient {
+    userId: string
+    response: express.Response
 }
 
-// Enable CORS
+const sseClients: SSEClient[] = []
+
+// Function to notify all clients about address updates
+function notifyAddressUpdate(userId: string, addressId: string, updateData: any) {
+    const userClients = sseClients.filter(client => client.userId === userId)
+
+    const updateMessage = {
+        type: updateData.type || 'address_update',
+        addressId,
+        data: {
+            ...updateData,
+            timestamp: new Date().toISOString()
+        }
+    }
+
+    userClients.forEach(client => {
+        try {
+            client.response.write(`data: ${JSON.stringify(updateMessage)}\n\n`)
+        } catch (error) {
+            console.error('Error sending SSE update:', error)
+            // Remove disconnected client
+            const index = sseClients.indexOf(client)
+            if (index > -1) {
+                sseClients.splice(index, 1)
+            }
+        }
+    })
+}
+
+// Minimal server for extract -> clean -> geocode flow only
+
+// Enable CORS for all routes
 app.use(cors({
     origin: [
         'http://localhost:5173',
-        'http://localhost:5174', 
+        'http://localhost:5174',
         'http://localhost:5175',
         'http://localhost:3000'
     ],
@@ -45,69 +71,1222 @@ app.use(cors({
 
 app.use(express.json())
 
-// Health check
+// Health check endpoint
 app.get('/health', (req, res) => {
     res.json({ status: 'OK', message: 'GeoNorm API Server is running' })
 })
 
-// Simple CSV parsing utility
-const parseCSVLine = (line: string): string[] => {
-    const result: string[] = []
-    let current = ''
-    let inQuotes = false
+// Removed: registration/auth/profile/stats endpoints
 
-    for (let i = 0; i < line.length; i++) {
-        const char = line[i]
-        if (char === '"') {
-            inQuotes = !inQuotes
-        } else if (char === ',' && !inQuotes) {
-            result.push(current.trim())
-            current = ''
-        } else {
-            current += char
-        }
-    }
-    result.push(current.trim())
-    return result
-}
+// Removed: standalone geocoding and places endpoints (not used by Extract flow)
 
-// XLSX to CSV conversion
-app.post('/api/xlsx-to-csv', upload.single('file'), async (req, res) => {
+// Geocode both original and cleaned addresses, with optional components
+app.post('/api/geocode-both', async (req, res) => {
     try {
-        const reqId = randomUUID()
-        debugLog('XLSX->CSV: request received', { size: req.file?.size }, reqId)
-        
-        const fileBuffer = req.file?.buffer
-        if (!fileBuffer) {
-            return res.status(400).json({ error: 'No file uploaded' })
+        const { originalAddress, cleanedAddress, components } = req.body || {}
+        const apiKey = process.env.VITE_GOOGLE_MAPS_API_KEY
+
+        if (!apiKey) {
+            return res.status(500).json({ error: 'Google Maps API key not configured' })
         }
 
-        const workbook = XLSX.read(fileBuffer, { type: 'buffer' })
-        const sheetName = workbook.SheetNames[0]
-        if (!sheetName) {
-            return res.status(400).json({ error: 'No sheets found in workbook' })
-        }
-        
-        const worksheet = workbook.Sheets[sheetName]
-        debugLog('XLSX->CSV: converting sheet', { sheetName }, reqId)
-        const csv = XLSX.utils.sheet_to_csv(worksheet, { FS: ',', RS: '\n' })
+        // Validate addresses - prioritize cleaned addresses
+        const hasValidOriginal = originalAddress && originalAddress.trim() && originalAddress.trim() !== 'N/A' && originalAddress.trim().length >= 3
+        const hasValidCleaned = cleanedAddress && cleanedAddress.trim() && cleanedAddress.trim() !== 'N/A' && cleanedAddress.trim().length >= 3
 
-        res.setHeader('Content-Type', 'text/csv; charset=utf-8')
-        debugLog('XLSX->CSV: sending CSV response', { bytes: csv.length }, reqId)
-        res.send(csv.endsWith('\n') ? csv : csv + '\n')
-    } catch (error: any) {
-        console.error('[XLSX_TO_CSV] Error:', error)
-        res.status(500).json({ error: 'Failed to convert XLSX to CSV', details: error?.message })
+        if (!hasValidCleaned) {
+            return res.status(400).json({ error: 'Valid cleaned address must be provided' })
+        }
+
+        const buildComponents = (c?: any) => {
+            if (!c) return undefined
+            const parts: string[] = []
+            if (c.country) parts.push(`country:${c.country}`)
+            if (c.state) parts.push(`administrative_area:${c.state}`)
+            if (c.city) parts.push(`locality:${c.city}`)
+            if (c.postal_code) parts.push(`postal_code:${c.postal_code}`)
+            return parts.length ? parts.join('|') : undefined
+        }
+
+        const confidenceFor = (locationType: string | undefined) => {
+            const map: Record<string, number> = {
+                ROOFTOP: 1.0,
+                RANGE_INTERPOLATED: 0.8,
+                GEOMETRIC_CENTER: 0.6,
+                APPROXIMATE: 0.4
+            }
+            return locationType ? (map[locationType] ?? 0.5) : 0
+        }
+
+        const getConfidenceDescription = (locationType: string | undefined) => {
+            const descriptions: Record<string, string> = {
+                ROOFTOP: "Most precise - exact address match",
+                RANGE_INTERPOLATED: "High precision - interpolated within address range",
+                GEOMETRIC_CENTER: "Medium precision - center of building/area",
+                APPROXIMATE: "Low precision - approximate location"
+            }
+            return locationType ? descriptions[locationType] || "Unknown precision" : "No location type"
+        }
+
+        const geocode = async (address?: string, componentsStr?: string) => {
+            if (!address || address.trim() === '' || address.trim() === 'N/A' || address.trim().length < 3) {
+                console.log(`[GEOCODE] Skipping geocoding for invalid address: "${address}"`)
+                return null
+            }
+            let url = `https://maps.googleapis.com/maps/api/geocode/json?address=${encodeURIComponent(address)}&key=${apiKey}`
+            if (componentsStr) {
+                url += `&components=${encodeURIComponent(componentsStr)}`
+            }
+            const r = await fetch(url)
+            if (!r.ok) {
+                return { status: 'ERROR', error: `HTTP ${r.status}` }
+            }
+            const data: any = await r.json()
+            let best: any = null
+            if (data.status === 'OK' && Array.isArray(data.results) && data.results.length > 0) {
+                // Pick highest confidence
+                best = data.results.reduce((acc: any, cur: any) => {
+                    const score = confidenceFor(cur?.geometry?.location_type)
+                    if (!acc || score > acc.confidence_score) {
+                        const loc = cur.geometry.location
+                        return {
+                            latitude: loc.lat,
+                            longitude: loc.lng,
+                            formatted_address: cur.formatted_address,
+                            location_type: cur.geometry.location_type,
+                            confidence_score: score,
+                            confidence_description: getConfidenceDescription(cur.geometry.location_type)
+                        }
+                    }
+                    return acc
+                }, null)
+            }
+            return { status: data.status, best, rawCount: data.results?.length || 0 }
+        }
+
+        const componentsStr = buildComponents(components)
+        // Only geocode the cleaned address
+        const clean = await geocode(cleanedAddress, componentsStr)
+        const orig = null // Don't geocode original addresses
+
+        // Since we only geocode cleaned addresses, use that result
+        let chosen: 'cleaned' | 'original' | null = null
+        if (clean?.best) {
+            chosen = 'cleaned'
+        } else {
+            chosen = null
+        }
+
+        const lat = clean?.best?.latitude
+        const lng = clean?.best?.longitude
+
+        const staticMapPath = lat != null && lng != null
+            ? `/api/staticmap?lat=${lat}&lng=${lng}&zoom=14&size=600x300`
+            : null
+
+        // No persistence in simplified flow
+
+        res.json({
+            original: orig,
+            cleaned: { ...(clean || {}), usedComponents: componentsStr },
+            chosen,
+            staticMapUrl: staticMapPath,
+            confidence: clean?.best?.confidence_score || 0,
+            confidenceDescription: clean?.best?.confidence_description || 'No geocoding result',
+            locationType: clean?.best?.location_type || 'N/A'
+        })
+    } catch (error) {
+        console.error('[GEOCODE_BOTH] Error:', error)
+        res.status(500).json({ error: 'Failed to geocode addresses' })
     }
 })
 
-// Simplified streaming endpoint that delegates to the Vercel API
-app.post('/api/process-complete-stream', express.raw({ type: 'text/csv', limit: '10mb' }), async (req, res) => {
-    const reqId = randomUUID()
-    const csvData = req.body.toString('utf-8')
+// Static Maps proxy endpoint
+app.get('/api/staticmap', async (req, res) => {
+    try {
+        const { lat, lng, zoom = '14', size = '600x300' } = req.query
+        const apiKey = process.env.GOOGLE_MAPS_API_KEY || process.env.VITE_GOOGLE_MAPS_API_KEY
+        if (!apiKey) {
+            console.error('[STATIC_MAP] No API key found')
+            return res.status(500).json({ error: 'Google Maps API key not configured' })
+        }
+        if (!lat || !lng) {
+            console.error('[STATIC_MAP] Missing lat/lng:', { lat, lng })
+            return res.status(400).json({ error: 'lat and lng are required' })
+        }
 
-    if (!csvData) {
-        return res.status(400).json({ error: 'CSV data is required' })
+        const url = `https://maps.googleapis.com/maps/api/staticmap?center=${lat},${lng}&zoom=${zoom}&size=${size}&markers=color:red%7C${lat},${lng}&key=${apiKey}`
+        console.log('[STATIC_MAP] Requesting:', url.replace(apiKey, '[API_KEY]'))
+
+        const r = await fetch(url)
+        console.log('[STATIC_MAP] Google response status:', r.status)
+
+        if (!r.ok) {
+            const errorText = await r.text()
+            console.error('[STATIC_MAP] Google API error:', r.status, errorText)
+            return res.status(500).json({ error: `Google API error: ${r.status} - ${errorText}` })
+        }
+
+        const contentType = r.headers.get('content-type')
+        console.log('[STATIC_MAP] Content-Type from Google:', contentType)
+
+        if (contentType && contentType.includes('image')) {
+            res.setHeader('Content-Type', 'image/png')
+            res.setHeader('Cache-Control', 'public, max-age=3600')
+
+            // Use arrayBuffer for better compatibility
+            const arrayBuffer = await r.arrayBuffer()
+            const buffer = Buffer.from(arrayBuffer)
+            res.send(buffer)
+        } else {
+            const text = await r.text()
+            console.error('[STATIC_MAP] Unexpected response:', text)
+            res.status(500).json({ error: 'Unexpected response from Google Maps API' })
+        }
+    } catch (error: any) {
+        console.error('[STATIC_MAP] Error:', error)
+        res.status(500).json({ error: 'Failed to fetch static map', details: error.message })
+    }
+})
+
+// CSV field extraction endpoint
+app.post('/api/extract-fields', express.raw({ type: 'text/csv', limit: '10mb' }), async (req, res) => {
+    try {
+        const csvData = req.body.toString('utf-8')
+
+        if (!csvData) {
+            return res.status(400).json({ error: 'CSV data is required' })
+        }
+
+        // Parse CSV and extract the required fields
+        const lines = csvData.trim().split('\n')
+
+        // Better CSV parsing that handles quoted fields with commas
+        const parseCSVLine = (line: string): string[] => {
+            const result: string[] = []
+            let current = ''
+            let inQuotes = false
+
+            for (let i = 0; i < line.length; i++) {
+                const char = line[i]
+
+                if (char === '"') {
+                    inQuotes = !inQuotes
+                } else if (char === ',' && !inQuotes) {
+                    result.push(current.trim())
+                    current = ''
+                } else {
+                    current += char
+                }
+            }
+            result.push(current.trim())
+            return result
+        }
+
+        const headers = parseCSVLine(lines[0])
+
+        // Find column indices
+        const addressIndex = headers.findIndex((h: string) => h.includes('Buyer Address1'))
+        const cityIndex = headers.findIndex((h: string) => h.includes('Buyer City'))
+        const stateIndex = headers.findIndex((h: string) => h.includes('Buyer State'))
+        const phoneIndex = headers.findIndex((h: string) => h.includes('Buyer Phone'))
+
+        console.log('CSV Headers:', headers)
+        console.log('Column indices:', { addressIndex, cityIndex, stateIndex, phoneIndex })
+
+        if (addressIndex === -1 || cityIndex === -1 || stateIndex === -1 || phoneIndex === -1) {
+            return res.status(400).json({ error: 'Required columns not found in CSV' })
+        }
+
+        const extractedData = lines.slice(1).map((line: string, index: number) => {
+            const values = parseCSVLine(line)
+            const row = {
+                address: values[addressIndex] || '',
+                city: values[cityIndex] || '',
+                state: values[stateIndex] || '',
+                phone: values[phoneIndex] || ''
+            }
+            console.log(`Row ${index + 1}:`, row)
+            return row
+        }).filter((row: any) => row.address || row.city || row.state || row.phone) // Filter out empty rows
+
+        res.json({ data: extractedData })
+    } catch (error) {
+        console.error('CSV extraction error:', error)
+        res.status(500).json({ error: 'Failed to extract fields from CSV' })
+    }
+})
+
+// OpenAI address cleaning endpoint
+app.post('/api/clean-with-openai', async (req, res) => {
+    try {
+        const { extractedData } = req.body
+
+        if (!extractedData || !Array.isArray(extractedData)) {
+            return res.status(400).json({ error: 'Extracted data is required' })
+        }
+
+        const apiKey = process.env.OPENAI_API_KEY
+        if (!apiKey) {
+            return res.status(500).json({ error: 'OpenAI API key not configured' })
+        }
+
+        // Convert extracted data to CSV format for OpenAI
+        const csvData = [
+            'Address,City,State,Phone',
+            ...extractedData.map((row: any) =>
+                `"${row.address}","${row.city}","${row.state}","${row.phone}"`
+            )
+        ].join('\n')
+
+        console.log('Sending data to OpenAI for cleaning...')
+
+        // Dynamically import cleaning function (JS module) and call it
+        // @ts-ignore - JS module without TypeScript types
+        const cleanerModule: any = await import('./cleanParaguayAddresses.js')
+        const cleanedCsv: string = await cleanerModule.cleanParaguayAddresses(apiKey, csvData)
+
+        console.log('Received cleaned CSV from OpenAI')
+
+        // Parse the cleaned CSV using our robust parser
+        const parseCSVLine = (line: string): string[] => {
+            const result: string[] = []
+            let current = ''
+            let inQuotes = false
+
+            for (let i = 0; i < line.length; i++) {
+                const char = line[i]
+
+                if (char === '"') {
+                    inQuotes = !inQuotes
+                } else if (char === ',' && !inQuotes) {
+                    result.push(current.trim().replace(/^"|"$/g, ''))
+                    current = ''
+                } else {
+                    current += char
+                }
+            }
+            result.push(current.trim().replace(/^"|"$/g, ''))
+            return result
+        }
+
+        const lines = cleanedCsv.trim().split('\n')
+        const dataLines = lines.slice(1) // Skip header
+
+        const cleaned = dataLines.map((line: string, index: number) => {
+            const values = parseCSVLine(line)
+            console.log(`Parsed cleaned row ${index + 1}:`, values)
+
+            return {
+                address: values[0] || '',
+                city: values[1] || '',
+                state: values[2] || '',
+                phone: values[3] || '',
+                email: values[4] || ''
+            }
+        })
+
+        res.json({ data: cleaned })
+    } catch (error) {
+        console.error('OpenAI cleaning error:', error)
+        res.status(500).json({ error: 'Failed to clean data with OpenAI' })
+    }
+})
+
+// Address confirmation endpoints
+app.post('/api/send-confirmations', async (req, res) => {
+    try {
+        const { addresses } = req.body
+
+        if (!addresses || !Array.isArray(addresses)) {
+            return res.status(400).json({ error: 'Addresses array is required' })
+        }
+
+        // Prepare confirmations for SMS
+        const confirmations = addresses
+            .filter((addr: any) => addr.phone && addr.needsConfirmation)
+            .map((addr: any) => ({
+                phoneNumber: addr.phone,
+                originalAddress: addr.originalAddress,
+                cleanedAddress: addr.cleanedAddress,
+                confirmationUrl: `${process.env.FRONTEND_URL || 'http://localhost:5173'}/confirm/${addr.id}`
+            }))
+
+        if (confirmations.length === 0) {
+            return res.json({ message: 'No addresses require SMS confirmation', sent: 0 })
+        }
+
+        const results = await smsService.sendBulkConfirmations(confirmations)
+
+        res.json({
+            message: `SMS confirmations processed`,
+            sent: results.successful,
+            failed: results.failed,
+            errors: results.errors
+        })
+    } catch (error) {
+        console.error('Error sending confirmations:', error)
+        res.status(500).json({ error: 'Failed to send confirmation SMS' })
+    }
+})
+
+// Address confirmation response endpoints
+app.get('/confirm/:addressId/confirm', async (req, res) => {
+    try {
+        const { addressId } = req.params
+
+        // In a real implementation, you would:
+        // 1. Update the address status in Firebase to 'confirmed'
+        // 2. Log the confirmation
+
+        console.log(`Address ${addressId} confirmed via SMS`)
+
+        // Redirect to a confirmation page
+        res.redirect(`${process.env.FRONTEND_URL || 'http://localhost:5173'}/confirmation-success?status=confirmed&id=${addressId}`)
+    } catch (error) {
+        console.error('Error confirming address:', error)
+        res.status(500).json({ error: 'Failed to confirm address' })
+    }
+})
+
+app.get('/confirm/:addressId/reject', async (req, res) => {
+    try {
+        const { addressId } = req.params
+
+        // In a real implementation, you would:
+        // 1. Update the address status in Firebase to 'rejected'
+        // 2. Log the rejection
+
+        console.log(`Address ${addressId} rejected via SMS`)
+
+        // Redirect to a rejection page
+        res.redirect(`${process.env.FRONTEND_URL || 'http://localhost:5173'}/confirmation-success?status=rejected&id=${addressId}`)
+    } catch (error) {
+        console.error('Error rejecting address:', error)
+        res.status(500).json({ error: 'Failed to reject address' })
+    }
+})
+
+// Unified processing endpoint - delegates to the shared streaming handler
+app.post('/api/process-complete', express.raw({ type: 'text/csv', limit: '10mb' }), async (req, res) => {
+    try {
+        await processCompleteHandler(req as unknown as VercelRequest, res as unknown as VercelResponse)
+    } catch (error) {
+        console.error('Error streaming /api/process-complete:', error)
+        if (!res.headersSent) {
+            const message = error instanceof Error ? error.message : 'Failed to process CSV data'
+            res.status(500).json({ error: 'Failed to process CSV data', details: message })
+        } else {
+            res.end()
+        }
+    }
+})
+
+// Processing completion notification
+app.post('/api/notify-completion', async (req, res) => {
+    try {
+        const { phoneNumber, totalAddresses, pendingConfirmations } = req.body
+
+        if (!phoneNumber) {
+            return res.status(400).json({ error: 'Phone number is required' })
+        }
+
+        const success = await smsService.sendProcessingComplete(
+            phoneNumber,
+            totalAddresses || 0,
+            pendingConfirmations || 0
+        )
+
+        res.json({ success, message: success ? 'Notification sent' : 'Failed to send notification' })
+    } catch (error) {
+        console.error('Error sending completion notification:', error)
+        res.status(500).json({ error: 'Failed to send notification' })
+    }
+})
+
+// Location Sender SMS endpoints
+app.post('/api/send-location-sms', async (req, res) => {
+    try {
+        const { customers } = req.body
+
+        if (!customers || !Array.isArray(customers)) {
+            return res.status(400).json({ error: 'Customers array is required' })
+        }
+
+        const results = []
+        const baseUrl = process.env.FRONTEND_URL || 'http://localhost:5173'
+
+        for (const customer of customers) {
+            const locationUrl = `${baseUrl}/location?orderID=${encodeURIComponent(customer.phone)}`
+            const message = `Hola ${customer.name}! Para completar tu entrega, necesitamos tu ubicación exacta. Por favor haz clic en este enlace: ${locationUrl}`
+
+            try {
+                // Use existing SMS service
+                const success = await smsService.sendSMS(customer.phone, message)
+
+                results.push({
+                    success: success,
+                    customer,
+                    messageId: success ? 'sent' : undefined,
+                    locationUrl,
+                    error: success ? undefined : 'SMS sending failed'
+                })
+            } catch (error: any) {
+                results.push({
+                    success: false,
+                    customer,
+                    locationUrl,
+                    error: error.message
+                })
+            }
+        }
+
+        const successCount = results.filter(r => r.success).length
+        const failureCount = results.filter(r => !r.success).length
+
+        res.json({
+            totalCustomers: customers.length,
+            successCount,
+            failureCount,
+            results
+        })
+
+    } catch (error) {
+        console.error('Error sending location SMS:', error)
+        res.status(500).json({ error: 'Failed to send location SMS' })
+    }
+})
+
+app.post('/api/test-location-sms', async (req, res) => {
+    try {
+        const { phone } = req.body
+
+        if (!phone) {
+            return res.status(400).json({ error: 'Phone number is required' })
+        }
+
+        const baseUrl = process.env.FRONTEND_URL || 'http://localhost:5173'
+        const locationUrl = `${baseUrl}/location?orderID=TEST-${Date.now()}`
+        const message = `Hola! Este es un SMS de prueba. Para compartir tu ubicación, haz clic aquí: ${locationUrl}`
+
+        const success = await smsService.sendSMS(phone, message)
+
+        res.json({
+            success: success,
+            messageId: success ? 'sent' : undefined,
+            locationUrl,
+            error: success ? undefined : 'SMS sending failed'
+        })
+
+    } catch (error) {
+        console.error('Error sending test SMS:', error)
+        res.status(500).json({ error: 'Failed to send test SMS' })
+    }
+})
+
+app.post('/api/test-location-email', async (req, res) => {
+    try {
+        const { email, name } = req.body
+
+        if (!email) {
+            return res.status(400).json({ error: 'Email address is required' })
+        }
+
+        const baseUrl = process.env.FRONTEND_URL || 'http://localhost:5173'
+        const locationUrl = `${baseUrl}/location?orderID=TEST-${Date.now()}`
+        const customerName = name || 'Cliente'
+
+        const success = await emailService.sendLocationRequest(email, customerName, locationUrl)
+
+        res.json({
+            success: success,
+            messageId: success ? 'sent' : undefined,
+            locationUrl,
+            error: success ? undefined : 'Email sending failed'
+        })
+
+    } catch (error) {
+        console.error('Error sending test email:', error)
+        res.status(500).json({ error: 'Failed to send test email' })
+    }
+})
+
+// Location collection endpoints
+const locations: any[] = [] // In-memory storage for demo (use database in production)
+const addressUpdates: any[] = [] // Track address confirmation updates
+
+app.post('/api/address-records/location-links', async (req, res) => {
+    try {
+        const { addressIds, userId } = req.body || {}
+
+        if (!Array.isArray(addressIds) || addressIds.length === 0) {
+            return res.status(400).json({ error: 'addressIds array is required' })
+        }
+
+        if (!userId) {
+            return res.status(400).json({ error: 'userId is required' })
+        }
+
+        const baseUrl = process.env.FRONTEND_URL || 'http://localhost:5173'
+        const expiration = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000) // 7 days
+        const locationLinksCollection = collection(db, 'location_links')
+        const results: Array<{ addressId: string, token: string, url: string, status: string, expiresAt?: string }> = []
+
+        for (const addressId of addressIds) {
+            try {
+                const addressRef = doc(db, 'address_records', addressId)
+                const addressSnap = await getDoc(addressRef)
+
+                if (!addressSnap.exists()) {
+                    console.warn(`[LOCATION_LINK] Address record not found: ${addressId}`)
+                    continue
+                }
+
+                const addressData: any = addressSnap.data()
+                if (addressData.userId !== userId) {
+                    console.warn(`[LOCATION_LINK] User mismatch for address ${addressId}`)
+                    continue
+                }
+
+                const token = randomUUID()
+                const linkRef = doc(locationLinksCollection, token)
+
+                await setDoc(linkRef, {
+                    token,
+                    addressId,
+                    userId,
+                    createdAt: serverTimestamp(),
+                    expiresAt: Timestamp.fromDate(expiration),
+                    status: 'sent'
+                })
+
+                await updateDoc(addressRef, {
+                    locationLinkToken: token,
+                    locationLinkStatus: 'sent',
+                    locationLinkCreatedAt: serverTimestamp(),
+                    locationLinkExpiresAt: Timestamp.fromDate(expiration),
+                    updatedAt: serverTimestamp()
+                })
+
+                // Notify real-time listeners about the link generation
+                notifyAddressUpdate(userId, addressId, {
+                    locationLinkToken: token,
+                    locationLinkStatus: 'sent',
+                    locationLinkExpiresAt: expiration.toISOString(),
+                    type: 'link_generated'
+                })
+
+                results.push({
+                    addressId,
+                    token,
+                    url: `${baseUrl}/location?token=${token}`,
+                    status: 'sent',
+                    expiresAt: expiration.toISOString()
+                })
+            } catch (innerError) {
+                console.error('Error generating link for address', addressId, innerError)
+            }
+        }
+
+        res.json({ links: results })
+    } catch (error) {
+        console.error('Error creating location links:', error)
+        res.status(500).json({ error: 'Failed to create location links' })
+    }
+})
+
+// Send location links via email
+app.post('/api/send-location-links-email', async (req, res) => {
+    try {
+        const { addressIds, userId } = req.body || {}
+
+        if (!Array.isArray(addressIds) || addressIds.length === 0) {
+            return res.status(400).json({ error: 'addressIds array is required' })
+        }
+
+        if (!userId) {
+            return res.status(400).json({ error: 'userId is required' })
+        }
+
+        console.log(`[EMAIL_LINKS] Processing ${addressIds.length} addresses for user ${userId}`)
+        console.log(`[EMAIL_LINKS] Address IDs:`, addressIds)
+
+        const results: Array<{
+            addressId: string,
+            success: boolean,
+            email?: string,
+            error?: string
+        }> = []
+
+        for (const addressId of addressIds) {
+            try {
+                const addressRef = doc(db, 'address_records', addressId)
+                const addressSnap = await getDoc(addressRef)
+
+                if (!addressSnap.exists()) {
+                    console.warn(`[EMAIL_LINKS] Address record not found: ${addressId}`)
+                    results.push({ addressId, success: false, error: 'Address not found' })
+                    continue
+                }
+
+                const addressData: any = addressSnap.data()
+                if (addressData.userId !== userId) {
+                    console.warn(`[EMAIL_LINKS] User mismatch for address ${addressId}`)
+                    results.push({ addressId, success: false, error: 'Access denied' })
+                    continue
+                }
+
+                if (!addressData.cleanedEmail) {
+                    console.warn(`[EMAIL_LINKS] No email found for address ${addressId}`)
+                    console.warn(`[EMAIL_LINKS] Address data:`, JSON.stringify(addressData, null, 2))
+                    results.push({ addressId, success: false, error: 'No email address' })
+                    continue
+                }
+
+                // Generate or reuse location link
+                let token = addressData.locationLinkToken
+                if (!token) {
+                    token = randomUUID()
+                    const expiration = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000) // 7 days
+                    const locationLinksCollection = collection(db, 'location_links')
+                    const linkRef = doc(locationLinksCollection, token)
+
+                    await setDoc(linkRef, {
+                        token,
+                        addressId,
+                        userId,
+                        createdAt: serverTimestamp(),
+                        expiresAt: Timestamp.fromDate(expiration),
+                        status: 'sent'
+                    })
+
+                    await updateDoc(addressRef, {
+                        locationLinkToken: token,
+                        locationLinkStatus: 'sent',
+                        locationLinkCreatedAt: serverTimestamp(),
+                        locationLinkExpiresAt: Timestamp.fromDate(expiration),
+                        updatedAt: serverTimestamp()
+                    })
+                }
+
+                const baseUrl = process.env.FRONTEND_URL || 'http://localhost:5173'
+                const locationUrl = `${baseUrl}/location?token=${token}`
+                const customerName = 'Cliente' // Could be extracted from user data
+
+                console.log(`[EMAIL_LINKS] Attempting to send email to: ${addressData.cleanedEmail}`)
+                console.log(`[EMAIL_LINKS] Location URL: ${locationUrl}`)
+
+                const success = await emailService.sendLocationRequest(
+                    addressData.cleanedEmail,
+                    customerName,
+                    locationUrl
+                )
+
+                console.log(`[EMAIL_LINKS] Email send result for ${addressData.cleanedEmail}: ${success}`)
+
+                if (success) {
+                    // Notify real-time listeners about the email being sent
+                    notifyAddressUpdate(userId, addressId, {
+                        locationLinkToken: token,
+                        locationLinkStatus: 'sent',
+                        email: addressData.cleanedEmail,
+                        type: 'email_sent'
+                    })
+                }
+
+                results.push({
+                    addressId,
+                    success,
+                    email: addressData.cleanedEmail,
+                    error: success ? undefined : 'Email sending failed'
+                })
+
+            } catch (innerError) {
+                console.error('Error processing address for email', addressId, innerError)
+                results.push({
+                    addressId,
+                    success: false,
+                    error: 'Processing error'
+                })
+            }
+        }
+
+        const successCount = results.filter(r => r.success).length
+        const failureCount = results.filter(r => !r.success).length
+
+        console.log(`[EMAIL_LINKS] Results: ${successCount} sent, ${failureCount} failed`)
+
+        res.json({
+            totalProcessed: addressIds.length,
+            successCount,
+            failureCount,
+            results
+        })
+
+    } catch (error) {
+        console.error('Error sending location links via email:', error)
+        res.status(500).json({ error: 'Failed to send location links via email' })
+    }
+})
+
+// Debug endpoint to check email configuration and address data
+app.get('/api/debug-email-setup/:userId', async (req, res) => {
+    try {
+        const { userId } = req.params
+
+        // Check environment variables
+        const emailConfig = {
+            EMAIL_USER: process.env.EMAIL_USER ? '✅ Set' : '❌ Missing',
+            EMAIL_PASSWORD: process.env.EMAIL_PASSWORD ? '✅ Set' : '❌ Missing'
+        }
+
+        // Check if user has addresses with emails
+        const addressQuery = query(
+            collection(db, 'address_records'),
+            where('userId', '==', userId)
+        )
+
+        const addressSnapshot = await getDocs(addressQuery)
+        const addresses = addressSnapshot.docs.map(doc => ({
+            id: doc.id,
+            ...doc.data()
+        }))
+
+        const addressesWithEmail = addresses.filter((addr: any) => addr.cleanedEmail)
+
+        res.json({
+            emailConfig,
+            totalAddresses: addresses.length,
+            addressesWithEmail: addressesWithEmail.length,
+            sampleAddresses: addresses.slice(0, 3).map((addr: any) => ({
+                id: addr.id || 'no-id',
+                hasEmail: !!addr.cleanedEmail,
+                email: addr.cleanedEmail || 'none',
+                hasOriginalAddress: !!addr.originalAddress,
+                hasCleanedAddress: !!addr.cleanedAddress
+            }))
+        })
+    } catch (error) {
+        console.error('Debug email setup error:', error)
+        res.status(500).json({ error: 'Debug failed', details: error.message })
+    }
+})
+
+app.get('/api/location-link/:token', async (req, res) => {
+    try {
+        const { token } = req.params
+
+        if (!token) {
+            return res.status(400).json({ error: 'Token is required' })
+        }
+
+        const linkRef = doc(db, 'location_links', token)
+        const linkSnap = await getDoc(linkRef)
+
+        if (!linkSnap.exists()) {
+            return res.status(404).json({ error: 'Location link not found' })
+        }
+
+        const linkData: any = linkSnap.data()
+        const addressRef = doc(db, 'address_records', linkData.addressId)
+        const addressSnap = await getDoc(addressRef)
+
+        if (!addressSnap.exists()) {
+            return res.status(404).json({ error: 'Address record not found' })
+        }
+
+        const addressData: any = addressSnap.data()
+        const expiresAt = linkData.expiresAt?.toDate?.() as Date | undefined
+        const isExpired = expiresAt ? expiresAt.getTime() < Date.now() : false
+
+        if (isExpired && linkData.status !== 'expired') {
+            await updateDoc(addressRef, {
+                locationLinkStatus: 'expired',
+                updatedAt: serverTimestamp()
+            })
+            await updateDoc(linkRef, {
+                status: 'expired',
+                expiredAt: serverTimestamp()
+            })
+        }
+
+        res.json({
+            token,
+            addressId: linkData.addressId,
+            status: isExpired ? 'expired' : (linkData.status || addressData.locationLinkStatus || 'sent'),
+            cleanedAddress: addressData.cleanedAddress,
+            customerName: addressData.cleanedName || addressData.customerName || null,
+            expiresAt: expiresAt?.toISOString(),
+            userId: linkData.userId,
+            latitude: linkData.latitude || null,
+            longitude: linkData.longitude || null,
+            accuracy: linkData.accuracy || null
+        })
+    } catch (error) {
+        console.error('Error loading location link metadata:', error)
+        res.status(500).json({ error: 'Failed to load location link metadata' })
+    }
+})
+
+app.post('/api/location-link/:token/submit', async (req, res) => {
+    try {
+        const { token } = req.params
+        const {
+            latitude,
+            longitude,
+            accuracy,
+            confirmationType,
+            manualAddress,
+            addressFields,
+            mapAdjusted
+        } = req.body || {}
+
+        if (!token) {
+            return res.status(400).json({ error: 'Token is required' })
+        }
+
+        if (!db) {
+            console.error('Firebase database not initialized - check environment variables')
+            return res.status(500).json({
+                error: 'Database not available. Please check Firebase configuration in environment variables.',
+                details: 'Missing FIREBASE_API_KEY, FIREBASE_AUTH_DOMAIN, FIREBASE_PROJECT_ID, FIREBASE_STORAGE_BUCKET, FIREBASE_MESSAGING_SENDER_ID, or FIREBASE_APP_ID'
+            })
+        }
+
+        const linkRef = doc(db, 'location_links', token)
+        const linkSnap = await getDoc(linkRef)
+
+        if (!linkSnap.exists()) {
+            return res.status(404).json({ error: 'Location link not found' })
+        }
+
+        const linkData: any = linkSnap.data()
+        const addressRef = doc(db, 'address_records', linkData.addressId)
+        const addressSnap = await getDoc(addressRef)
+
+        if (!addressSnap.exists()) {
+            return res.status(404).json({ error: 'Address record not found' })
+        }
+
+        // Prepare update data based on confirmation type
+        const updateData: any = {
+            lastLocationUpdate: serverTimestamp(),
+            locationLinkStatus: 'submitted',
+            updatedAt: serverTimestamp(),
+            status: 'confirmed',
+            confirmationType: confirmationType || 'gps'
+        }
+
+        const linkUpdateData: any = {
+            status: 'submitted',
+            submittedAt: serverTimestamp(),
+            confirmationType: confirmationType || 'gps'
+        }
+
+        if ((confirmationType === 'address' || confirmationType === 'both') && (manualAddress || addressFields)) {
+            // Manual address confirmation
+            let confirmedAddress = manualAddress
+
+            if (addressFields && addressFields.street && addressFields.city && addressFields.state) {
+                confirmedAddress = `${addressFields.street}, ${addressFields.city}, ${addressFields.state}`
+                // Store structured address fields
+                updateData.addressFields = {
+                    street: addressFields.street.trim(),
+                    city: addressFields.city.trim(),
+                    state: addressFields.state.trim()
+                }
+                linkUpdateData.addressFields = updateData.addressFields
+            }
+
+            updateData.confirmedAddress = confirmedAddress ? confirmedAddress.trim() : ''
+            updateData.confirmationMethod = 'manual_address'
+            linkUpdateData.confirmedAddress = updateData.confirmedAddress
+        }
+
+        if ((confirmationType === 'gps' || confirmationType === 'both') && latitude && longitude) {
+            // GPS or map-adjusted location
+            const numericLatitude = typeof latitude === 'string' ? parseFloat(latitude) : latitude
+            const numericLongitude = typeof longitude === 'string' ? parseFloat(longitude) : longitude
+            const numericAccuracy = accuracy ? (typeof accuracy === 'string' ? parseFloat(accuracy) : accuracy) : null
+
+            if (isNaN(numericLatitude) || isNaN(numericLongitude)) {
+                return res.status(400).json({ error: 'Invalid latitude or longitude' })
+            }
+
+            updateData.coordinates = {
+                lat: numericLatitude,
+                lng: numericLongitude
+            }
+
+            if (numericAccuracy) {
+                updateData.coordinates.accuracy = numericAccuracy
+            }
+
+            // Update Google Maps link with new coordinates
+            updateData.googleMapsLink = `https://www.google.com/maps?q=${numericLatitude},${numericLongitude}`
+
+            updateData.confirmationMethod = mapAdjusted ? 'map_adjusted' : 'gps'
+
+            linkUpdateData.latitude = numericLatitude
+            linkUpdateData.longitude = numericLongitude
+            linkUpdateData.accuracy = numericAccuracy
+        }
+
+        // Validate that we have at least one type of data
+        if (confirmationType !== 'address' && confirmationType !== 'gps' && confirmationType !== 'both') {
+            return res.status(400).json({
+                error: 'Either coordinates (latitude/longitude) or address information is required'
+            })
+        }
+
+        await updateDoc(addressRef, updateData)
+        await updateDoc(linkRef, linkUpdateData)
+
+        // Notify real-time listeners about the update
+        const notificationData = {
+            ...updateData,
+            addressId: linkData.addressId,
+            timestamp: new Date().toISOString(),
+            type: 'location_updated'
+        }
+        notifyAddressUpdate(linkData.userId, linkData.addressId, notificationData)
+
+        res.json({
+            success: true,
+            message: 'Location confirmation submitted successfully',
+            confirmationType: confirmationType || 'gps'
+        })
+
+    } catch (error: any) {
+        console.error('Error submitting location for token:', error)
+        res.status(500).json({ error: 'Failed to submit location' })
+    }
+})
+
+app.post('/api/save-location', async (req, res) => {
+    try {
+        const { latitude, longitude, accuracy, orderID, userAgent } = req.body
+
+        if (!latitude || !longitude) {
+            return res.status(400).json({ error: 'Latitude and longitude are required' })
+        }
+
+        const locationData = {
+            id: Date.now().toString(),
+            latitude: parseFloat(latitude),
+            longitude: parseFloat(longitude),
+            accuracy: accuracy ? parseFloat(accuracy) : null,
+            orderID: orderID || null,
+            phoneNumber: orderID, // Using orderID as phone number for now
+            userAgent: userAgent || null,
+            timestamp: new Date().toISOString()
+        }
+
+        locations.push(locationData)
+
+        console.log(`[LOCATION] Saved location: ${latitude}, ${longitude} (Order: ${orderID})`)
+
+        res.json({ success: true, location: locationData })
+
+    } catch (error) {
+        console.error('Error saving location:', error)
+        res.status(500).json({ error: 'Failed to save location' })
+    }
+})
+
+app.get('/api/location-history', async (req, res) => {
+    try {
+        // Return locations sorted by timestamp (newest first)
+        const sortedLocations = locations.sort((a, b) =>
+            new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()
+        )
+
+        res.json(sortedLocations)
+
+    } catch (error) {
+        console.error('Error fetching location history:', error)
+        res.status(500).json({ error: 'Failed to fetch location history' })
+    }
+})
+
+// SMS Address Confirmation endpoints
+app.post('/api/send-location-confirmations', async (req, res) => {
+    try {
+        const { addresses } = req.body
+
+        if (!addresses || !Array.isArray(addresses)) {
+            return res.status(400).json({ error: 'Addresses array is required' })
+        }
+
+        const results = []
+        const baseUrl = process.env.FRONTEND_URL || 'http://localhost:5173'
+
+        for (const address of addresses) {
+            const confirmationId = `conf-${address.rowIndex}-${Date.now()}`
+            const confirmUrl = `${baseUrl}/confirm-address/${confirmationId}`
+
+            const message = `
+🏠 GeoNorm - Confirmación de Dirección
+
+Dirección procesada: ${address.cleanedAddress}
+
+¿Es correcta esta dirección?
+
+Confirmar: ${confirmUrl}/confirm
+Rechazar: ${confirmUrl}/reject
+
+Confianza actual: ${Math.round(address.confidence * 100)}%
+            `.trim()
+
+            try {
+                const success = await smsService.sendSMS(address.phone, message)
+
+                results.push({
+                    rowIndex: address.rowIndex,
+                    success: success,
+                    confirmationId,
+                    error: success ? undefined : 'SMS sending failed'
+                })
+
+                // Store confirmation request for tracking
+                if (success) {
+                    addressUpdates.push({
+                        confirmationId,
+                        rowIndex: address.rowIndex,
+                        address: address.cleanedAddress,
+                        phone: address.phone,
+                        status: 'pending',
+                        sentAt: new Date().toISOString()
+                    })
+                }
+
+            } catch (error: any) {
+                results.push({
+                    rowIndex: address.rowIndex,
+                    success: false,
+                    error: error.message
+                })
+            }
+        }
+
+        const successCount = results.filter(r => r.success).length
+        const failureCount = results.filter(r => !r.success).length
+
+        res.json({
+            totalAddresses: addresses.length,
+            successCount,
+            failureCount,
+            results
+        })
+
+    } catch (error) {
+        console.error('Error sending location confirmation SMS:', error)
+        res.status(500).json({ error: 'Failed to send location confirmation SMS' })
+    }
+})
+
+// Address confirmation response endpoints
+app.get('/confirm-address/:confirmationId/confirm', async (req, res) => {
+    try {
+        const { confirmationId } = req.params
+
+        const update = addressUpdates.find(u => u.confirmationId === confirmationId)
+        if (update) {
+            update.status = 'confirmed'
+            update.confirmedAt = new Date().toISOString()
+
+            console.log(`Address confirmed for row ${update.rowIndex}: ${update.address}`)
+        }
+
+        res.redirect(`${process.env.FRONTEND_URL || 'http://localhost:5173'}/confirmation-success?status=confirmed&id=${confirmationId}`)
+    } catch (error) {
+        console.error('Error confirming address:', error)
+        res.status(500).json({ error: 'Failed to confirm address' })
+    }
+})
+
+app.get('/confirm-address/:confirmationId/reject', async (req, res) => {
+    try {
+        const { confirmationId } = req.params
+
+        const update = addressUpdates.find(u => u.confirmationId === confirmationId)
+        if (update) {
+            update.status = 'rejected'
+            update.rejectedAt = new Date().toISOString()
+
+            console.log(`Address rejected for row ${update.rowIndex}: ${update.address}`)
+        }
+
+        res.redirect(`${process.env.FRONTEND_URL || 'http://localhost:5173'}/confirmation-success?status=rejected&id=${confirmationId}`)
+    } catch (error) {
+        console.error('Error rejecting address:', error)
+        res.status(500).json({ error: 'Failed to reject address' })
+    }
+})
+
+// Get address updates since timestamp (for real-time polling)
+app.get('/api/address-updates', async (req, res) => {
+    try {
+        const { since, userId } = req.query as { since?: string, userId?: string }
+
+        if (!userId) {
+            return res.status(400).json({ error: 'userId is required' })
+        }
+
+        const sinceTime = since ? new Date(parseInt(since, 10)) : new Date(0)
+        const addressCollection = collection(db, 'address_records')
+        const q = query(addressCollection, where('userId', '==', userId))
+        const snapshot = await getDocs(q)
+
+        const updates = snapshot.docs
+            .map(docSnap => ({ id: docSnap.id, ...(docSnap.data() as any) }))
+            .filter(record => {
+                const lastUpdate = record.lastLocationUpdate?.toDate?.() || record.updatedAt?.toDate?.()
+                if (!lastUpdate) return false
+                return lastUpdate.getTime() > sinceTime.getTime()
+            })
+            .map(record => {
+                const confidenceScore = record.geocodingConfidence === 'high'
+                    ? 0.95
+                    : record.geocodingConfidence === 'medium'
+                        ? 0.7
+                        : 0.4
+
+                return {
+                    addressId: record.id,
+                    rowIndex: record.rowIndex,
+                    coordinates: record.coordinates || null,
+                    status: record.geocodingConfidence === 'high'
+                        ? 'high_confidence'
+                        : record.geocodingConfidence === 'medium'
+                            ? 'medium_confidence'
+                            : 'low_confidence',
+                    locationLinkStatus: record.locationLinkStatus || null,
+                    locationLinkToken: record.locationLinkToken || null,
+                    locationLinkExpiresAt: record.locationLinkExpiresAt?.toDate?.()?.toISOString(),
+                    lastLocationUpdate: (record.lastLocationUpdate?.toDate?.() || record.updatedAt?.toDate?.())?.toISOString(),
+                    formattedAddress: record.formattedAddress || record.cleanedAddress || '',
+                    confidence: confidenceScore,
+                    confidenceDescription: record.locationLinkStatus === 'submitted'
+                        ? 'Ubicación confirmada por el cliente'
+                        : 'Actualización de dirección',
+                    locationType: record.locationType || 'USER_CONFIRMED'
+                }
+            })
+
+        res.json(updates)
+    } catch (error) {
+        console.error('Error fetching address updates:', error)
+        res.status(500).json({ error: 'Failed to fetch address updates' })
+    }
+})
+
+// Server-Sent Events endpoint for real-time updates
+app.get('/api/address-updates/stream', (req, res) => {
+    const { userId } = req.query as { userId?: string }
+
+    if (!userId) {
+        return res.status(400).json({ error: 'userId is required' })
     }
 
     // Set SSE headers
@@ -119,174 +1298,40 @@ app.post('/api/process-complete-stream', express.raw({ type: 'text/csv', limit: 
         'Access-Control-Allow-Headers': 'Cache-Control'
     })
 
-    const sendEvent = (event: string, data: any) => {
-        res.write(`event: ${event}\n`)
-        res.write(`data: ${JSON.stringify(data)}\n\n`)
-    }
+    // Send initial connection message
+    res.write(`data: ${JSON.stringify({ type: 'connected', message: 'Real-time updates connected' })}\n\n`)
 
-    try {
-        debugLog('STREAM: delegating to Vercel API', { bytes: csvData.length }, reqId)
-        
-        sendEvent('status', { phase: 'cleaning', message: 'Starting processing...', progress: 0 })
+    // Add client to the list
+    const client: SSEClient = { userId, response: res }
+    sseClients.push(client)
 
-        // Call the existing Vercel API endpoint  
-        const response = await fetch(`http://localhost:${PORT}/api/process-complete`, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'text/csv',
-            },
-            body: csvData,
-        })
-
-        if (!response.ok) {
-            throw new Error(`API error: ${response.status}`)
+    // Handle client disconnect
+    req.on('close', () => {
+        const index = sseClients.indexOf(client)
+        if (index > -1) {
+            sseClients.splice(index, 1)
         }
+        console.log(`SSE client disconnected for user: ${userId}`)
+    })
 
-        const result = await response.json()
-        
-        if (result.success && result.results) {
-            sendEvent('status', { phase: 'geocoding', message: 'Processing addresses...', progress: 50, totalRows: result.results.length })
-            
-            // Send results one by one with artificial delay for demo
-            for (let i = 0; i < result.results.length; i++) {
-                const row = result.results[i]
-                const progress = Math.round(((i + 1) / result.results.length) * 100)
-                
-                sendEvent('row_start', { rowIndex: i, address: row.cleaned.address, timestamp: Date.now() })
-                
-                // Artificial delay to show streaming effect
-                await new Promise(resolve => setTimeout(resolve, 100))
-                
-                sendEvent('row_complete', { 
-                    row, 
-                    duration: 100, 
-                    progress,
-                    stats: { 
-                        highConfidence: result.statistics.highConfidence,
-                        mediumConfidence: result.statistics.mediumConfidence, 
-                        lowConfidence: result.statistics.lowConfidence,
-                        total: i + 1
-                    }
-                })
+    // Keep connection alive
+    const keepAlive = setInterval(() => {
+        try {
+            res.write(`data: ${JSON.stringify({ type: 'ping' })}\n\n`)
+        } catch (error) {
+            clearInterval(keepAlive)
+            const index = sseClients.indexOf(client)
+            if (index > -1) {
+                sseClients.splice(index, 1)
             }
-
-            sendEvent('complete', {
-                totalProcessed: result.totalProcessed,
-                statistics: result.statistics
-            })
-        } else {
-            throw new Error('Processing failed')
         }
+    }, 30000) // Ping every 30 seconds
 
-        res.end()
-
-    } catch (error: any) {
-        console.error('[STREAM] Error:', error)
-        sendEvent('error', { error: error.message || 'Processing failed' })
-        res.end()
-    }
-})
-
-// Streaming XLSX endpoint
-app.post('/api/process-complete-xlsx-stream', upload.single('file'), async (req, res) => {
-    try {
-        const reqId = randomUUID()
-        const fileBuffer = req.file?.buffer
-        
-        if (!fileBuffer) {
-            return res.status(400).json({ error: 'No file uploaded' })
-        }
-
-        // Convert XLSX to CSV
-        const workbook = XLSX.read(fileBuffer, { type: 'buffer' })
-        const sheetName = workbook.SheetNames[0]
-        if (!sheetName) {
-            return res.status(400).json({ error: 'No sheets found in workbook' })
-        }
-        
-        const worksheet = workbook.Sheets[sheetName]
-        const csvData = XLSX.utils.sheet_to_csv(worksheet, { FS: ',', RS: '\n' })
-        
-        debugLog('XLSX_STREAM: converted to CSV', { bytes: csvData.length }, reqId)
-
-        // Set SSE headers
-        res.writeHead(200, {
-            'Content-Type': 'text/event-stream',
-            'Cache-Control': 'no-cache',
-            'Connection': 'keep-alive',
-            'Access-Control-Allow-Origin': '*',
-            'Access-Control-Allow-Headers': 'Cache-Control'
-        })
-
-        const sendEvent = (event: string, data: any) => {
-            res.write(`event: ${event}\n`)
-            res.write(`data: ${JSON.stringify(data)}\n\n`)
-        }
-
-        sendEvent('status', { phase: 'cleaning', message: 'Processing Excel file...', progress: 0 })
-
-        // Call the existing Vercel API endpoint with the converted CSV
-        const response = await fetch(`http://localhost:${PORT}/api/process-complete`, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'text/csv',
-            },
-            body: csvData,
-        })
-
-        if (!response.ok) {
-            throw new Error(`API error: ${response.status}`)
-        }
-
-        const result = await response.json()
-        
-        if (result.success && result.results) {
-            sendEvent('status', { phase: 'geocoding', message: 'Processing addresses...', progress: 50, totalRows: result.results.length })
-            
-            // Send results one by one with artificial delay for demo
-            for (let i = 0; i < result.results.length; i++) {
-                const row = result.results[i]
-                const progress = Math.round(((i + 1) / result.results.length) * 100)
-                
-                sendEvent('row_start', { rowIndex: i, address: row.cleaned.address, timestamp: Date.now() })
-                
-                // Artificial delay to show streaming effect
-                await new Promise(resolve => setTimeout(resolve, 100))
-                
-                sendEvent('row_complete', { 
-                    row, 
-                    duration: 100, 
-                    progress,
-                    stats: { 
-                        highConfidence: result.statistics.highConfidence,
-                        mediumConfidence: result.statistics.mediumConfidence, 
-                        lowConfidence: result.statistics.lowConfidence,
-                        total: i + 1
-                    }
-                })
-            }
-
-            sendEvent('complete', {
-                totalProcessed: result.totalProcessed,
-                statistics: result.statistics
-            })
-        } else {
-            throw new Error('Processing failed')
-        }
-
-        res.end()
-
-    } catch (error: any) {
-        console.error('[XLSX_STREAM] Error:', error)
-        res.status(500).json({ error: 'Failed to process XLSX file', details: error?.message })
-    }
+    req.on('close', () => {
+        clearInterval(keepAlive)
+    })
 })
 
 app.listen(PORT, () => {
-    console.log(`GeoNorm Express Server running on http://localhost:${PORT}`)
-    console.log('Available endpoints:')
-    console.log('  GET  /health')
-    console.log('  POST /api/xlsx-to-csv')
-    console.log('  POST /api/process-complete-stream')
-    console.log('  POST /api/process-complete-xlsx-stream')
+    console.log(`Server running on http://localhost:${PORT}`)
 })

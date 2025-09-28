@@ -7,24 +7,9 @@ import DataHistory from './components/DataHistory'
 import LocationCollection from './components/LocationCollection'
 import SMSTest from './components/SMSTest'
 import EmailTest from './components/EmailTest'
+import type { ProcessedRow, ProcessingResult } from './types/processing'
 
 type AppState = 'landing' | 'registration' | 'pipeline' | 'dashboard' | 'data-history' | 'location-collection' | 'sms-test' | 'email-test'
-
-interface ProcessingResult {
-  success: boolean
-  totalProcessed: number
-  statistics: {
-    highConfidence: number
-    mediumConfidence: number
-    lowConfidence: number
-    totalRows: number
-  }
-  results: any[]
-  debug?: {
-    batchProcessing?: any
-    geocodingInteractions?: any
-  }
-}
 
 function App() {
   const [currentView, setCurrentView] = useState<AppState>(() => {
@@ -39,6 +24,20 @@ function App() {
     return 'landing'
   })
   const [processingResult, setProcessingResult] = useState<ProcessingResult | null>(null)
+
+  const handleProcessingProgress = (result: ProcessingResult) => {
+    setProcessingResult(result)
+    if (currentView !== 'dashboard') {
+      setCurrentView('dashboard')
+    }
+  }
+
+  const handleProcessingComplete = (result: ProcessingResult) => {
+    setProcessingResult(result)
+    if (currentView !== 'dashboard') {
+      setCurrentView('dashboard')
+    }
+  }
 
   if (currentView === 'landing') {
     return (
@@ -102,7 +101,7 @@ function App() {
           <DataHistory
             onSelectDataset={(dataset, addresses) => {
               // Convert Firebase data to the format expected by DataDashboard
-              const convertedResults = addresses.map(addr => ({
+              const convertedResults: ProcessedRow[] = addresses.map(addr => ({
                 recordId: addr.id,
                 locationLinkToken: addr.locationLinkToken || undefined,
                 locationLinkStatus: addr.locationLinkStatus || undefined,
@@ -132,8 +131,10 @@ function App() {
                   locationType: addr.locationType || 'N/A',
                   staticMapUrl: null
                 },
+                zipCode: addr.zipCode || null,
                 status: addr.geocodingConfidence === 'high' ? 'high_confidence' :
-                  addr.geocodingConfidence === 'medium' ? 'medium_confidence' : 'low_confidence'
+                  addr.geocodingConfidence === 'medium' ? 'medium_confidence' : 'low_confidence',
+                googleMapsLink: addr.googleMapsLink || null
               }))
 
               const statistics = {
@@ -188,6 +189,7 @@ function App() {
             data={processingResult.results}
             statistics={processingResult.statistics}
             debug={processingResult.debug}
+            meta={processingResult.meta}
             onBack={() => setCurrentView('pipeline')}
           />
         </main>
@@ -261,10 +263,8 @@ function App() {
                 </div>
               </div>
               <UnifiedProcessor
-                onProcessingComplete={(result) => {
-                  setProcessingResult(result)
-                  setCurrentView('dashboard')
-                }}
+                onProcessingProgress={handleProcessingProgress}
+                onProcessingComplete={handleProcessingComplete}
               />
             </div>
           </div>

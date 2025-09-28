@@ -2,7 +2,7 @@
 
 ## Overview
 
-This implementation provides comprehensive visualization of all OpenAI and Geocoding API requests made during the address processing pipeline. The visualization system includes both real-time monitoring during processing and detailed post-processing analysis.
+This implementation provides comprehensive visualization of all OpenAI and Geocoding API requests made during the address processing pipeline. The visualization system now streams progress directly into the dashboard while processing and still offers detailed post-processing analysis once the run completes.
 
 ## Components
 
@@ -53,6 +53,8 @@ interface GeocodingInteraction {
 }
 ```
 
+When `meta.isComplete` becomes `true`, the run is finished and the final snapshot remains available for historical analysis.
+
 ### 2. RealTimeApiMonitor Component (`/frontend/components/RealTimeApiMonitor.tsx`)
 
 **Purpose**: Live monitoring of API requests during processing
@@ -70,9 +72,14 @@ interface GeocodingInteraction {
 ### 3. DataDashboard Integration
 
 The main dashboard now includes three tabs:
-1. **Dashboard**: Original results view
-2. **API Visualización**: New comprehensive API analysis
+1. **Dashboard**: Original results view with the new streaming status panel
+2. **API Visualización**: Comprehensive API analysis
 3. **DEBUG**: Original debug information
+
+The dashboard tab hosts a **Real-Time Processing** panel that:
+- Streams progress (progress bar, current step, batch counters) without waiting for the run to finish
+- Displays a compact per-row timeline using the same segments rendered in the API visualization
+- Updates confidence summaries in real time as batches finish
 
 ### 4. Data Flow
 
@@ -145,7 +152,30 @@ The `/api/process-complete.ts` endpoint now returns enhanced debug information:
           "error": null
         }
       }
+    ],
+    "rowTimelines": [
+      {
+        "rowIndex": 0,
+        "events": [
+          { "phase": "cleaning_started", "timestamp": 1705311045123 },
+          { "phase": "cleaning_completed", "timestamp": 1705311045990, "duration": 867 },
+          { "phase": "geocode_enqueued", "timestamp": 1705311046002 },
+          { "phase": "geocode_started", "timestamp": 1705311046050 },
+          { "phase": "geocode_completed", "timestamp": 1705311046392, "duration": 342 },
+          { "phase": "row_completed", "timestamp": 1705311046405, "details": { "status": "high_confidence" } }
+        ]
+      }
     ]
+  },
+  "meta": {
+    "progress": 72,
+    "currentStep": "geocoding",
+    "detail": "Procesando lote 2 de 3 (50 filas)",
+    "totalRows": 150,
+    "processedRows": 108,
+    "processedBatches": 2,
+    "totalBatches": 3,
+    "isComplete": false
   }
 }
 ```
