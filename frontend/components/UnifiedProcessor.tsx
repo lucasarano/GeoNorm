@@ -5,7 +5,9 @@ import { Button } from './shared/ui/button'
 import { Upload, FileText, Sparkles, MapPin, CheckCircle } from 'lucide-react'
 import { DataService } from '../services/dataService'
 import { useAuth } from '../contexts/AuthContext'
+import { api } from '../lib/api-config'
 import RealTimeApiMonitor from './RealTimeApiMonitor'
+import { clearApiMonitor } from '../lib/api-monitor'
 
 interface ProcessedRow {
     rowIndex: number
@@ -92,6 +94,7 @@ export default function UnifiedProcessor({ onProcessingComplete }: UnifiedProces
     const processCSV = async () => {
         if (!file) return
 
+        clearApiMonitor()
         setIsProcessing(true)
         setProgress(0)
 
@@ -170,25 +173,17 @@ export default function UnifiedProcessor({ onProcessingComplete }: UnifiedProces
                 console.log('[BATCH] Header:', header)
                 console.log('[BATCH] First 3 data lines:', dataLines.slice(start, Math.min(end, start + 3)))
 
-                const response = await fetch('/api/process-complete', {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'text/csv',
-                        'X-GeoNorm-Batch-Index': String(b),
-                        'X-GeoNorm-Batch-Start': String(start),
-                        'X-GeoNorm-Batch-End': String(end),
-                        'X-GeoNorm-Batch-TotalRows': String(dataLines.length)
-                    },
-                    body: batchCsv
+                const result: ProcessingResult = await api.processComplete(batchCsv, {
+                    batchIndex: b,
+                    batchStart: start,
+                    batchEnd: end,
+                    batchTotalRows: dataLines.length
                 })
 
-                if (!response.ok) {
-                    const errorBody = await response.text()
-                    console.error('Server error response (batch):', errorBody)
-                    throw new Error(errorBody || `Error en el servidor: ${response.status}`)
+                if (!result.success) {
+                    console.error('Server error response (batch):', result.error)
+                    throw new Error(result.error || 'Error en el servidor')
                 }
-
-                const result: ProcessingResult = await response.json()
 
                 // Reindex results to global row indices based on original order
                 const adjusted = result.results.map(r => ({

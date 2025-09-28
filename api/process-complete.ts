@@ -1,7 +1,6 @@
 import { VercelRequest, VercelResponse } from '@vercel/node'
 import dotenv from 'dotenv'
-import { randomUUID } from 'crypto'
-import { zipCodeService } from '../backend/services/zipCodeService.js'
+import zipCodeService from '../lib/services/zipCodeService.js'
 
 // Load environment variables
 dotenv.config()
@@ -20,6 +19,110 @@ interface BatchResult {
   error?: string
   processingTime?: number
   retryCount?: number
+}
+
+export interface UnifiedProcessingRow {
+  rowIndex: number
+  original: {
+    address: string
+    city: string
+    state: string
+    phone: string
+  }
+  cleaned: {
+    address: string
+    city: string
+    state: string
+    phone: string
+    email: string
+  }
+  geocoding: {
+    latitude: number | null
+    longitude: number | null
+    formattedAddress: string
+    confidence: number
+    confidenceDescription: string
+    locationType: string
+    staticMapUrl: string | null
+  }
+  zipCode: {
+    zipCode: string | null
+    department: string | null
+    district: string | null
+    neighborhood: string | null
+    confidence: 'high' | 'medium' | 'low' | 'none'
+  } | null
+  status: 'high_confidence' | 'medium_confidence' | 'low_confidence' | 'failed'
+  error?: string
+  googleMapsLink?: string | null
+}
+
+interface BatchProcessingDebug {
+  totalBatches: number
+  successfulBatches: number
+  failedBatches: number
+  batchSize: number
+  maxConcurrentBatches: number
+  totalProcessingTime: number
+  averageTimePerBatch: number
+  successRate: number
+  batchDetails: Array<{
+    batchIndex: number
+    startRow: number
+    endRow: number
+    status: string
+    processingTime?: number
+    error?: string
+    retryCount?: number
+  }>
+}
+
+interface GeocodingInteractionDebug {
+  timestamp: string
+  rowIndex: number
+  request: Record<string, unknown>
+  response: Record<string, unknown>
+  error?: string
+}
+
+export interface UnifiedProcessingDebug {
+  batchProcessing: BatchProcessingDebug
+  geocodingInteractions: GeocodingInteractionDebug[]
+  meta?: {
+    pipelineId: string
+    includeZipCodes: boolean
+    startedAt: string
+    totalBatches: number
+  }
+}
+
+export interface UnifiedProcessingOptions {
+  includeZipCodes?: boolean
+  metadata?: Record<string, unknown>
+}
+
+export interface UnifiedProcessingResult {
+  success: boolean
+  totalProcessed: number
+  statistics: {
+    highConfidence: number
+    mediumConfidence: number
+    lowConfidence: number
+    totalRows: number
+  }
+  results: UnifiedProcessingRow[]
+  debug: UnifiedProcessingDebug
+}
+
+export class PipelineError extends Error {
+  status: number
+  details?: string
+
+  constructor(status: number, message: string, details?: string) {
+    super(message)
+    this.status = status
+    this.details = details
+  }
 }
 
 // Utility function to split CSV into batches
@@ -43,7 +146,7 @@ function createBatches(csvLines: string[], headerLine: string): { batchIndex: nu
 }
 
 // Process a single batch with retry logic
-async function processBatch(batchInfo: any, openaiApiKey: string, maxRetries = 3): Promise<BatchResult> {
+async function processBatch(batchInfo: any, openaiApiKey: string, maxRetries = 3, pipelineId?: string): Promise<BatchResult> {
   const result: BatchResult = {
     batchIndex: batchInfo.batchIndex,
     startRow: batchInfo.startRow,
@@ -60,8 +163,11 @@ async function processBatch(batchInfo: any, openaiApiKey: string, maxRetries = 3
       result.retryCount = attempt
 
       // Dynamically import the cleaning module
+      console.log(`[BATCH][${pipelineId ?? 'unknown'}][${result.batchIndex}] Starting cleaning attempt ${attempt + 1}`)
+      // @ts-expect-error dynamic import targeting compiled JS module in backend
       const cleanerModule: any = await import('../backend/cleanParaguayAddresses.js')
       const cleanedCsv: string = await cleanerModule.cleanParaguayAddresses(openaiApiKey, batchInfo.csvData)
+      console.log(`[BATCH][${pipelineId ?? 'unknown'}][${result.batchIndex}] Cleaning attempt ${attempt + 1} completed, output size=${cleanedCsv.length}`)
 
       // Parse the cleaned CSV
       const cleanedLines = cleanedCsv.trim().split('\n')
@@ -86,17 +192,17 @@ async function processBatch(batchInfo: any, openaiApiKey: string, maxRetries = 3
       result.data = batchData
       result.processingTime = Date.now() - startTime
 
-      console.log(`[BATCH][${result.batchIndex}] Successfully processed ${batchData.length} rows in ${result.processingTime}ms`)
+      console.log(`[BATCH][${pipelineId ?? 'unknown'}][${result.batchIndex}] Successfully processed ${batchData.length} rows in ${result.processingTime}ms`)
       return result
 
     } catch (error: any) {
-      console.error(`[BATCH][${result.batchIndex}] Attempt ${attempt + 1} failed:`, error.message)
+      console.error(`[BATCH][${pipelineId ?? 'unknown'}][${result.batchIndex}] Attempt ${attempt + 1} failed:`, error.message)
 
       if (attempt === maxRetries) {
         result.status = 'failed'
         result.error = error.message
         result.processingTime = Date.now() - startTime
-        console.error(`[BATCH][${result.batchIndex}] Failed after ${maxRetries + 1} attempts`)
+        console.error(`[BATCH][${pipelineId ?? 'unknown'}][${result.batchIndex}] Failed after ${maxRetries + 1} attempts`)
         return result
       }
 
@@ -109,10 +215,8 @@ async function processBatch(batchInfo: any, openaiApiKey: string, maxRetries = 3
 }
 
 // Process batches with concurrency control
-async function processBatchesConcurrently(batches: any[], openaiApiKey: string): Promise<BatchResult[]> {
+async function processBatchesConcurrently(batches: any[], openaiApiKey: string, pipelineId?: string): Promise<BatchResult[]> {
   const results: BatchResult[] = []
-  const processingQueue: Promise<BatchResult>[] = []
-
   console.log(`[BATCH_MANAGER] Processing ${batches.length} batches with max concurrency ${MAX_CONCURRENT_BATCHES}`)
 
   for (let i = 0; i < batches.length; i += MAX_CONCURRENT_BATCHES) {
@@ -123,7 +227,7 @@ async function processBatchesConcurrently(batches: any[], openaiApiKey: string):
     // Process this group of batches concurrently
     const groupPromises = batchGroup.map(batch =>
       Promise.race([
-        processBatch(batch, openaiApiKey),
+        processBatch(batch, openaiApiKey, 3, pipelineId),
         new Promise<BatchResult>((_, reject) =>
           setTimeout(() => reject(new Error('Batch timeout')), BATCH_TIMEOUT)
         )
@@ -182,138 +286,67 @@ function parseCleanCSVLine(line: string): string[] {
   return result
 }
 
-export default async function handler(req: VercelRequest, res: VercelResponse) {
-  // Set CORS headers
-  res.setHeader('Access-Control-Allow-Origin', '*')
-  res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS')
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type')
-
-  if (req.method === 'OPTIONS') {
-    return res.status(200).end()
-  }
-
-  if (req.method !== 'POST') {
-    return res.status(405).json({ error: 'Method not allowed' })
-  }
+export async function runUnifiedProcessingPipeline(
+  csvData: string,
+  options: UnifiedProcessingOptions = {}
+): Promise<UnifiedProcessingResult> {
+  const includeZipCodes = options.includeZipCodes !== false
+  const pipelineId = options.metadata?.pipelineId
+    ? String(options.metadata.pipelineId)
+    : `pipeline-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
+  const startedAt = new Date()
 
   try {
-    // Debug logging
-    const contentType = req.headers['content-type'] || ''
-    console.log('[DEBUG] Request method:', req.method)
-    console.log('[DEBUG] Content-Type:', contentType)
-    // Batch metadata (optional headers from client)
-    const batchIndex = req.headers['x-geonorm-batch-index']
-    const batchStart = req.headers['x-geonorm-batch-start']
-    const batchEnd = req.headers['x-geonorm-batch-end']
-    const batchTotal = req.headers['x-geonorm-batch-totalrows']
-    if (batchIndex !== undefined) {
-      console.log(`[BATCH][META] index=${batchIndex} start=${batchStart} end=${batchEnd} totalRows=${batchTotal}`)
-    }
-    console.log('[DEBUG] Body type:', typeof req.body)
-    console.log('[DEBUG] Body has length:', req.body && typeof (req.body as any).length === 'number')
-
-    // Helper to read raw body when body parser didn't populate req.body
-    const readRawBody = async (request: any): Promise<string> => {
-      return await new Promise((resolve, reject) => {
-        try {
-          let data = ''
-          request.setEncoding && request.setEncoding('utf8')
-          request.on('data', (chunk: any) => {
-            data += typeof chunk === 'string' ? chunk : chunk.toString('utf8')
-          })
-          request.on('end', () => resolve(data))
-          request.on('error', (err: any) => reject(err))
-        } catch (err) {
-          reject(err)
-        }
-      })
+    if (options.metadata) {
+      console.log(`[UNIFIED_PROCESS][${pipelineId}][META]`, options.metadata)
     }
 
-    let csvData: string | undefined
-    if (typeof req.body === 'string') {
-      csvData = req.body
-    } else if ((req as any).body && Buffer.isBuffer((req as any).body)) {
-      csvData = (req as any).body.toString('utf8')
-    } else {
-      // Fallback: read the raw request stream
-      csvData = await readRawBody(req)
-    }
+    console.log(`[UNIFIED_PROCESS][${pipelineId}] Starting complete processing pipeline...`)
+    console.log(`[UNIFIED_PROCESS][${pipelineId}] Step 1/3: Delegating all field extraction to LLM (originals + cleaned)`) 
 
-    console.log('[DEBUG] Processed csvData type:', typeof csvData)
-    console.log('[DEBUG] Processed csvData length:', csvData ? csvData.length : 'undefined')
-    if (csvData) {
-      const preview = csvData.substring(0, 200)
-      const lineCount = csvData.split('\n').length
-      console.log(`[DEBUG] csvData preview (first 200 chars): ${preview}`)
-      console.log(`[DEBUG] csvData line count: ${lineCount}`)
-    }
-
-    if (!csvData) {
-      console.log('[DEBUG] ERROR: CSV data is empty or undefined')
-      return res.status(400).json({ error: 'CSV data is required' })
-    }
-
-    if (csvData.length < 10) {
-      console.log('[DEBUG] ERROR: CSV data too short:', csvData)
-      return res.status(400).json({ error: 'CSV data appears to be too short or invalid' })
-    }
-
-    console.log('[UNIFIED_PROCESS] Starting complete processing pipeline...')
-
-    // Step 1: Delegate all extraction (including originals) to LLM
-    console.log('[UNIFIED_PROCESS] Step 1/3: Delegating all field extraction to LLM (originals + cleaned)')
-
-    // Step 2: Clean with OpenAI using parallel batch processing
     console.log('[UNIFIED_PROCESS] Step 2/3: Cleaning with OpenAI using parallel batches...')
     const openaiApiKey = process.env.OPENAI_API_KEY
     if (!openaiApiKey) {
-      return res.status(500).json({ error: 'OpenAI API key not configured' })
+      throw new PipelineError(500, 'OpenAI API key not configured')
     }
 
-    // Prepare CSV for batch processing
     const csvForCleaning = csvData
     const csvLines = csvForCleaning.trim().split('\n')
     const headerLine = csvLines[0]
     const totalDataRows = csvLines.length - 1
 
     console.log('\n=== PARALLEL BATCH PROCESSING: Setup ===')
-    console.log('[BATCH][SETUP] Total CSV length:', csvForCleaning.length)
-    console.log('[BATCH][SETUP] Total data rows:', totalDataRows)
-    console.log('[BATCH][SETUP] Header line:', headerLine)
-    console.log('[BATCH][SETUP] Batch size:', BATCH_SIZE)
-    console.log('[BATCH][SETUP] Max concurrent batches:', MAX_CONCURRENT_BATCHES)
+    console.log(`[BATCH][${pipelineId}][SETUP] Total CSV length:`, csvForCleaning.length)
+    console.log(`[BATCH][${pipelineId}][SETUP] Total data rows:`, totalDataRows)
+    console.log(`[BATCH][${pipelineId}][SETUP] Header line:`, headerLine)
+    console.log(`[BATCH][${pipelineId}][SETUP] Batch size:`, BATCH_SIZE)
+    console.log(`[BATCH][${pipelineId}][SETUP] Max concurrent batches:`, MAX_CONCURRENT_BATCHES)
 
-    // Create batches
     const batches = createBatches(csvLines, headerLine)
-    console.log(`[BATCH][SETUP] Created ${batches.length} batches`)
+    console.log(`[BATCH][${pipelineId}][SETUP] Created ${batches.length} batches`)
 
-    // Track OpenAI interactions for all batches
     const openaiStartTime = Date.now()
-    let batchInteractions: any[] = []
+    console.log(`[UNIFIED_PROCESS][${pipelineId}] Launching OpenAI cleaning across ${batches.length} batches`)
+    const batchResults = await processBatchesConcurrently(batches, openaiApiKey, pipelineId)
 
-    // Process all batches concurrently
-    console.log('\n=== PARALLEL BATCH PROCESSING: Execution ===')
-    const batchResults = await processBatchesConcurrently(batches, openaiApiKey)
-
-    // Aggregate results and create final cleaned data
     const cleanedData: any[] = []
     let successfulBatches = 0
     let failedBatches = 0
-    let totalProcessingTime = Date.now() - openaiStartTime
+    const totalProcessingTime = Date.now() - openaiStartTime
+    const batchInteractions: any[] = []
 
     console.log('\n=== PARALLEL BATCH PROCESSING: Results ===')
     batchResults.forEach((result) => {
-      console.log(`[BATCH][RESULT] Batch ${result.batchIndex}: ${result.status} (rows ${result.startRow}-${result.endRow}, ${result.processingTime}ms)`)
+      console.log(`[BATCH][${pipelineId}][RESULT] Batch ${result.batchIndex}: ${result.status} (rows ${result.startRow}-${result.endRow}, ${result.processingTime}ms)`)
 
       if (result.status === 'completed' && result.data) {
         cleanedData.push(...result.data)
         successfulBatches++
       } else {
         failedBatches++
-        console.error(`[BATCH][RESULT] Batch ${result.batchIndex} failed: ${result.error}`)
+        console.error(`[BATCH][${pipelineId}][RESULT] Batch ${result.batchIndex} failed: ${result.error}`)
       }
 
-      // Track this batch interaction for debugging
       batchInteractions.push({
         batchIndex: result.batchIndex,
         startRow: result.startRow,
@@ -325,21 +358,17 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       })
     })
 
-    console.log(`[BATCH][SUMMARY] Successful batches: ${successfulBatches}/${batches.length}`)
-    console.log(`[BATCH][SUMMARY] Failed batches: ${failedBatches}/${batches.length}`)
-    console.log(`[BATCH][SUMMARY] Total processing time: ${totalProcessingTime}ms`)
-    console.log(`[BATCH][SUMMARY] Average time per batch: ${Math.round(totalProcessingTime / batches.length)}ms`)
-    console.log(`[BATCH][SUMMARY] Success rate: ${Math.round((successfulBatches / batches.length) * 100)}%`)
+    console.log(`[BATCH][${pipelineId}][SUMMARY][${pipelineId}] Successful batches: ${successfulBatches}/${batches.length}`)
+    console.log(`[BATCH][${pipelineId}][SUMMARY][${pipelineId}] Failed batches: ${failedBatches}/${batches.length}`)
+    console.log(`[BATCH][${pipelineId}][SUMMARY][${pipelineId}] Total processing time: ${totalProcessingTime}ms`)
+    console.log(`[BATCH][${pipelineId}][SUMMARY][${pipelineId}] Average time per batch: ${Math.round(totalProcessingTime / batches.length)}ms`)
+    console.log(`[BATCH][${pipelineId}][SUMMARY][${pipelineId}] Success rate: ${batches.length ? Math.round((successfulBatches / batches.length) * 100) : 0}%`)
     console.log('=== End Parallel Batch Processing ===\n')
 
-    // Handle fallback for failed batches using raw data
     if (failedBatches > 0) {
-      console.log(`[BATCH][FALLBACK] Processing ${failedBatches} failed batches using raw data fallback`)
-      // Implementation would extract from raw CSV for failed batches
-      // For now, we'll continue with successful data only
+      console.log(`[BATCH][${pipelineId}][FALLBACK] Processing ${failedBatches} failed batches using raw data fallback`)
     }
 
-    // Prepare original CSV rows for per-row fallback when LLM skipped rows
     const rawAllLines = csvForCleaning.trim().split('\n')
     const rawHeader = parseCleanCSVLine(rawAllLines[0] || '')
     const rawLower = rawHeader.map(h => (h || '').toLowerCase())
@@ -353,12 +382,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     console.log('[DEBUG] Cleaned rows:', cleanedData.length, 'Raw rows:', rawDataRows.length)
 
-    // Step 3: Real geocoding results via Google Maps
     console.log('[UNIFIED_PROCESS] Step 3/3: Geocoding addresses...')
 
     const mapsApiKey = process.env.GOOGLE_MAPS_API_KEY || process.env.VITE_GOOGLE_MAPS_API_KEY
     if (!mapsApiKey) {
-      return res.status(500).json({ error: 'Google Maps API key not configured' })
+      throw new PipelineError(500, 'Google Maps API key not configured')
     }
 
     const confidenceFor = (locationType: string | undefined) => {
@@ -371,7 +399,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       return locationType ? (map[locationType] ?? 0.5) : 0
     }
 
-    const getConfidenceDescription = (locationType: string | undefined) => {
+    const getConfidenceDescriptionLocal = (locationType: string | undefined) => {
       const descriptions: Record<string, string> = {
         ROOFTOP: 'Most precise - exact address match',
         RANGE_INTERPOLATED: 'High precision - interpolated within address range',
@@ -384,9 +412,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const geocode = async (address: string, city?: string, state?: string) => {
       if (!address || address.trim().length < 3) return null
 
-      console.log(`[GEOCODE][INPUT] Address: "${address}"`)
-      console.log(`[GEOCODE][INPUT] City: "${city}"`)
-      console.log(`[GEOCODE][INPUT] State: "${state}"`)
+      console.log(`[GEOCODE][${pipelineId}][INPUT] Address: "${address}"`)
+      console.log(`[GEOCODE][${pipelineId}][INPUT] City: "${city}"`)
+      console.log(`[GEOCODE][${pipelineId}][INPUT] State: "${state}"`)
 
       let url = `https://maps.googleapis.com/maps/api/geocode/json?address=${encodeURIComponent(address)}&key=${mapsApiKey}`
       const componentsUsed: string[] = ['country:PY']
@@ -396,32 +424,32 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         url += `&components=${encodeURIComponent(componentsUsed.join('|'))}`
       }
 
-      console.log(`[GEOCODE][API_CALL] Full URL: ${url}`)
-      console.log(`[GEOCODE][API_CALL] Components: ${componentsUsed.join(' | ')}`)
+      console.log(`[GEOCODE][${pipelineId}][API_CALL] Full URL: ${url}`)
+      console.log(`[GEOCODE][${pipelineId}][API_CALL] Components: ${componentsUsed.join(' | ')}`)
 
       const requestUrl = url
       const response = await fetch(requestUrl)
       let data: any = null
       try {
         data = await response.json()
-        console.log(`[GEOCODE][API_RESPONSE] Status: ${data?.status}`)
-        console.log(`[GEOCODE][API_RESPONSE] Results count: ${data?.results?.length || 0}`)
-        console.log(`[GEOCODE][API_RESPONSE] HTTP Status: ${response.status}`)
+        console.log(`[GEOCODE][${pipelineId}][API_RESPONSE] Status: ${data?.status}`)
+        console.log(`[GEOCODE][${pipelineId}][API_RESPONSE] Results count: ${data?.results?.length || 0}`)
+        console.log(`[GEOCODE][${pipelineId}][API_RESPONSE] HTTP Status: ${response.status}`)
         if (data?.error_message) {
-          console.log(`[GEOCODE][API_RESPONSE] Error: ${data.error_message}`)
+          console.log(`[GEOCODE][${pipelineId}][API_RESPONSE] Error: ${data.error_message}`)
         }
       } catch (parseError) {
-        console.warn('[GEOCODE][PARSE_ERROR] Unable to parse Google response as JSON', parseError)
+        console.warn(`[GEOCODE][${pipelineId}][PARSE_ERROR] Unable to parse Google response as JSON`, parseError)
       }
 
       const rawResults = Array.isArray(data?.results) ? data.results : []
       let best: any = null
 
       if (Array.isArray(rawResults) && rawResults.length > 0) {
-        console.log(`[GEOCODE][PROCESSING] Processing ${rawResults.length} results`)
+        console.log(`[GEOCODE][${pipelineId}][PROCESSING] Processing ${rawResults.length} results`)
         best = rawResults.reduce((acc: any, cur: any) => {
           const score = confidenceFor(cur?.geometry?.location_type)
-          console.log(`[GEOCODE][RESULT] Location type: ${cur?.geometry?.location_type}, Score: ${score}`)
+          console.log(`[GEOCODE][${pipelineId}][RESULT] Location type: ${cur?.geometry?.location_type}, Score: ${score}`)
           if (!acc || score > acc.confidence_score) {
             const loc = cur.geometry?.location || {}
             const result = {
@@ -430,21 +458,21 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
               formatted_address: cur.formatted_address,
               location_type: cur.geometry?.location_type,
               confidence_score: score,
-              confidence_description: getConfidenceDescription(cur.geometry?.location_type)
+              confidence_description: getConfidenceDescriptionLocal(cur.geometry?.location_type)
             }
-            console.log(`[GEOCODE][BEST] New best result: ${JSON.stringify(result, null, 2)}`)
+            console.log(`[GEOCODE][${pipelineId}][BEST] New best result: ${JSON.stringify(result, null, 2)}`)
             return result
           }
           return acc
         }, null)
       } else {
-        console.log(`[GEOCODE][NO_RESULTS] No results found for address: "${address}"`)
+        console.log(`[GEOCODE][${pipelineId}][NO_RESULTS] No results found for address: "${address}"`)
       }
 
       const status = data?.status || (response.ok ? 'UNKNOWN' : `HTTP_${response.status}`)
       const errorMessage = data?.error_message || (!response.ok ? `HTTP ${response.status}` : undefined)
 
-      console.log(`[GEOCODE][FINAL] Status: ${status}, Best result: ${best ? 'Found' : 'None'}`)
+      console.log(`[GEOCODE][${pipelineId}][FINAL] Status: ${status}, Best result: ${best ? 'Found' : 'None'}`)
 
       return {
         status,
@@ -459,15 +487,15 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       }
     }
 
-    const results: any[] = []
-    const geocodingInteractions: any[] = []
+    const results: UnifiedProcessingRow[] = []
+    const geocodingInteractions: GeocodingInteractionDebug[] = []
     let highConfidence = 0
     let mediumConfidence = 0
     let lowConfidence = 0
 
     console.log('\n=== BATCH PROCESSING: Starting Geocoding ===')
-    console.log(`[GEOCODING][BATCH] Processing ${cleanedData.length} addresses`)
-    console.log('[GEOCODING][BATCH] Addresses to geocode:')
+    console.log(`[GEOCODING][${pipelineId}][BATCH] Processing ${cleanedData.length} addresses`)
+    console.log(`[GEOCODING][${pipelineId}][BATCH] Addresses to geocode:`)
     cleanedData.forEach((item, idx) => {
       console.log(`  [${idx}]: "${item.address}" (city: "${item.city}", state: "${item.state}")`)
     })
@@ -475,7 +503,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     for (let i = 0; i < cleanedData.length; i++) {
       const cleaned = cleanedData[i]
-      // Per-row fallback: if cleaned row is empty, backfill from raw data
       if ((!cleaned.address || cleaned.address.trim() === '') && rawDataRows[i]) {
         const raw = rawDataRows[i]
         cleaned.address = idxAddress >= 0 ? (raw[idxAddress] || '') : ''
@@ -483,27 +510,27 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         cleaned.state = idxState >= 0 ? (raw[idxState] || '') : ''
         cleaned.phone = idxPhone >= 0 ? (raw[idxPhone] || '') : ''
         cleaned.email = idxEmail >= 0 ? (raw[idxEmail] || '') : ''
-        console.warn(`[ROW_FALLBACK] Filled cleaned fields for row ${i} from raw CSV`)
+        console.warn(`[ROW_FALLBACK][${pipelineId}] Filled cleaned fields for row ${i} from raw CSV`)
       }
 
       console.log(`\n--- GEOCODING ROW ${i} ---`)
-      console.log(`[GEOCODE][${i}][INPUT] Original: "${cleaned.originalAddress}"`)
-      console.log(`[GEOCODE][${i}][INPUT] Cleaned: "${cleaned.address}"`)
-      console.log(`[GEOCODE][${i}][INPUT] City: "${cleaned.city}"`)
-      console.log(`[GEOCODE][${i}][INPUT] State: "${cleaned.state}"`)
-      // Use AI-extracted ORIGINAL fields (uncleaned)
+      console.log(`[GEOCODE][${pipelineId}][${i}][INPUT] Original: "${cleaned.originalAddress}"`)
+      console.log(`[GEOCODE][${pipelineId}][${i}][INPUT] Cleaned: "${cleaned.address}"`)
+      console.log(`[GEOCODE][${pipelineId}][${i}][INPUT] City: "${cleaned.city}"`)
+      console.log(`[GEOCODE][${pipelineId}][${i}][INPUT] State: "${cleaned.state}"`)
+
       const original = {
         address: cleaned.originalAddress,
         city: cleaned.originalCity,
         state: cleaned.originalState,
         phone: cleaned.originalPhone
       }
+
       try {
         const geocodeStartTime = Date.now()
         const geo = await geocode(cleaned.address, cleaned.city, cleaned.state)
         const geocodeEndTime = Date.now()
 
-        // Capture geocoding interaction
         const geocodingInteraction = {
           timestamp: new Date().toISOString(),
           rowIndex: i,
@@ -512,22 +539,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             city: cleaned.city,
             state: cleaned.state,
             components: geo?.componentsUsed || ['country:PY'],
-            url: geo?.requestUrl || `https://maps.googleapis.com/maps/api/geocode/json?address=${encodeURIComponent(cleaned.address)}&key=${mapsApiKey}&components=country:PY`
+            url: geo?.requestUrl || `https://maps.googleapis.com/maps/api/geocode/json?address=${encodeURIComponent(cleaned.address)}&key=${mapsApiKey}`
           },
           response: {
-            status: geo?.status || 'ERROR',
+            status: geo?.status || 'UNKNOWN',
             results: geo?.rawResults || [],
-            bestResult: geo?.best ? {
-              formatted_address: geo.best.formatted_address,
-              geometry: {
-                location: {
-                  lat: geo.best.latitude,
-                  lng: geo.best.longitude
-                },
-                location_type: geo.best.location_type
-              },
-              confidence: geo.best.confidence_score
-            } : null,
+            bestResult: geo?.best || null,
             rawResponse: geo?.rawResponse || null,
             responseTime: geocodeEndTime - geocodeStartTime,
             httpStatus: geo?.httpStatus || null,
@@ -535,56 +552,36 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           }
         }
         geocodingInteractions.push(geocodingInteraction)
-        console.log(`[GEOCODE][${i}][OUTPUT] Status: ${geo?.status}`)
-        console.log(`[GEOCODE][${i}][OUTPUT] Raw results count: ${geo?.rawCount}`)
-        if (geo?.best) {
-          console.log(`[GEOCODE][${i}][OUTPUT] Best result:`)
-          console.log(`  - Latitude: ${geo.best.latitude}`)
-          console.log(`  - Longitude: ${geo.best.longitude}`)
-          console.log(`  - Formatted: "${geo.best.formatted_address}"`)
-          console.log(`  - Location Type: ${geo.best.location_type}`)
-          console.log(`  - Confidence Score: ${geo.best.confidence_score}`)
-          console.log(`  - Description: ${geo.best.confidence_description}`)
-        } else {
-          console.log(`[GEOCODE][${i}][OUTPUT] No best result found`)
-        }
+
         const geoConfidence = geo?.best?.confidence_score || 0
         const confidenceScore = geoConfidence
 
-        console.log(`[GEOCODE][${i}][CALCULATION] Geo Confidence: ${geoConfidence}`)
+        if (confidenceScore >= 0.8) highConfidence++
+        else if (confidenceScore >= 0.6) mediumConfidence++
+        else lowConfidence++
 
-        if (confidenceScore >= 0.8) {
-          highConfidence++
-          console.log(`[GEOCODE][${i}][RESULT] HIGH CONFIDENCE`)
-        } else if (confidenceScore >= 0.6) {
-          mediumConfidence++
-          console.log(`[GEOCODE][${i}][RESULT] MEDIUM CONFIDENCE`)
-        } else {
-          lowConfidence++
-          console.log(`[GEOCODE][${i}][RESULT] LOW CONFIDENCE`)
-        }
-
-        // Extract zip code if we have coordinates
         let zipCodeResult: any = null
-        if (geo?.best?.latitude && geo?.best?.longitude) {
+        if (includeZipCodes && geo?.best?.latitude && geo?.best?.longitude) {
           try {
-            console.log(`[ZIPCODE][${i}][INPUT] Coordinates: ${geo.best.latitude}, ${geo.best.longitude}`)
+            console.log(`[ZIPCODE][${pipelineId}][${i}] Looking up zip code...`)
             zipCodeResult = await zipCodeService.getZipCode(geo.best.latitude, geo.best.longitude)
-            console.log(`[ZIPCODE][${i}][OUTPUT] Result:`, zipCodeResult)
+            console.log(`[ZIPCODE][${pipelineId}][${i}][OUTPUT] Result:`, zipCodeResult)
           } catch (zipError) {
-            console.warn(`[ZIPCODE][${i}][ERROR] Failed to get zip code:`, zipError)
+            console.warn(`[ZIPCODE][${pipelineId}][${i}][ERROR] Failed to get zip code:`, zipError)
           }
+        } else if (!includeZipCodes) {
+          console.log(`[ZIPCODE][${pipelineId}][${i}][SKIP] Zip code lookup disabled`)
         } else {
-          console.log(`[ZIPCODE][${i}][SKIP] No coordinates available`)
+          console.log(`[ZIPCODE][${pipelineId}][${i}][SKIP] No coordinates available`)
         }
 
         results.push({
           rowIndex: i,
           original: {
-            address: original?.address || '',
-            city: original?.city || '',
-            state: original?.state || '',
-            phone: original?.phone || ''
+            address: original.address || '',
+            city: original.city || '',
+            state: original.state || '',
+            phone: original.phone || ''
           },
           cleaned: {
             address: cleaned.address,
@@ -610,15 +607,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             confidence: zipCodeResult.confidence
           } : null,
           status: confidenceScore >= 0.8 ? 'high_confidence' : confidenceScore >= 0.6 ? 'medium_confidence' : 'low_confidence',
-          // Generate simple Google Maps link
           googleMapsLink: geo?.best?.latitude && geo?.best?.longitude
             ? `https://www.google.com/maps?q=${geo.best.latitude},${geo.best.longitude}`
             : null
         })
       } catch (error: any) {
-        console.error(`[GEOCODE][${i}][ERROR] Processing failed:`, error)
+        console.error(`[GEOCODE][${pipelineId}][${i}][ERROR] Processing failed:`, error)
 
-        // Capture failed geocoding interaction
         const failedGeocodingInteraction = {
           timestamp: new Date().toISOString(),
           rowIndex: i,
@@ -670,7 +665,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           zipCode: null,
           status: 'failed',
           error: error.message,
-          // No Google Maps link for failed geocoding
           googleMapsLink: null
         })
       }
@@ -678,19 +672,17 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }
 
     console.log('\n=== BATCH PROCESSING: Final Summary ===')
-    console.log(`[SUMMARY] Total addresses processed: ${results.length}`)
-    console.log(`[SUMMARY] High confidence: ${highConfidence}`)
-    console.log(`[SUMMARY] Medium confidence: ${mediumConfidence}`)
-    console.log(`[SUMMARY] Low confidence: ${lowConfidence}`)
-    console.log(`[SUMMARY] Success rate: ${((highConfidence + mediumConfidence) / results.length * 100).toFixed(1)}%`)
+    console.log(`[SUMMARY][${pipelineId}] Total addresses processed: ${results.length}`)
+    console.log(`[SUMMARY][${pipelineId}] High confidence: ${highConfidence}`)
+    console.log(`[SUMMARY][${pipelineId}] Medium confidence: ${mediumConfidence}`)
+    console.log(`[SUMMARY][${pipelineId}] Low confidence: ${lowConfidence}`)
+    const successRate = results.length ? ((highConfidence + mediumConfidence) / results.length * 100) : 0
+    console.log(`[SUMMARY][${pipelineId}] Success rate: ${successRate.toFixed(1)}%`)
     console.log('=== End Batch Processing ===\n')
 
-    console.log(`[UNIFIED_PROCESS] Processed ${results.length} addresses`)
+    console.log(`[UNIFIED_PROCESS][${pipelineId}] Processed ${results.length} addresses`)
 
-    // Note: Data will be saved to Firebase by the frontend after processing
-    // The frontend will handle the Firebase integration using the existing DataService
-
-    return res.json({
+    return {
       success: true,
       totalProcessed: results.length,
       statistics: {
@@ -700,7 +692,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         totalRows: results.length
       },
       results,
-      // Enhanced debug information for frontend visualization
       debug: {
         batchProcessing: {
           totalBatches: batches.length,
@@ -709,16 +700,118 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           batchSize: BATCH_SIZE,
           maxConcurrentBatches: MAX_CONCURRENT_BATCHES,
           totalProcessingTime,
-          averageTimePerBatch: Math.round(totalProcessingTime / batches.length),
-          successRate: Math.round((successfulBatches / batches.length) * 100),
+          averageTimePerBatch: batches.length ? Math.round(totalProcessingTime / batches.length) : 0,
+          successRate: batches.length ? Math.round((successfulBatches / batches.length) * 100) : 0,
           batchDetails: batchInteractions
         },
-        geocodingInteractions: geocodingInteractions
+        geocodingInteractions,
+        meta: {
+          pipelineId,
+          includeZipCodes,
+          startedAt: startedAt.toISOString(),
+          totalBatches: batches.length
+        }
       }
-    })
-
+    }
   } catch (error: any) {
-    console.error('[UNIFIED_PROCESS] Error:', error)
-    return res.status(500).json({ error: 'Failed to process CSV data', details: error.message })
+    console.error(`[UNIFIED_PROCESS][${pipelineId}] Error:`, error)
+    if (error instanceof PipelineError) {
+      throw error
+    }
+    throw new PipelineError(500, 'Failed to process CSV data', error?.message || String(error))
+  }
+}
+
+export default async function handler(req: VercelRequest, res: VercelResponse) {
+  res.setHeader('Access-Control-Allow-Origin', '*')
+  res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS')
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-GeoNorm-Batch-Index, X-GeoNorm-Batch-Start, X-GeoNorm-Batch-End, X-GeoNorm-Batch-TotalRows')
+  res.setHeader('Access-Control-Max-Age', '86400')
+
+  if (req.method === 'OPTIONS') {
+    return res.status(200).end()
+  }
+
+  if (req.method !== 'POST') {
+    return res.status(405).json({ error: 'Method not allowed' })
+  }
+
+  try {
+    const contentType = req.headers['content-type'] || ''
+    console.log('[DEBUG] Request method:', req.method)
+    console.log('[DEBUG] Content-Type:', contentType)
+    console.log('[DEBUG] Body type:', typeof req.body)
+    console.log('[DEBUG] Body has length:', req.body && typeof (req.body as any).length === 'number')
+
+    const pipelineId = `handler-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
+    const metadata = {
+      batchIndex: req.headers['x-geonorm-batch-index'],
+      batchStart: req.headers['x-geonorm-batch-start'],
+      batchEnd: req.headers['x-geonorm-batch-end'],
+      batchTotal: req.headers['x-geonorm-batch-totalrows'],
+      pipelineId
+    }
+
+    if (metadata.batchIndex !== undefined) {
+      console.log('[BATCH][META]', metadata)
+    }
+
+    const readRawBody = async (request: any): Promise<string> => {
+      return await new Promise((resolve, reject) => {
+        try {
+          let data = ''
+          request.setEncoding && request.setEncoding('utf8')
+          request.on('data', (chunk: any) => {
+            data += typeof chunk === 'string' ? chunk : chunk.toString('utf8')
+          })
+          request.on('end', () => resolve(data))
+          request.on('error', (err: any) => reject(err))
+        } catch (err) {
+          reject(err)
+        }
+      })
+    }
+
+    let csvData: string | undefined
+    if (typeof req.body === 'string') {
+      csvData = req.body
+    } else if ((req as any).body && Buffer.isBuffer((req as any).body)) {
+      csvData = (req as any).body.toString('utf8')
+    } else {
+      csvData = await readRawBody(req)
+    }
+
+    console.log('[DEBUG] Processed csvData type:', typeof csvData)
+    console.log('[DEBUG] Processed csvData length:', csvData ? csvData.length : 'undefined')
+    if (csvData) {
+      const preview = csvData.substring(0, 200)
+      const lineCount = csvData.split('\n').length
+      console.log(`[DEBUG] csvData preview (first 200 chars): ${preview}`)
+      console.log(`[DEBUG] csvData line count: ${lineCount}`)
+    }
+
+    if (!csvData) {
+      return res.status(400).json({ error: 'CSV data is required' })
+    }
+
+    if (csvData.length < 10) {
+      return res.status(400).json({ error: 'CSV data appears to be too short or invalid' })
+    }
+
+    console.log(`[UNIFIED_PROCESS][${pipelineId}] Handler invoking pipeline (csv length=${csvData.length})`)
+    const handlerStart = Date.now()
+    const pipelineResult = await runUnifiedProcessingPipeline(csvData, {
+      metadata
+    })
+    const handlerDuration = Date.now() - handlerStart
+    console.log(`[UNIFIED_PROCESS][${pipelineId}] Pipeline completed successfully in ${handlerDuration}ms`)
+
+    return res.json(pipelineResult)
+  } catch (error: any) {
+    console.error('[UNIFIED_PROCESS] Handler Error:', error)
+    if (error instanceof PipelineError) {
+      return res.status(error.status).json({ error: error.message, details: error.details })
+    }
+    return res.status(500).json({ error: 'Failed to process CSV data', details: error?.message || String(error) })
   }
 }

@@ -5,10 +5,8 @@ import UnifiedProcessor from './components/UnifiedProcessor'
 import DataDashboard from './components/DataDashboard'
 import DataHistory from './components/DataHistory'
 import LocationCollection from './components/LocationCollection'
-import SMSTest from './components/SMSTest'
-import EmailTest from './components/EmailTest'
 
-type AppState = 'landing' | 'registration' | 'pipeline' | 'dashboard' | 'data-history' | 'location-collection' | 'sms-test' | 'email-test'
+type AppState = 'landing' | 'registration' | 'pipeline' | 'dashboard' | 'data-history' | 'location-collection'
 
 interface ProcessingResult {
   success: boolean
@@ -44,8 +42,6 @@ function App() {
     return (
       <LandingPage
         onGetStarted={() => setCurrentView('registration')}
-        onSMSTest={() => setCurrentView('sms-test')}
-        onEmailTest={() => setCurrentView('email-test')}
       />
     )
   }
@@ -66,13 +62,6 @@ function App() {
     return <LocationCollection orderID={orderID} token={token} />
   }
 
-  if (currentView === 'sms-test') {
-    return <SMSTest onBack={() => setCurrentView('landing')} />
-  }
-
-  if (currentView === 'email-test') {
-    return <EmailTest onBack={() => setCurrentView('landing')} />
-  }
 
   if (currentView === 'data-history') {
     return (
