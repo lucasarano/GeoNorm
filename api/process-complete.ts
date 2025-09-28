@@ -1,6 +1,6 @@
 import { VercelRequest, VercelResponse } from '@vercel/node'
 import dotenv from 'dotenv'
-import zipCodeService from '../lib/services/zipCodeService.js'
+import zipCodeService from '../backend/services/zipCodeService.js'
 
 // Load environment variables
 dotenv.config()
@@ -164,9 +164,10 @@ async function processBatch(batchInfo: any, openaiApiKey: string, maxRetries = 3
 
       // Dynamically import the cleaning module
       console.log(`[BATCH][${pipelineId ?? 'unknown'}][${result.batchIndex}] Starting cleaning attempt ${attempt + 1}`)
-      // @ts-expect-error dynamic import targeting compiled JS module in backend
-      const cleanerModule: any = await import('../backend/cleanParaguayAddresses.js')
-      const cleanedCsv: string = await cleanerModule.cleanParaguayAddresses(openaiApiKey, batchInfo.csvData)
+      const cleanerModule = await import('../backend/cleanParaguayAddresses.js') as {
+        cleanParaguayAddresses(apiKey: string, csvData: string): Promise<string>
+      }
+      const cleanedCsv = await cleanerModule.cleanParaguayAddresses(openaiApiKey, batchInfo.csvData)
       console.log(`[BATCH][${pipelineId ?? 'unknown'}][${result.batchIndex}] Cleaning attempt ${attempt + 1} completed, output size=${cleanedCsv.length}`)
 
       // Parse the cleaned CSV
@@ -302,7 +303,7 @@ export async function runUnifiedProcessingPipeline(
     }
 
     console.log(`[UNIFIED_PROCESS][${pipelineId}] Starting complete processing pipeline...`)
-    console.log(`[UNIFIED_PROCESS][${pipelineId}] Step 1/3: Delegating all field extraction to LLM (originals + cleaned)`) 
+    console.log(`[UNIFIED_PROCESS][${pipelineId}] Step 1/3: Delegating all field extraction to LLM (originals + cleaned)`)
 
     console.log('[UNIFIED_PROCESS] Step 2/3: Cleaning with OpenAI using parallel batches...')
     const openaiApiKey = process.env.OPENAI_API_KEY
