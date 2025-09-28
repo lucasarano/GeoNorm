@@ -8,6 +8,7 @@
     "dev:vercel": "PORT=${PORT:-5174} vite --host 0.0.0.0 --port ${PORT:-5174}",
     "build": "vite build",
     "lint": "eslint .",
+    "lint:check": "npm run lint && npx tsc --noEmit",
     "preview": "vite preview",
     "server": "tsx backend/index.ts",
     "server:dev": "nodemon --exec tsx backend/index.ts",
@@ -45,6 +46,9 @@
     "twilio": "^5.9.0",
     "uuid": "^10.0.0",
     "xlsx": "^0.18.5"
+  },
+  "engines": {
+    "node": "20.x"
   },
   "devDependencies": {
     "@eslint/js": "^9.33.0",

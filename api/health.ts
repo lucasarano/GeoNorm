@@ -38,12 +38,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             version: '2.0.0'
         })
 
-    } catch (error: any) {
+    } catch (error: unknown) {
         console.error('Health check error:', error)
         res.status(500).json({
             status: 'ERROR',
             message: 'Health check failed',
-            error: error.message
+            error: error instanceof Error ? error.message : "Unknown error"
         })
     }
 }

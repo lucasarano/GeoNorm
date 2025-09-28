@@ -5,8 +5,10 @@ import UnifiedProcessor from './components/UnifiedProcessor'
 import DataDashboard from './components/DataDashboard'
 import DataHistory from './components/DataHistory'
 import LocationCollection from './components/LocationCollection'
+import Documentation from './components/Documentation'
+import ApiKeyDashboard from './components/ApiKeyDashboard'
 
-type AppState = 'landing' | 'registration' | 'pipeline' | 'dashboard' | 'data-history' | 'location-collection'
+type AppState = 'landing' | 'registration' | 'pipeline' | 'dashboard' | 'data-history' | 'location-collection' | 'documentation' | 'api-keys'
 
 interface ProcessingResult {
   success: boolean
@@ -26,15 +28,30 @@ interface ProcessingResult {
 
 function App() {
   const [currentView, setCurrentView] = useState<AppState>(() => {
-    // Check if this is a location collection URL
+    // Check URL path for different views
     const path = window.location.pathname
     const params = new URLSearchParams(window.location.search)
 
     if (path === '/location' || params.has('orderID') || params.has('token')) {
       return 'location-collection'
     }
+    if (path === '/documentation' || path === '/docs') {
+      return 'documentation'
+    }
+    if (path === '/api-keys' || path === '/dashboard') {
+      return 'api-keys'
+    }
 
     return 'landing'
+  })
+  const [userId] = useState(() => {
+    // Get or generate user ID
+    let id = localStorage.getItem('geonorm-user-id')
+    if (!id) {
+      id = `user-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+      localStorage.setItem('geonorm-user-id', id)
+    }
+    return id
   })
   const [processingResult, setProcessingResult] = useState<ProcessingResult | null>(null)
 
@@ -42,6 +59,7 @@ function App() {
     return (
       <LandingPage
         onGetStarted={() => setCurrentView('registration')}
+        onNavigate={(view) => setCurrentView(view)}
       />
     )
   }
@@ -60,6 +78,61 @@ function App() {
     const orderID = params.get('orderID') || undefined
     const token = params.get('token') || undefined
     return <LocationCollection orderID={orderID} token={token} />
+  }
+
+  if (currentView === 'documentation') {
+    return <Documentation />
+  }
+
+  if (currentView === 'api-keys') {
+    return (
+      <div className="min-h-screen bg-gray-50">
+        {/* Header */}
+        <header className="bg-white border-b">
+          <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center space-x-3">
+                <div className="w-10 h-10 bg-gradient-to-r from-orange-500 to-amber-500 rounded-xl flex items-center justify-center shadow-lg">
+                  <svg className="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z" />
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 11a3 3 0 11-6 0 3 3 0 016 0z" />
+                  </svg>
+                </div>
+                <div>
+                  <h1 className="text-2xl font-bold text-gray-900">GeoNorm API Dashboard</h1>
+                  <p className="text-sm text-gray-600">Manage your API keys and monitor usage</p>
+                </div>
+              </div>
+              <div className="flex items-center space-x-4">
+                <button
+                  onClick={() => setCurrentView('documentation')}
+                  className="text-gray-600 hover:text-blue-600 transition-colors duration-200 text-sm font-medium"
+                >
+                  📚 Documentation
+                </button>
+                <button
+                  onClick={() => setCurrentView('pipeline')}
+                  className="text-gray-600 hover:text-orange-600 transition-colors duration-200 text-sm font-medium"
+                >
+                  🧪 Try Pipeline
+                </button>
+                <button
+                  onClick={() => setCurrentView('landing')}
+                  className="text-gray-600 hover:text-orange-600 transition-colors duration-200 text-sm font-medium"
+                >
+                  ← Home
+                </button>
+              </div>
+            </div>
+          </div>
+        </header>
+
+        {/* Main Content */}
+        <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+          <ApiKeyDashboard userId={userId} />
+        </main>
+      </div>
+    )
   }
 
 
@@ -203,6 +276,18 @@ function App() {
               </div>
             </div>
             <div className="flex items-center space-x-4">
+              <button
+                onClick={() => setCurrentView('documentation')}
+                className="text-gray-600 hover:text-blue-600 transition-colors duration-200 text-sm font-medium"
+              >
+                📚 API Docs
+              </button>
+              <button
+                onClick={() => setCurrentView('api-keys')}
+                className="text-gray-600 hover:text-purple-600 transition-colors duration-200 text-sm font-medium"
+              >
+                🔑 API Keys
+              </button>
               <button
                 onClick={() => setCurrentView('data-history')}
                 className="text-gray-600 hover:text-orange-600 transition-colors duration-200 text-sm font-medium"

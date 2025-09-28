@@ -3,9 +3,10 @@ import { Button } from './shared/ui/button'
 
 interface LandingPageProps {
     onGetStarted: () => void
+    onNavigate?: (view: 'documentation' | 'api-keys') => void
 }
 
-export default function LandingPage({ onGetStarted }: LandingPageProps) {
+export default function LandingPage({ onGetStarted, onNavigate }: LandingPageProps) {
     const [isVisible, setIsVisible] = useState(false)
 
     useEffect(() => {
@@ -47,6 +48,18 @@ export default function LandingPage({ onGetStarted }: LandingPageProps) {
                         <div className="flex items-center space-x-6">
                             {/* Navigation Links */}
                             <nav className="hidden md:flex items-center space-x-8">
+                                <button
+                                    onClick={() => onNavigate?.('documentation')}
+                                    className="text-gray-600 hover:text-blue-600 transition-colors duration-200 font-medium text-sm"
+                                >
+                                    📚 API Documentation
+                                </button>
+                                <button
+                                    onClick={() => onNavigate?.('api-keys')}
+                                    className="text-gray-600 hover:text-purple-600 transition-colors duration-200 font-medium text-sm"
+                                >
+                                    🔑 API Dashboard
+                                </button>
                                 <a href="#como-funciona" className="text-gray-600 hover:text-orange-600 transition-colors duration-200 font-medium text-sm">
                                     ¿Cómo funciona?
                                 </a>

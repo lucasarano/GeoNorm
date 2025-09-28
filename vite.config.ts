@@ -11,7 +11,6 @@ export default defineConfig({
     fastRefresh: true
   })],
   root: './frontend',
-  assetsInclude: ['**/*.html'],
   resolve: {
     alias: {
       "@": path.resolve(__dirname, "./frontend"),

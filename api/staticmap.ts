@@ -57,8 +57,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             res.status(500).json({ error: 'Unexpected response from Google Maps API' })
         }
 
-    } catch (error: any) {
+    } catch (error: unknown) {
         console.error('[STATIC_MAP] Error:', error)
-        res.status(500).json({ error: 'Failed to fetch static map', details: error.message })
+        res.status(500).json({ error: 'Failed to fetch static map', details: error instanceof Error ? error.message : "Unknown error" })
     }
 }

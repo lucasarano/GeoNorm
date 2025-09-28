@@ -14,7 +14,7 @@ export const API_CONFIG = {
     vercel: {
         baseUrl: process.env.NODE_ENV === 'development'
             ? getDevBaseUrl()  // Use current origin in dev (Vite proxy handles /api)
-            : 'https://your-app.vercel.app'  // Production Vercel
+            : 'https://geonorm-app.vercel.app'  // Production Vercel
     },
     express: {
         baseUrl: process.env.NODE_ENV === 'development'
@@ -23,42 +23,22 @@ export const API_CONFIG = {
     }
 }
 
-// API Endpoints
+// API Endpoints - Consolidated for Vercel Hobby Plan
 export const API_ENDPOINTS = {
     // Core Processing
     process: {
         complete: '/api/process-complete',
-        extract: '/api/process/extract',
-        clean: '/api/process/clean',
-        geocode: '/api/process/geocode'
+        main: '/api/process'
     },
 
-    // Address Management
-    addresses: {
-        list: '/api/addresses/list',
-        get: '/api/addresses/get',
-        update: '/api/addresses/update',
-        delete: '/api/addresses/delete'
-    },
+    // API Key Management
+    apikeys: '/api/apikeys',
 
-    // Notifications
-    notifications: {
-        sms: '/api/notifications/sms',
-        email: '/api/notifications/email',
-        testSms: '/api/notifications/test-sms'
-    },
-
-    // Location Management
-    location: {
-        save: '/api/location/save',
-        history: '/api/location/history',
-        links: '/api/location/links'
-    },
-
-    // Analytics
-    analytics: {
-        stats: '/api/analytics/stats'
-    },
+    // Consolidated Endpoints
+    addresses: '/api/addresses',
+    notifications: '/api/notifications',
+    location: '/api/location',
+    analytics: '/api/analytics',
 
     // Utilities
     utilities: {
@@ -262,46 +242,47 @@ export class GeoNormAPI {
     // Address Management Methods
     async listAddresses(userId: string, filters = {}) {
         const params = new URLSearchParams({ userId, ...filters })
-        const response = await fetch(`${getApiUrl(API_ENDPOINTS.addresses.list)}?${params}`)
+        const response = await fetch(`${getApiUrl(API_ENDPOINTS.addresses)}?${params}`)
         return response.json()
     }
 
     async getAddress(id: string) {
-        const response = await fetch(`${getApiUrl(API_ENDPOINTS.addresses.get)}?id=${id}`)
+        const params = new URLSearchParams({ action: 'get', id })
+        const response = await fetch(`${getApiUrl(API_ENDPOINTS.addresses)}?${params}`)
         return response.json()
     }
 
     // Notification Methods
     async sendSMS(addresses: unknown[]) {
-        const response = await fetch(getApiUrl(API_ENDPOINTS.notifications.sms), {
+        const response = await fetch(getApiUrl(API_ENDPOINTS.notifications), {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ addresses })
+            body: JSON.stringify({ action: 'send-sms', addresses })
         })
         return response.json()
     }
 
-    async sendTestEmail(email: string, name: string) {
-        const response = await fetch(getApiUrl(API_ENDPOINTS.notifications.email), {
+    async sendTestEmail(email: string, name: string, locationUrl?: string) {
+        const response = await fetch(getApiUrl(API_ENDPOINTS.notifications), {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ email, name })
+            body: JSON.stringify({ action: 'send-email', email, name, locationUrl })
         })
         return response.json()
     }
 
     async sendTestSMS(phone: string) {
-        const response = await fetch(getApiUrl(API_ENDPOINTS.notifications.testSms), {
+        const response = await fetch(getApiUrl(API_ENDPOINTS.notifications), {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ phone })
+            body: JSON.stringify({ action: 'test-sms', phone })
         })
         return response.json()
     }
 
     // Location Methods
     async saveLocation(locationData: Record<string, unknown>) {
-        const response = await fetch(getApiUrl(API_ENDPOINTS.location.save), {
+        const response = await fetch(getApiUrl(API_ENDPOINTS.location), {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(locationData)
@@ -309,14 +290,15 @@ export class GeoNormAPI {
         return response.json()
     }
 
-    async getLocationHistory(limit = 50) {
-        const response = await fetch(`${getApiUrl(API_ENDPOINTS.location.history)}?limit=${limit}`)
+    async getLocationHistory(userId: string, limit = 50) {
+        const params = new URLSearchParams({ action: 'history', userId, limit: limit.toString() })
+        const response = await fetch(`${getApiUrl(API_ENDPOINTS.location)}?${params}`)
         return response.json()
     }
 
     async createLocationLinks(addressIds: string[], userId: string) {
-        const response = await fetch(getApiUrl(API_ENDPOINTS.location.links), {
-            method: 'POST',
+        const response = await fetch(getApiUrl(API_ENDPOINTS.location), {
+            method: 'PUT',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ addressIds, userId })
         })
@@ -329,7 +311,7 @@ export class GeoNormAPI {
         if (dateFrom) params.append('dateFrom', dateFrom)
         if (dateTo) params.append('dateTo', dateTo)
 
-        const response = await fetch(`${getApiUrl(API_ENDPOINTS.analytics.stats)}?${params}`)
+        const response = await fetch(`${getApiUrl(API_ENDPOINTS.analytics)}?${params}`)
         return response.json()
     }
 

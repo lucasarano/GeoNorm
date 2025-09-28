@@ -2,23 +2,61 @@
 // This file defines which endpoints are available in production
 
 export const PRODUCTION_ENDPOINTS = {
-    // Main processing endpoint - the only one users should call
+    // Main processing endpoints
     process: {
         endpoint: '/api/process',
         description: 'Complete address processing pipeline',
         methods: ['POST'],
         public: true
     },
+    processComplete: {
+        endpoint: '/api/process-complete',
+        description: 'Alternative processing pipeline',
+        methods: ['POST'],
+        public: true
+    },
 
-    // Health check - for monitoring
+    // API key management
+    apikeys: {
+        endpoint: '/api/apikeys',
+        description: 'API key management',
+        methods: ['GET', 'POST', 'PUT', 'DELETE'],
+        public: false
+    },
+
+    // Consolidated endpoints
+    addresses: {
+        endpoint: '/api/addresses',
+        description: 'Address management (list, get)',
+        methods: ['GET'],
+        public: false
+    },
+    notifications: {
+        endpoint: '/api/notifications',
+        description: 'Send SMS and email notifications',
+        methods: ['POST'],
+        public: false
+    },
+    location: {
+        endpoint: '/api/location',
+        description: 'Location services (save, history, links)',
+        methods: ['GET', 'POST', 'PUT'],
+        public: false
+    },
+    analytics: {
+        endpoint: '/api/analytics',
+        description: 'Usage analytics and statistics',
+        methods: ['GET'],
+        public: false
+    },
+
+    // Utility endpoints
     health: {
         endpoint: '/api/health',
         description: 'API health check',
         methods: ['GET'],
         public: true
     },
-
-    // Static maps - for displaying results
     staticmap: {
         endpoint: '/api/staticmap',
         description: 'Generate static map images',
@@ -48,7 +86,7 @@ export const PRODUCTION_API_DOCS = {
     title: 'GeoNorm API',
     version: '1.0.0',
     description: 'Complete address processing and geocoding service',
-    baseUrl: 'https://your-app.vercel.app',
+    baseUrl: 'https://geonorm-app.vercel.app',
     endpoints: [
         {
             path: '/api/process',

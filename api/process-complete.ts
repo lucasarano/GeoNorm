@@ -10,12 +10,79 @@ const BATCH_SIZE = 50 // rows per batch
 const MAX_CONCURRENT_BATCHES = 8 // simultaneous OpenAI requests
 const BATCH_TIMEOUT = 60000 // 60 seconds per batch
 
+interface CleanedRowData {
+  originalAddress: string
+  originalCity: string
+  originalState: string
+  originalPhone: string
+  address: string
+  city: string
+  state: string
+  phone: string
+  email: string
+}
+
+interface BatchInfo {
+  batchIndex: number
+  startRow: number
+  endRow: number
+  csvData: string
+}
+
+interface GoogleMapsLocation {
+  lat: number
+  lng: number
+}
+
+interface GoogleMapsGeometry {
+  location: GoogleMapsLocation
+  location_type: string
+}
+
+interface GoogleMapsResult {
+  geometry: GoogleMapsGeometry
+  formatted_address: string
+}
+
+interface GoogleMapsApiResponse {
+  status: string
+  results: GoogleMapsResult[]
+  error_message?: string
+}
+
+interface GeocodingRequest {
+  address: string
+  city: string
+  state: string
+  components: string[]
+  url: string
+}
+
+interface GeocodingResponse {
+  status: string
+  results: GoogleMapsResult[]
+  bestResult: GoogleMapsResult | null
+  rawResponse: GoogleMapsApiResponse | null
+  responseTime: number
+  httpStatus: number | null
+  error: string | null
+}
+
+interface ProcessingMetadata {
+  batchIndex?: string | string[]
+  batchStart?: string | string[]
+  batchEnd?: string | string[]
+  batchTotal?: string | string[]
+  pipelineId?: string
+  [key: string]: unknown
+}
+
 interface BatchResult {
   batchIndex: number
   startRow: number
   endRow: number
   status: 'pending' | 'processing' | 'completed' | 'failed' | 'retrying'
-  data?: any[]
+  data?: CleanedRowData[]
   error?: string
   processingTime?: number
   retryCount?: number
@@ -80,8 +147,8 @@ interface BatchProcessingDebug {
 interface GeocodingInteractionDebug {
   timestamp: string
   rowIndex: number
-  request: Record<string, unknown>
-  response: Record<string, unknown>
+  request: GeocodingRequest
+  response: GeocodingResponse
   error?: string
 }
 
@@ -98,7 +165,7 @@ export interface UnifiedProcessingDebug {
 
 export interface UnifiedProcessingOptions {
   includeZipCodes?: boolean
-  metadata?: Record<string, unknown>
+  metadata?: ProcessingMetadata
 }
 
 export interface UnifiedProcessingResult {
@@ -126,8 +193,8 @@ export class PipelineError extends Error {
 }
 
 // Utility function to split CSV into batches
-function createBatches(csvLines: string[], headerLine: string): { batchIndex: number, startRow: number, endRow: number, csvData: string }[] {
-  const batches: { batchIndex: number, startRow: number, endRow: number, csvData: string }[] = []
+function createBatches(csvLines: string[], headerLine: string): BatchInfo[] {
+  const batches: BatchInfo[] = []
   const dataLines = csvLines.slice(1) // Skip header
 
   for (let i = 0; i < dataLines.length; i += BATCH_SIZE) {
@@ -146,7 +213,7 @@ function createBatches(csvLines: string[], headerLine: string): { batchIndex: nu
 }
 
 // Process a single batch with retry logic
-async function processBatch(batchInfo: any, openaiApiKey: string, maxRetries = 3, pipelineId?: string): Promise<BatchResult> {
+async function processBatch(batchInfo: BatchInfo, openaiApiKey: string, maxRetries = 3, pipelineId?: string): Promise<BatchResult> {
   const result: BatchResult = {
     batchIndex: batchInfo.batchIndex,
     startRow: batchInfo.startRow,
@@ -172,7 +239,7 @@ async function processBatch(batchInfo: any, openaiApiKey: string, maxRetries = 3
 
       // Parse the cleaned CSV
       const cleanedLines = cleanedCsv.trim().split('\n')
-      const batchData = cleanedLines.slice(1)
+      const batchData: CleanedRowData[] = cleanedLines.slice(1)
         .filter((line: string) => line && line.trim().length > 0)
         .map((line: string) => {
           const values = parseCleanCSVLine(line)
@@ -196,12 +263,12 @@ async function processBatch(batchInfo: any, openaiApiKey: string, maxRetries = 3
       console.log(`[BATCH][${pipelineId ?? 'unknown'}][${result.batchIndex}] Successfully processed ${batchData.length} rows in ${result.processingTime}ms`)
       return result
 
-    } catch (error: any) {
-      console.error(`[BATCH][${pipelineId ?? 'unknown'}][${result.batchIndex}] Attempt ${attempt + 1} failed:`, error.message)
+    } catch (error: unknown) {
+      console.error(`[BATCH][${pipelineId ?? 'unknown'}][${result.batchIndex}] Attempt ${attempt + 1} failed:`, error instanceof Error ? error.message : "Unknown error")
 
       if (attempt === maxRetries) {
         result.status = 'failed'
-        result.error = error.message
+        result.error = error instanceof Error ? error.message : "Unknown error"
         result.processingTime = Date.now() - startTime
         console.error(`[BATCH][${pipelineId ?? 'unknown'}][${result.batchIndex}] Failed after ${maxRetries + 1} attempts`)
         return result
@@ -216,7 +283,7 @@ async function processBatch(batchInfo: any, openaiApiKey: string, maxRetries = 3
 }
 
 // Process batches with concurrency control
-async function processBatchesConcurrently(batches: any[], openaiApiKey: string, pipelineId?: string): Promise<BatchResult[]> {
+async function processBatchesConcurrently(batches: BatchInfo[], openaiApiKey: string, pipelineId?: string): Promise<BatchResult[]> {
   const results: BatchResult[] = []
   console.log(`[BATCH_MANAGER] Processing ${batches.length} batches with max concurrency ${MAX_CONCURRENT_BATCHES}`)
 
@@ -250,7 +317,7 @@ async function processBatchesConcurrently(batches: any[], openaiApiKey: string, 
           startRow: batchGroup[index].startRow,
           endRow: batchGroup[index].endRow,
           status: 'failed',
-          error: result.reason?.message || 'Unknown error',
+          error: result.reason instanceof Error ? result.reason.message : 'Unknown error',
           processingTime: BATCH_TIMEOUT
         }
         results.push(failedResult)
@@ -330,11 +397,19 @@ export async function runUnifiedProcessingPipeline(
     console.log(`[UNIFIED_PROCESS][${pipelineId}] Launching OpenAI cleaning across ${batches.length} batches`)
     const batchResults = await processBatchesConcurrently(batches, openaiApiKey, pipelineId)
 
-    const cleanedData: any[] = []
+    const cleanedData: CleanedRowData[] = []
     let successfulBatches = 0
     let failedBatches = 0
     const totalProcessingTime = Date.now() - openaiStartTime
-    const batchInteractions: any[] = []
+    const batchInteractions: Array<{
+      batchIndex: number
+      startRow: number
+      endRow: number
+      status: string
+      processingTime?: number
+      error?: string
+      retryCount?: number
+    }> = []
 
     console.log('\n=== PARALLEL BATCH PROCESSING: Results ===')
     batchResults.forEach((result) => {
@@ -430,9 +505,9 @@ export async function runUnifiedProcessingPipeline(
 
       const requestUrl = url
       const response = await fetch(requestUrl)
-      let data: any = null
+      let data: GoogleMapsApiResponse | null = null
       try {
-        data = await response.json()
+        data = await response.json() as GoogleMapsApiResponse
         console.log(`[GEOCODE][${pipelineId}][API_RESPONSE] Status: ${data?.status}`)
         console.log(`[GEOCODE][${pipelineId}][API_RESPONSE] Results count: ${data?.results?.length || 0}`)
         console.log(`[GEOCODE][${pipelineId}][API_RESPONSE] HTTP Status: ${response.status}`)
@@ -444,16 +519,24 @@ export async function runUnifiedProcessingPipeline(
       }
 
       const rawResults = Array.isArray(data?.results) ? data.results : []
-      let best: any = null
+      interface BestResult {
+        latitude: number
+        longitude: number
+        formatted_address: string
+        location_type: string
+        confidence_score: number
+        confidence_description: string
+      }
+      let best: BestResult | null = null
 
       if (Array.isArray(rawResults) && rawResults.length > 0) {
         console.log(`[GEOCODE][${pipelineId}][PROCESSING] Processing ${rawResults.length} results`)
-        best = rawResults.reduce((acc: any, cur: any) => {
+        best = rawResults.reduce((acc: BestResult | null, cur: GoogleMapsResult) => {
           const score = confidenceFor(cur?.geometry?.location_type)
           console.log(`[GEOCODE][${pipelineId}][RESULT] Location type: ${cur?.geometry?.location_type}, Score: ${score}`)
           if (!acc || score > acc.confidence_score) {
-            const loc = cur.geometry?.location || {}
-            const result = {
+            const loc = cur.geometry?.location || { lat: 0, lng: 0 }
+            const result: BestResult = {
               latitude: loc.lat,
               longitude: loc.lng,
               formatted_address: cur.formatted_address,
@@ -545,7 +628,16 @@ export async function runUnifiedProcessingPipeline(
           response: {
             status: geo?.status || 'UNKNOWN',
             results: geo?.rawResults || [],
-            bestResult: geo?.best || null,
+            bestResult: geo?.best ? {
+              geometry: {
+                location: {
+                  lat: geo.best.latitude,
+                  lng: geo.best.longitude
+                },
+                location_type: geo.best.location_type
+              },
+              formatted_address: geo.best.formatted_address
+            } : null,
             rawResponse: geo?.rawResponse || null,
             responseTime: geocodeEndTime - geocodeStartTime,
             httpStatus: geo?.httpStatus || null,
@@ -561,11 +653,18 @@ export async function runUnifiedProcessingPipeline(
         else if (confidenceScore >= 0.6) mediumConfidence++
         else lowConfidence++
 
-        let zipCodeResult: any = null
+        interface ZipCodeResult {
+          zipCode: string | null
+          department: string | null
+          district: string | null
+          neighborhood: string | null
+          confidence: 'high' | 'medium' | 'low' | 'none'
+        }
+        let zipCodeResult: ZipCodeResult | null = null
         if (includeZipCodes && geo?.best?.latitude && geo?.best?.longitude) {
           try {
             console.log(`[ZIPCODE][${pipelineId}][${i}] Looking up zip code...`)
-            zipCodeResult = await zipCodeService.getZipCode(geo.best.latitude, geo.best.longitude)
+            zipCodeResult = await zipCodeService.getZipCode(geo.best.latitude, geo.best.longitude) as ZipCodeResult
             console.log(`[ZIPCODE][${pipelineId}][${i}][OUTPUT] Result:`, zipCodeResult)
           } catch (zipError) {
             console.warn(`[ZIPCODE][${pipelineId}][${i}][ERROR] Failed to get zip code:`, zipError)
@@ -612,7 +711,7 @@ export async function runUnifiedProcessingPipeline(
             ? `https://www.google.com/maps?q=${geo.best.latitude},${geo.best.longitude}`
             : null
         })
-      } catch (error: any) {
+      } catch (error: unknown) {
         console.error(`[GEOCODE][${pipelineId}][${i}][ERROR] Processing failed:`, error)
 
         const failedGeocodingInteraction = {
@@ -632,9 +731,9 @@ export async function runUnifiedProcessingPipeline(
             rawResponse: null,
             responseTime: 0,
             httpStatus: null,
-            error: error.message
+            error: error instanceof Error ? error.message : "Unknown error"
           },
-          error: error.message
+          error: error instanceof Error ? error.message : "Unknown error"
         }
         geocodingInteractions.push(failedGeocodingInteraction)
 
@@ -665,7 +764,7 @@ export async function runUnifiedProcessingPipeline(
           },
           zipCode: null,
           status: 'failed',
-          error: error.message,
+          error: error instanceof Error ? error.message : "Unknown error",
           googleMapsLink: null
         })
       }
@@ -714,12 +813,12 @@ export async function runUnifiedProcessingPipeline(
         }
       }
     }
-  } catch (error: any) {
+  } catch (error: unknown) {
     console.error(`[UNIFIED_PROCESS][${pipelineId}] Error:`, error)
     if (error instanceof PipelineError) {
       throw error
     }
-    throw new PipelineError(500, 'Failed to process CSV data', error?.message || String(error))
+    throw new PipelineError(500, 'Failed to process CSV data', error instanceof Error ? error.message : String(error))
   }
 }
 
@@ -742,7 +841,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     console.log('[DEBUG] Request method:', req.method)
     console.log('[DEBUG] Content-Type:', contentType)
     console.log('[DEBUG] Body type:', typeof req.body)
-    console.log('[DEBUG] Body has length:', req.body && typeof (req.body as any).length === 'number')
+    console.log('[DEBUG] Body has length:', req.body && typeof (req.body as unknown as { length?: number }).length === 'number')
 
     const pipelineId = `handler-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
     const metadata = {
@@ -757,16 +856,21 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       console.log('[BATCH][META]', metadata)
     }
 
-    const readRawBody = async (request: any): Promise<string> => {
+    interface RequestStream {
+      setEncoding?: (encoding: string) => void;
+      on: (event: string, callback: (...args: unknown[]) => void) => void;
+    }
+
+    const readRawBody = async (request: RequestStream): Promise<string> => {
       return await new Promise((resolve, reject) => {
         try {
           let data = ''
-          request.setEncoding && request.setEncoding('utf8')
-          request.on('data', (chunk: any) => {
-            data += typeof chunk === 'string' ? chunk : chunk.toString('utf8')
-          })
-          request.on('end', () => resolve(data))
-          request.on('error', (err: any) => reject(err))
+          request.setEncoding?.('utf8');
+          request.on('data', (chunk: unknown) => {
+            data += typeof chunk === 'string' ? chunk : (chunk as { toString: (encoding: string) => string }).toString('utf8')
+          });
+          request.on('end', () => resolve(data));
+          request.on('error', (err: unknown) => reject(err))
         } catch (err) {
           reject(err)
         }
@@ -776,10 +880,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     let csvData: string | undefined
     if (typeof req.body === 'string') {
       csvData = req.body
-    } else if ((req as any).body && Buffer.isBuffer((req as any).body)) {
-      csvData = (req as any).body.toString('utf8')
+    } else if ((req as { body?: Buffer }).body && Buffer.isBuffer((req as { body?: Buffer }).body)) {
+      csvData = (req as { body: Buffer }).body.toString('utf8')
     } else {
-      csvData = await readRawBody(req)
+      csvData = await readRawBody(req as RequestStream)
     }
 
     console.log('[DEBUG] Processed csvData type:', typeof csvData)
@@ -808,11 +912,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     console.log(`[UNIFIED_PROCESS][${pipelineId}] Pipeline completed successfully in ${handlerDuration}ms`)
 
     return res.json(pipelineResult)
-  } catch (error: any) {
+  } catch (error: unknown) {
     console.error('[UNIFIED_PROCESS] Handler Error:', error)
     if (error instanceof PipelineError) {
-      return res.status(error.status).json({ error: error.message, details: error.details })
+      return res.status(error.status).json({ error: error instanceof Error ? error.message : "Unknown error", details: error.details })
     }
-    return res.status(500).json({ error: 'Failed to process CSV data', details: error?.message || String(error) })
+    return res.status(500).json({ error: 'Failed to process CSV data', details: error instanceof Error ? error.message : String(error) })
   }
 }

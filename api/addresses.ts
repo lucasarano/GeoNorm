@@ -1,6 +1,6 @@
 import { VercelRequest, VercelResponse } from '@vercel/node'
-import { collection, query, where, getDocs, orderBy, limit, startAfter } from 'firebase/firestore'
-import { db } from '../../lib/firebase'
+import { collection, query, where, getDocs, orderBy, limit, doc, getDoc } from 'firebase/firestore'
+import { db } from '../lib/firebase.js'
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
     res.setHeader('Access-Control-Allow-Origin', '*')
@@ -16,15 +16,27 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }
 
     try {
-        const {
-            userId,
-            status,
-            limit: limitParam = '50',
-            offset = '0',
-            sortBy = 'createdAt',
-            sortOrder = 'desc'
-        } = req.query as any
+        const { action, userId, id, status, limit: limitParam = '50', offset = '0', sortBy = 'createdAt', sortOrder = 'desc' } = req.query as Record<string, string>
 
+        if (action === 'get' && id) {
+            // Get specific address
+            const docRef = doc(db, 'address_records', id)
+            const docSnap = await getDoc(docRef)
+
+            if (!docSnap.exists()) {
+                return res.status(404).json({ error: 'Address not found' })
+            }
+
+            return res.json({
+                success: true,
+                address: {
+                    id: docSnap.id,
+                    ...docSnap.data()
+                }
+            })
+        }
+
+        // List addresses (default action)
         if (!userId) {
             return res.status(400).json({ error: 'userId is required' })
         }
@@ -35,7 +47,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         let q = query(
             collection(db, 'address_records'),
             where('userId', '==', userId),
-            orderBy(sortBy, sortOrder),
+            orderBy(sortBy, sortOrder as 'asc' | 'desc'),
             limit(limitNum)
         )
 
@@ -65,8 +77,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             }
         })
 
-    } catch (error: any) {
-        console.error('List addresses error:', error)
-        res.status(500).json({ error: 'Failed to list addresses', details: error.message })
+    } catch (error: unknown) {
+        console.error('Addresses endpoint error:', error)
+        const message = error instanceof Error ? error.message : 'Unknown error'
+        res.status(500).json({ error: 'Failed to process request', details: message })
     }
 }

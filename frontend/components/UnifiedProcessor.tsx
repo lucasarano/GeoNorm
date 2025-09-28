@@ -43,6 +43,7 @@ interface ProcessedRow {
     }
     status: 'high_confidence' | 'medium_confidence' | 'low_confidence' | 'failed'
     error?: string
+    googleMapsLink?: string | null
 }
 
 interface ProcessingResult {
@@ -56,8 +57,46 @@ interface ProcessingResult {
     }
     results: ProcessedRow[]
     debug?: {
-        batchProcessing?: any
-        geocodingInteractions?: any
+        batchProcessing?: {
+            totalBatches: number
+            successfulBatches: number
+            failedBatches: number
+            batchSize: number
+            maxConcurrentBatches: number
+            totalProcessingTime: number
+            averageTimePerBatch: number
+            successRate: number
+            batchDetails: Array<{
+                batchIndex: number
+                startRow: number
+                endRow: number
+                status: string
+                processingTime?: number
+                error?: string
+                retryCount?: number
+            }>
+        }
+        geocodingInteractions?: Array<{
+            timestamp: string
+            rowIndex: number
+            request: {
+                address: string
+                city: string
+                state: string
+                components: string[]
+                url: string
+            }
+            response: {
+                status: string
+                results: unknown[]
+                bestResult: unknown | null
+                rawResponse: unknown | null
+                responseTime: number
+                httpStatus: number | null
+                error: string | null
+            }
+            error?: string
+        }>
     }
 }
 
@@ -231,7 +270,7 @@ export default function UnifiedProcessor({ onProcessingComplete }: UnifiedProces
                         mediumConfidenceAddresses: aggregate.statistics.mediumConfidence,
                         lowConfidenceAddresses: aggregate.statistics.lowConfidence,
                         processingStatus: 'completed',
-                        completedAt: new Date() as any
+                        completedAt: new Date()
                     })
 
                     // Save address records
@@ -290,9 +329,10 @@ export default function UnifiedProcessor({ onProcessingComplete }: UnifiedProces
                 onProcessingComplete(aggregate)
             }, 1000)
 
-        } catch (error: any) {
+        } catch (error: unknown) {
             console.error('Error processing CSV:', error)
-            alert(`Error procesando CSV: ${error.message}`)
+            const errorMessage = error instanceof Error ? error.message : String(error)
+            alert(`Error procesando CSV: ${errorMessage}`)
             setCurrentStep('upload')
             setProgress(0)
             setStepDetails('')

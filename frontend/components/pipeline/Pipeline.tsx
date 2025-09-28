@@ -84,8 +84,8 @@ export default function Pipeline() {
         try {
             // Simulate the Python cleaning script logic
             const rawData = pipelineData.raw
-            let cleanedData = []
-            let stats = {
+            const cleanedData = []
+            const stats = {
                 totalRows: rawData.length,
                 validRows: 0,
                 invalidRows: 0,

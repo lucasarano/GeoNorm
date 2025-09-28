@@ -85,6 +85,34 @@ Responde STOP para no recibir más mensajes.
         }
     }
 
+    async sendTestMessage(
+        phoneNumber: string,
+        message: string
+    ): Promise<{ success: boolean; message: string; sid?: string; error?: string }> {
+        try {
+            const formattedPhone = this.formatPhoneNumber(phoneNumber)
+            const response = await this.client.messages.create({
+                body: message,
+                from: this.fromNumber,
+                to: formattedPhone
+            })
+
+            return {
+                success: true,
+                message: 'Test message sent successfully',
+                sid: response.sid
+            }
+        } catch (error) {
+            console.error('Error sending test SMS:', error)
+            const messageText = error instanceof Error ? error.message : 'Failed to send test SMS'
+            return {
+                success: false,
+                message: 'Failed to send test SMS',
+                error: messageText
+            }
+        }
+    }
+
     async sendProcessingComplete(
         phoneNumber: string,
         totalAddresses: number,

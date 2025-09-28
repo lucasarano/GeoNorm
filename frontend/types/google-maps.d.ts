@@ -12,14 +12,14 @@ declare namespace google {
 
         class Marker {
             constructor(opts?: MarkerOptions);
-            addListener(eventName: string, handler: Function): void;
+            addListener(eventName: string, handler: (...args: unknown[]) => void): void;
             getPosition(): LatLng | undefined;
         }
 
         namespace marker {
             class AdvancedMarkerElement {
                 constructor(opts?: AdvancedMarkerElementOptions);
-                addListener(eventName: string, handler: Function): void;
+                addListener(eventName: string, handler: (...args: unknown[]) => void): void;
                 position: LatLngLiteral | LatLng;
                 map: Map | null;
                 content: HTMLElement;

@@ -40,7 +40,7 @@ class WhatsAppService {
 
     private formatPhoneNumber(phone: string): string {
         // Remove any non-digit characters except +
-        let cleaned = phone.replace(/[^\d+]/g, '')
+        const cleaned = phone.replace(/[^\d+]/g, '')
 
         // If it starts with +595, use as is
         if (cleaned.startsWith('+595')) {

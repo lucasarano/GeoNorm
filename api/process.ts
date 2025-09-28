@@ -2,10 +2,15 @@ import { VercelRequest, VercelResponse } from '@vercel/node'
 import dotenv from 'dotenv'
 import { randomUUID } from 'crypto'
 import { doc, setDoc, collection, serverTimestamp } from 'firebase/firestore'
-import { db } from '../lib/firebase'
-import { smsService } from '../lib/services/smsService'
-import { emailService } from '../lib/services/emailService'
-import { runUnifiedProcessingPipeline, PipelineError } from './process-complete'
+import { db } from '../lib/firebase.js'
+import { smsService } from '../lib/services/smsService.js'
+import { emailService } from '../lib/services/emailService.js'
+import { apiKeyService, type ApiKey } from '../lib/services/apiKeyService.js'
+import {
+    runUnifiedProcessingPipeline,
+    PipelineError,
+    type UnifiedProcessingResult
+} from './process-complete.js'
 
 dotenv.config()
 
@@ -23,10 +28,24 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return res.status(405).json({ error: 'Method not allowed' })
     }
 
+    const requestStart = Date.now()
+    let apiKeyData: ApiKey | null = null
+    let requestSize = 0
+    let responseSize = 0
+
     try {
         const apiKey = req.headers['x-api-key'] as string
         if (!apiKey) {
             return res.status(401).json({ error: 'API key required' })
+        }
+
+        // Validate API key
+        apiKeyData = await apiKeyService.validateApiKey(apiKey)
+        if (!apiKeyData) {
+            return res.status(401).json({
+                error: 'Invalid or expired API key',
+                details: 'Please check your API key or contact support if you believe this is an error'
+            })
         }
 
         const {
@@ -34,6 +53,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             userId,
             options = {}
         } = req.body || {}
+
+        requestSize = JSON.stringify(req.body).length
 
         if (!csvData) {
             return res.status(400).json({ error: 'CSV data is required' })
@@ -46,7 +67,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         console.log(`[PROCESS] Starting unified pipeline for user ${userId}`)
 
         const processingStart = Date.now()
-        const pipelineResult = await runUnifiedProcessingPipeline(csvData, {
+        const pipelineResult: UnifiedProcessingResult = await runUnifiedProcessingPipeline(csvData, {
             includeZipCodes: options.includeZipCodes !== false,
             metadata: {
                 userId,
@@ -89,17 +110,20 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             const addressesNeedingConfirmation = geocodedResults
                 .filter(r => r.cleaned.phone && r.status !== 'high_confidence')
                 .map(r => ({
-                    phone: r.cleaned.phone,
+                    phoneNumber: r.cleaned.phone,
                     originalAddress: r.original.address,
                     cleanedAddress: r.cleaned.address,
-                    confirmationUrl: `${process.env.FRONTEND_URL || 'https://your-app.vercel.app'}/confirm/${r.rowIndex}`
+                    confirmationUrl: `${process.env.FRONTEND_URL || 'https://geonorm-app.vercel.app/'}/confirm/${r.rowIndex}`
                 }))
 
             if (addressesNeedingConfirmation.length > 0) {
                 try {
                     console.log(`[PROCESS][${pipelineId}] Sending ${addressesNeedingConfirmation.length} SMS confirmations`)
                     const smsResult = await smsService.sendBulkConfirmations(addressesNeedingConfirmation)
-                    notificationResults.sms = smsResult
+                    notificationResults.sms = {
+                        sent: smsResult.successful,
+                        failed: smsResult.failed
+                    }
                 } catch (error) {
                     console.error('[PROCESS] SMS notification error:', error)
                 }
@@ -115,7 +139,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
                     const success = await emailService.sendLocationRequest(
                         email,
                         'Cliente',
-                        `${process.env.FRONTEND_URL || 'https://your-app.vercel.app'}/location?email=${email}`
+                        `${process.env.FRONTEND_URL || 'https://geonorm-app.vercel.app/'}/location?email=${email}`
                     )
                     if (success) notificationResults.email.sent++
                     else notificationResults.email.failed++
@@ -126,7 +150,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             }
         }
 
-        return res.json({
+        const response = {
             success: true,
             totalProcessed: pipelineResult.totalProcessed,
             statistics: pipelineResult.statistics,
@@ -135,9 +159,42 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             debug: pipelineResult.debug,
             processingTime,
             timestamp: new Date().toISOString()
-        })
+        }
+
+        responseSize = JSON.stringify(response).length
+
+        // Record API key usage
+        if (apiKeyData) {
+            await apiKeyService.recordUsage(
+                apiKeyData.id,
+                apiKeyData.userId,
+                '/api/process',
+                requestSize,
+                responseSize,
+                Date.now() - requestStart,
+                'success'
+            ).catch(err => console.error('Failed to record API usage:', err))
+        }
+
+        return res.json(response)
     } catch (error: unknown) {
         console.error('[PROCESS] Error:', error)
+
+        // Record failed API key usage
+        if (apiKeyData) {
+            const errorMessage = error instanceof Error ? error.message : 'Unknown error'
+            await apiKeyService.recordUsage(
+                apiKeyData.id,
+                apiKeyData.userId,
+                '/api/process',
+                requestSize,
+                0,
+                Date.now() - requestStart,
+                'error',
+                errorMessage
+            ).catch(err => console.error('Failed to record API usage:', err))
+        }
+
         if (error instanceof PipelineError) {
             return res.status(error.status).json({ success: false, error: error.message, details: error.details })
         }

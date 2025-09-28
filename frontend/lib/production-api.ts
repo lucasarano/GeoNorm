@@ -2,7 +2,7 @@
 export const PRODUCTION_API_CONFIG = {
     baseUrl: process.env.NODE_ENV === 'development'
         ? 'http://localhost:3000'
-        : 'https://your-app.vercel.app'
+        : 'https://geonorm-app.vercel.app'
 }
 
 export interface ProcessOptions {
