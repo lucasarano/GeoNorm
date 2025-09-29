@@ -73,6 +73,7 @@ function looksLikeAddress(text) {
   const lower = normalized.toLowerCase();
   if (ADDRESS_KEYWORDS.some(keyword => lower.includes(keyword))) return true;
   if (/\d/.test(lower) && lower.includes(' ')) return true;
+  if (lower.includes(' y ') && lower.split(/\s+/).length >= 4) return true;
   return false;
 }
 
@@ -174,7 +175,32 @@ function processRow(row, index, groups, logRow) {
   const addressParts = selectFromHeaders(row, groups.address);
   const primaryAddress = addressParts[0] || findFallback(row, new Set([...groups.city, ...groups.state]));
   if (primaryAddress.header) evidence.add(`address_column:${primaryAddress.header}`);
-  const combinedAddresses = combineAddressParts(primaryAddress.header ? primaryAddress : null, addressParts.slice(1));
+
+  const additionalAddresses = addressParts.slice(1);
+
+  const cityEntryRaw = selectFromHeaders(row, groups.city)[0];
+  const originalCity = sanitizeValue(cityEntryRaw ? cityEntryRaw.value : '');
+  let cityForNormalization = originalCity;
+  let cityUsedAsAddress = false;
+  if (cityForNormalization && looksLikeAddress(cityForNormalization)) {
+    additionalAddresses.push({ header: cityEntryRaw.header, value: cityForNormalization });
+    evidence.add('city_as_address');
+    cityForNormalization = '';
+    cityUsedAsAddress = true;
+  }
+
+  const stateEntryRaw = selectFromHeaders(row, groups.state)[0];
+  const originalState = sanitizeValue(stateEntryRaw ? stateEntryRaw.value : '');
+  let stateForNormalization = originalState;
+  let stateUsedAsAddress = false;
+  if (stateForNormalization && looksLikeAddress(stateForNormalization)) {
+    additionalAddresses.push({ header: stateEntryRaw.header, value: stateForNormalization });
+    evidence.add('state_as_address');
+    stateForNormalization = '';
+    stateUsedAsAddress = true;
+  }
+
+  const combinedAddresses = combineAddressParts(primaryAddress.header ? primaryAddress : null, additionalAddresses);
   combinedAddresses.forEach(part => evidence.add(`address_column:${part.header}`));
   const addressAggregate = [primaryAddress, ...combinedAddresses]
     .map(part => (part ? part.value : ''))
@@ -206,14 +232,14 @@ function processRow(row, index, groups, logRow) {
     fromColumn: phoneColumnValue
   });
 
-  const cityEntry = selectFromHeaders(row, groups.city)[0];
-  if (cityEntry && cityEntry.header) evidence.add(`city_column:${cityEntry.header}`);
-  const stateEntry = selectFromHeaders(row, groups.state)[0];
-  if (stateEntry && stateEntry.header) evidence.add(`state_column:${stateEntry.header}`);
+  if (cityEntryRaw && !cityUsedAsAddress && cityEntryRaw.header) {
+    evidence.add(`city_column:${cityEntryRaw.header}`);
+  }
+  if (stateEntryRaw && !stateUsedAsAddress && stateEntryRaw.header) {
+    evidence.add(`state_column:${stateEntryRaw.header}`);
+  }
 
   const originalAddress = sanitizeValue(primaryAddress.value || addressAggregate || '');
-  const originalCity = sanitizeValue(cityEntry ? cityEntry.value : '');
-  const originalState = sanitizeValue(stateEntry ? stateEntry.value : '');
   const originalPhoneClean = sanitizeValue(originalPhone || '');
 
   const addressForCleaning = normalizeWhitespace(addressAggregate || originalAddress);
@@ -244,8 +270,8 @@ function processRow(row, index, groups, logRow) {
   const phoneValid = bestPhone.isValid;
   const emailValidOrAbsent = !email || isEmail(email);
 
-  const cityCandidate = originalCity || tailCity;
-  const stateCandidate = originalState || tailState;
+  const cityCandidate = cityForNormalization || tailCity;
+  const stateCandidate = stateForNormalization || tailState;
   const normalizedLocation = normalizeCityState(cityCandidate, stateCandidate);
   const city = normalizedLocation.city;
   const state = normalizedLocation.state;

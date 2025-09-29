@@ -13,6 +13,8 @@ import {
   TITLECASE_STOPWORDS
 } from './constants.js';
 
+const ABBREV_FOOTPRINT_REGEX = /\b(?:av\.?|avda\.?|gral\.?|pte\.?|tte\.?|mcal\.?|cnel\.?|cap\.?|ing\.?|sta\.?|sto\.?|n[oº])\b/i;
+
 function cloneRegex(regex) {
   return new RegExp(regex.source, regex.flags);
 }
@@ -50,14 +52,20 @@ export function titleCaseEs(value) {
 
 function replaceIntersectionTokens(value) {
   return value
-    .replace(/\b(c\/?|c\\|\/|esq\.?|esquina)\b/gi, ' y ')
-    .replace(/\s*y\s*y\s*/gi, ' y ');
+    .replace(/\b(casi|entre)\b/gi, match => match.toLowerCase())
+    .replace(/\bc\s*[\/\\]\s*/gi, ' y ')
+    .replace(/\besq\.?\b/gi, ' y ')
+    .replace(/\besquina\b/gi, ' y ')
+    .replace(/\s\/\s/g, ' y ')
+    .replace(/\s*y\s*y\s*/gi, ' y ')
+    .replace(/\s{2,}/g, ' ');
 }
 
 function normalizeRoutes(value) {
   return value
     .replace(ROUTE_REGEX, (_, num) => `Ruta ${parseInt(num, 10)}`)
-    .replace(/\bkm\s*[:\-]?\s*(\d+)/gi, 'Km $1');
+    .replace(/\bkm\s*[:\-]?\s*(\d+)/gi, 'Km $1')
+    .replace(/(Ruta \d+)\s+y\s+(Km \d+)/gi, '$1, $2');
 }
 
 function applyAccentFixes(value) {
@@ -78,7 +86,11 @@ export function applyAddressAbbreviations(value) {
 }
 
 export function removeEmails(value) {
-  return value.replace(cloneRegex(EMAIL_REGEX), '').replace(/\s{2,}/g, ' ');
+  return value
+    .replace(cloneRegex(EMAIL_REGEX), ' ')
+    .replace(/\bmail:?[\s-]*/gi, ' ')
+    .replace(/\bemail:?[\s-]*/gi, ' ')
+    .replace(/\s{2,}/g, ' ');
 }
 
 export function removePhones(value) {
@@ -101,9 +113,11 @@ export function normalizeAddress(value) {
   work = applyAddressAbbreviations(work);
   work = replaceIntersectionTokens(work);
   work = normalizeRoutes(work);
+  work = work.replace(/([A-Za-zÁÉÍÓÚáéíóúñÑ])\s*-\s*([A-Za-zÁÉÍÓÚáéíóúñÑ])/g, '$1, $2');
   work = work.replace(/\s*,\s*/g, ', ').replace(/\s+/g, ' ').trim();
   work = applyAccentFixes(work);
   work = titleCaseEs(work);
+  work = work.replace(/\b([A-Za-z0-9]+)\b/g, match => (/[0-9]/.test(match) ? match.toUpperCase() : match));
   return work.replace(/,\s*,/g, ',').replace(/,{2,}/g, ',').replace(/,\s*$/, '');
 }
 
@@ -321,4 +335,26 @@ export function hasPhone(value) {
 export function buildDedupeKey(address, city, state, phone, email) {
   const normalize = (v) => stripAccents(v || '').toLowerCase().replace(/[^a-z0-9]/g, '');
   return [address, city, state, phone, email].map(normalize).join('|');
+}
+
+export function standardizeOrthographicAddress(address) {
+  if (!address) return '';
+  const normalized = normalizeAddress(address);
+  return normalized;
+}
+
+export function needsOrthographyReview(address) {
+  if (!address) return false;
+  const value = normalizeWhitespace(address);
+  if (!value) return false;
+  if (/@/.test(value)) return true;
+  if (ABBREV_FOOTPRINT_REGEX.test(value)) return true;
+  if (/\s{2,}/.test(value)) return true;
+  if (/[;|]/.test(value)) return true;
+  if (/\bc\s*[\/\\]/i.test(value)) return true;
+  if (/\besq\.?/i.test(value)) return true;
+  if (/\besquina/i.test(value)) return true;
+  if (/\s\/\s/.test(value)) return true;
+  if (value !== titleCaseEs(value)) return true;
+  return false;
 }

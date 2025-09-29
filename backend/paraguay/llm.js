@@ -2,7 +2,13 @@ import {
   CITY_BY_DEPARTMENT,
   DEPARTAMENTOS
 } from './constants.js';
-import { normalizeCityState, normalizeWhitespace, isValidPhonePy, normalizePhonePy } from './utils.js';
+import {
+  normalizeCityState,
+  normalizeWhitespace,
+  isValidPhonePy,
+  normalizePhonePy,
+  standardizeOrthographicAddress
+} from './utils.js';
 
 const SYSTEM_PROMPT = `You normalize Paraguayan addresses. Return strict JSON matching the schema. Do not invent departments. If uncertain, return an empty string for that field. Use the provided gazetteers and rules.`;
 
@@ -260,5 +266,47 @@ export async function repairCityState(apiKey, address, city, state) {
   } catch (error) {
     console.error('[STAGE-C] City/State repair parse error', content);
     return { City: '', State: '' };
+  }
+}
+
+export async function repairAddressOrthography(apiKey, address, city = '', state = '') {
+  if (!address) return '';
+  const messages = [
+    {
+      role: 'system',
+      content: 'You standardize Paraguayan street addresses. Respond with JSON only. Keep units/subpremises, normalize abbreviations (Av.|Avda.→Avenida, etc.), use "y" for intersections, format routes as "Ruta NN, Km X" when applicable, and output title case with proper accents. Do not fabricate information.'
+    },
+    {
+      role: 'user',
+      content: `Address: ${address}\nCity: ${city}\nState: ${state}`
+    }
+  ];
+  const payload = {
+    model: 'gpt-5-mini',
+    top_p: 1,
+    max_completion_tokens: 200,
+    response_format: {
+      type: 'json_schema',
+      json_schema: {
+        name: 'address_orthography',
+        schema: {
+          type: 'object',
+          properties: {
+            Address: { type: 'string' }
+          },
+          required: ['Address'],
+          additionalProperties: false
+        }
+      }
+    },
+    messages
+  };
+  const content = await callOpenAi(apiKey, payload);
+  try {
+    const parsed = JSON.parse(content);
+    return standardizeOrthographicAddress(parsed.Address || '');
+  } catch (error) {
+    console.error('[STAGE-D] Address orthography repair parse error', content);
+    return '';
   }
 }

@@ -1,8 +1,8 @@
 import { parseCsv, toCsv } from './paraguay/csv.js';
 import { deterministicStage } from './paraguay/deterministic.js';
-import { needsLLM, runStageBLLM } from './paraguay/llm.js';
+import { needsLLM, runStageBLLM, repairAddressOrthography } from './paraguay/llm.js';
 import { filterAndDedupeRows, toFinalCsvRows, validateRows } from './paraguay/validators.js';
-import { normalizeWhitespace } from './paraguay/utils.js';
+import { normalizeWhitespace, needsOrthographyReview, standardizeOrthographicAddress } from './paraguay/utils.js';
 
 const OUTPUT_HEADERS = [
   'Original_Address',
@@ -63,7 +63,8 @@ export async function cleanParaguayAddresses(apiKey, csvData) {
   const filtered = filterAndDedupeRows(validated, {
     logRow: logger.logRow
   });
-  const csvRows = toFinalCsvRows(filtered);
+  const orthographyApplied = await finalizeOrthography(apiKey, filtered, logger.logRow);
+  const csvRows = toFinalCsvRows(orthographyApplied);
   const csv = toCsv(csvRows, OUTPUT_HEADERS);
 
   logSummary({
@@ -73,6 +74,63 @@ export async function cleanParaguayAddresses(apiKey, csvData) {
   });
 
   return csv;
+}
+
+async function finalizeOrthography(apiKey, contexts, logRow) {
+  const output = [];
+  for (const context of contexts) {
+    const evidence = new Set(context.evidence || []);
+    const originalAddress = context.cleaned.address || '';
+    if (!originalAddress) {
+      output.push(context);
+      continue;
+    }
+
+    let standardized = standardizeOrthographicAddress(originalAddress);
+    let usedLLM = false;
+
+    if (needsOrthographyReview(standardized) && apiKey) {
+      logRow(context.index, 'StageD', 'Orthography fallback via LLM', {
+        before: originalAddress,
+        afterDeterministic: standardized
+      });
+      try {
+        const repaired = await repairAddressOrthography(
+          apiKey,
+          originalAddress,
+          context.cleaned.city,
+          context.cleaned.state
+        );
+        if (repaired) {
+          standardized = standardizeOrthographicAddress(repaired);
+          usedLLM = true;
+        }
+      } catch (error) {
+        logRow(context.index, 'StageD', 'Orthography LLM failed, keeping deterministic result', {
+          error: error.message
+        });
+      }
+    } else {
+      logRow(context.index, 'StageD', 'Orthography standardized deterministically', {
+        before: originalAddress,
+        after: standardized
+      });
+    }
+
+    if (needsOrthographyReview(standardized)) {
+      logRow(context.index, 'StageD', 'Orthography review still flagged after processing', {
+        address: standardized
+      });
+    }
+
+    if (usedLLM) evidence.add('orthography_llm');
+    else evidence.add('orthography_regex');
+
+    context.cleaned.address = standardized;
+    context.evidence = Array.from(evidence);
+    output.push(context);
+  }
+  return output;
 }
 
 function applyLlmPatch(context, llmResult) {

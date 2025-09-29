@@ -240,6 +240,7 @@ export const ACCENT_FIXES = {
   'capiata': 'Capiatá',
   'nemby': 'Ñemby',
   'ypane': 'Ypané',
+  'parana': 'Paraná',
   'colon': 'Colón',
   'pilar': 'Pilar',
   'ciudad': 'Ciudad',
@@ -248,7 +249,8 @@ export const ACCENT_FIXES = {
   'doctor': 'Doctor',
   'general': 'General',
   'teniente': 'Teniente',
-  'capitan': 'Capitán'
+  'capitan': 'Capitán',
+  'yatch': 'Yacht'
 };
 
 export const ADDRESS_ABBREVIATION_MAP = {
@@ -269,13 +271,14 @@ export const ADDRESS_ABBREVIATION_MAP = {
   flia: 'Familia'
 };
 
-export const TITLECASE_STOPWORDS = new Set(['de', 'del', 'la', 'las', 'los', 'y', 'el', 'e']);
+export const TITLECASE_STOPWORDS = new Set(['de', 'del', 'la', 'las', 'los', 'y', 'el', 'e', 'entre', 'casi']);
 
 export const ADDRESS_NOISE_PATTERNS = [
   /\b(paraguay|contacto|correo|mail|email)\b/gi,
   /\b(na|n\/a|s\.a\.|sociedad an[oó]nima)\b/gi,
   /\b(sin dato|sin datos|sin direccion)\b/gi,
-  /\b(p\.o\.? box\.?|casilla de correo)\b/gi
+  /\b(p\.o\.? box\.?|casilla de correo)\b/gi,
+  /\$address\.address2/gi
 ];
 
 export const EMAIL_REGEX = /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi;
