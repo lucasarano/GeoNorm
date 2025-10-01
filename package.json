@@ -12,7 +12,7 @@
     "preview": "vite preview",
     "server": "tsx backend/index.ts",
     "server:dev": "nodemon --exec tsx backend/index.ts",
-    "vercel:dev": "npx vercel@39.2.0 dev",
+    "vercel:dev": "vercel dev",
     "vercel:prod": "vercel --prod",
     "start:all": "concurrently \"npm run server:dev\" \"npm run dev\"",
     "start:vercel": "concurrently \"npm run vercel:dev\" \"npm run dev\"",
@@ -25,7 +25,7 @@
     "@turf/turf": "^7.2.0",
     "@types/nodemailer": "^7.0.1",
     "@types/shapefile": "^0.6.4",
-    "@vercel/node": "^2.15.6",
+    "@vercel/node": "^5.3.24",
     "axios": "^1.11.0",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
@@ -48,13 +48,14 @@
     "xlsx": "^0.18.5"
   },
   "engines": {
-    "node": "20.x"
+    "node": ">=20 <23"
   },
   "devDependencies": {
     "@eslint/js": "^9.33.0",
     "@types/cors": "^2.8.19",
     "@types/express": "^5.0.3",
     "@types/multer": "^1.4.12",
+    "@types/node": "20.14.10",
     "@types/react": "^18.3.24",
     "@types/react-dom": "^18.3.7",
     "@types/uuid": "^10.0.0",
@@ -71,7 +72,10 @@
     "tsx": "^4.20.5",
     "typescript": "~5.8.3",
     "typescript-eslint": "^8.39.1",
-    "vercel": "39.2.0",
+    "vercel": "^48.1.6",
     "vite": "^5.4.20"
+  },
+  "overrides": {
+    "@types/node": "20.14.10"
   }
 }

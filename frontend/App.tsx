@@ -88,7 +88,7 @@ function App() {
         const isPublic = publicViews.includes(currentView)
 
         if (!currentUser && !isPublic) {
-            setCurrentView('landing')
+            setCurrentView('registration')
             return
         }
 
@@ -106,12 +106,12 @@ function App() {
         }
 
         if (!currentUser && !isPublic) {
-            setCurrentView('landing')
+            setCurrentView('registration')
             return
         }
 
         if (view === 'dashboard' && !processingResult) {
-            setCurrentView(currentUser ? 'pipeline' : 'landing')
+            setCurrentView(currentUser ? 'pipeline' : 'registration')
             return
         }
 
@@ -127,20 +127,22 @@ function App() {
     }
 
     const resolvedView: AppView = useMemo(() => {
-        if (!loading && !currentUser && !publicViews.includes(currentView)) {
-            return 'landing'
+        const isPublic = publicViews.includes(currentView)
+
+        if (loading) {
+            return isPublic ? currentView : 'registration'
+        }
+
+        if (!currentUser && !isPublic) {
+            return 'registration'
         }
 
         if (currentUser && currentView === 'registration') {
             return 'pipeline'
         }
 
-        if (currentView === 'dashboard' && !processingResult && !currentUser) {
-            return 'landing'
-        }
-
-        if (currentView === 'dashboard' && !processingResult && currentUser) {
-            return 'pipeline'
+        if (currentView === 'dashboard' && !processingResult) {
+            return currentUser ? 'pipeline' : 'registration'
         }
 
         return currentView
@@ -181,6 +183,15 @@ function App() {
                 )
 
             case 'data-history':
+                if (!currentUser) {
+                    return (
+                        <RegistrationPage
+                            onRegistrationComplete={() => setCurrentView('pipeline')}
+                            onBackToHome={() => setCurrentView('landing')}
+                        />
+                    )
+                }
+
                 return (
                     <div className="mx-auto w-full max-w-7xl px-4 py-8 sm:px-6 lg:px-8">
                         <DataHistory
@@ -240,6 +251,15 @@ function App() {
                 )
 
             case 'dashboard':
+                if (!currentUser) {
+                    return (
+                        <RegistrationPage
+                            onRegistrationComplete={() => setCurrentView('pipeline')}
+                            onBackToHome={() => setCurrentView('landing')}
+                        />
+                    )
+                }
+
                 if (!processingResult) {
                     return (
                         <div className="flex h-full items-center justify-center px-4 py-16 sm:px-6 lg:px-8">
@@ -270,7 +290,15 @@ function App() {
                 )
 
             case 'pipeline':
-            default:
+                if (!currentUser) {
+                    return (
+                        <RegistrationPage
+                            onRegistrationComplete={() => setCurrentView('pipeline')}
+                            onBackToHome={() => setCurrentView('landing')}
+                        />
+                    )
+                }
+
                 return (
                     <>
                         <section className="px-4 py-12 sm:px-6 lg:px-8">
@@ -322,6 +350,11 @@ function App() {
                             </div>
                         </footer>
                     </>
+                )
+
+            default:
+                return (
+                    <LandingPage onGetStarted={handleGetStarted} />
                 )
         }
     }
