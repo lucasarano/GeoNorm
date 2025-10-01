@@ -4,13 +4,8 @@
 const API_BASE_URL = process.env.API_URL || 'http://localhost:3000'
 const API_KEY = process.env.API_KEY || 'test-api-key-123'
 
-// Test datadata
-const testCSV = `Name,Address,City,Phone
-John Doe,123 Main Street,Asuncion,+595981234567
-Jane Smith,456 Oak Avenue,Encarnacion,+595981234568
-Bob Johnson,789 Pine Road,Ciudad del Este,+595981234569`
-
-const testUserId = 'test-user-' + Date.now()
+// Test data
+const testAddress = 'Av. España 123, Asunción'
 
 // Test functions
 async function testHealthCheck() {
@@ -47,36 +42,18 @@ async function testProcessAPI() {
                 'Content-Type': 'application/json',
                 'X-API-Key': API_KEY
             },
-            body: JSON.stringify({
-                csvData: testCSV,
-                userId: testUserId,
-                options: {
-                    sendNotifications: false, // Disable for testing
-                    includeZipCodes: true
-                }
-            })
+            body: JSON.stringify({ address: testAddress })
         })
 
         const data = await response.json()
 
         if (response.ok && data.success) {
             console.log('✅ Process API: Success')
-            console.log(`   Total Processed: ${data.totalProcessed}`)
-            console.log(`   High Confidence: ${data.statistics.highConfidence}`)
-            console.log(`   Medium Confidence: ${data.statistics.mediumConfidence}`)
-            console.log(`   Low Confidence: ${data.statistics.lowConfidence}`)
-            console.log(`   Results: ${data.results.length} addresses`)
-
-            // Show first result
-            if (data.results.length > 0) {
-                const first = data.results[0]
-                console.log('   First Result:')
-                console.log(`     Original: ${first.original.address}, ${first.original.city}`)
-                console.log(`     Cleaned: ${first.cleaned.address}, ${first.cleaned.city}`)
-                console.log(`     Geocoded: ${first.geocoding.latitude}, ${first.geocoding.longitude}`)
-                console.log(`     Confidence: ${first.geocoding.confidence}`)
-            }
-
+            console.log(`   Original: ${data.originalAddress}`)
+            console.log(`   Cleaned: ${data.cleanedAddress}`)
+            console.log(`   Coordinates: ${data.coordinates.latitude}, ${data.coordinates.longitude}`)
+            console.log(`   Zip Code: ${data.zipCode}`)
+            console.log(`   Confidence: ${data.confidence}`)
             return true
         } else {
             console.log('❌ Process API: Failed')
@@ -134,8 +111,7 @@ async function testErrorHandling() {
                 // Missing X-API-Key header
             },
             body: JSON.stringify({
-                csvData: testCSV,
-                userId: testUserId
+                address: testAddress
             })
         })
 
@@ -153,7 +129,7 @@ async function testErrorHandling() {
         return false
     }
 
-    // Test missing CSV data
+    // Test missing address
     try {
         const response = await fetch(`${API_BASE_URL}/api/process`, {
             method: 'POST',
@@ -161,22 +137,19 @@ async function testErrorHandling() {
                 'Content-Type': 'application/json',
                 'X-API-Key': API_KEY
             },
-            body: JSON.stringify({
-                userId: testUserId
-                // Missing csvData
-            })
+            body: JSON.stringify({})
         })
 
         const data = await response.json()
 
-        if (response.status === 400 && data.error === 'CSV data is required') {
-            console.log('✅ Error Handling: Missing CSV data correctly rejected')
+        if (response.status === 400 && data.error === 'Address is required') {
+            console.log('✅ Error Handling: Missing address correctly rejected')
         } else {
-            console.log('❌ Error Handling: Missing CSV data not handled correctly')
+            console.log('❌ Error Handling: Missing address not handled correctly')
             return false
         }
     } catch (error) {
-        console.log('❌ Error Handling: Error testing missing CSV data')
+        console.log('❌ Error Handling: Error testing missing address')
         console.log(`   Error: ${error.message}`)
         return false
     }

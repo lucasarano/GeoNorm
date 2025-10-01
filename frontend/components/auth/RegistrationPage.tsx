@@ -144,49 +144,28 @@ export default function RegistrationPage({ onRegistrationComplete, onBackToHome 
   }
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-orange-50 via-amber-50 to-yellow-50 relative overflow-hidden">
+    <div className="relative min-h-screen overflow-hidden bg-gradient-to-br from-orange-50 via-amber-50 to-yellow-50">
       {/* Background decorative elements */}
-      <div className="absolute inset-0 overflow-hidden">
-        <div className="absolute -top-40 -right-32 w-80 h-80 bg-gradient-to-br from-orange-200/30 to-amber-300/20 rounded-full blur-3xl"></div>
-        <div className="absolute -bottom-32 -left-40 w-96 h-96 bg-gradient-to-tr from-orange-300/20 to-yellow-200/30 rounded-full blur-3xl"></div>
+      <div className="pointer-events-none absolute inset-0 overflow-hidden">
+        <div className="absolute -top-40 -right-32 h-80 w-80 rounded-full bg-gradient-to-br from-orange-200/30 to-amber-300/20 blur-3xl"></div>
+        <div className="absolute -bottom-32 -left-40 h-96 w-96 rounded-full bg-gradient-to-tr from-orange-300/20 to-yellow-200/30 blur-3xl"></div>
       </div>
 
-      {/* Header */}
-      <header className="relative z-20 bg-white/95 backdrop-blur-xl border-b border-orange-100/50 shadow-sm">
-        <div className="max-w-7xl mx-auto px-6 lg:px-8 py-5">
-          <div className="flex items-center justify-between">
-            {/* Logo & Brand - Left Side */}
-            <div className="flex items-center space-x-4 group cursor-pointer" onClick={onBackToHome}>
-              <div className="relative">
-                <div className="w-12 h-12 bg-gradient-to-br from-orange-500 via-amber-500 to-yellow-500 rounded-2xl flex items-center justify-center shadow-xl group-hover:shadow-orange-200/50 transition-all duration-300 group-hover:scale-105">
-                  <svg className="w-7 h-7 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z" />
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M15 11a3 3 0 11-6 0 3 3 0 016 0z" />
-                  </svg>
-                </div>
-                <div className="absolute -top-1 -right-1 w-4 h-4 bg-gradient-to-r from-emerald-400 to-teal-400 rounded-full border-2 border-white animate-pulse"></div>
-              </div>
-              <div>
-                <h1 className="text-3xl font-black tracking-tight bg-gradient-to-r from-gray-900 via-gray-800 to-gray-900 bg-clip-text text-transparent group-hover:from-orange-600 group-hover:via-amber-600 group-hover:to-yellow-600 transition-all duration-300">
-                  GeoNorm
-                </h1>
-                <p className="text-sm text-gray-600 font-medium tracking-wide">Inteligencia de Direcciones con IA</p>
-              </div>
-            </div>
-
-            {/* Back Button */}
-            <Button
-              onClick={onBackToHome}
-              className="text-gray-600 hover:text-orange-600 transition-colors duration-200 text-sm font-medium bg-transparent border-0 shadow-none hover:bg-orange-50 px-4 py-2 rounded-lg"
-            >
-              ← Volver al Inicio
-            </Button>
-          </div>
-        </div>
-      </header>
-
       {/* Main Content */}
-      <section className="relative z-10 py-16 px-4 sm:px-6 lg:px-8">
+      <section className="relative z-10 px-4 pb-16 pt-28 sm:px-6 lg:px-8">
+        <div className="mx-auto mb-6 flex max-w-md items-center justify-between">
+          <button
+            onClick={onBackToHome}
+            className="inline-flex items-center gap-2 rounded-full border border-orange-200/70 bg-white/70 px-4 py-2 text-sm font-medium text-gray-700 shadow-sm backdrop-blur transition-all duration-200 hover:border-orange-300 hover:text-orange-600"
+          >
+            <span className="text-lg">←</span>
+            Volver al inicio
+          </button>
+          <span className="rounded-full border border-white/70 bg-white/70 px-3 py-1 text-xs font-semibold uppercase tracking-wide text-gray-500 shadow-sm backdrop-blur">
+            {isSignIn ? 'Ingreso' : 'Registro'}
+          </span>
+        </div>
+
         <div className="max-w-md mx-auto">
           <Card className="bg-white/90 backdrop-blur-sm border border-orange-100 shadow-2xl p-8">
             <div className="text-center mb-8">

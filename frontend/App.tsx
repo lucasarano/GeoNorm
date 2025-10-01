@@ -1,4 +1,4 @@
-import React, { useState } from 'react'
+import React, { useEffect, useMemo, useState } from 'react'
 import LandingPage from './components/LandingPage'
 import RegistrationPage from './components/auth/RegistrationPage'
 import UnifiedProcessor from './components/UnifiedProcessor'
@@ -7,362 +7,338 @@ import DataHistory from './components/DataHistory'
 import LocationCollection from './components/LocationCollection'
 import Documentation from './components/Documentation'
 import ApiKeyDashboard from './components/ApiKeyDashboard'
-
-type AppState = 'landing' | 'registration' | 'pipeline' | 'dashboard' | 'data-history' | 'location-collection' | 'documentation' | 'api-keys'
+import AppHeader from './components/layout/AppHeader'
+import type { AppView } from './types/app-view'
+import { useAuth } from './contexts/AuthContext'
 
 interface ProcessingResult {
-  success: boolean
-  totalProcessed: number
-  statistics: {
-    highConfidence: number
-    mediumConfidence: number
-    lowConfidence: number
-    totalRows: number
-  }
-  results: any[]
-  debug?: {
-    batchProcessing?: any
-    geocodingInteractions?: any
-  }
+    success: boolean
+    totalProcessed: number
+    statistics: {
+        highConfidence: number
+        mediumConfidence: number
+        lowConfidence: number
+        totalRows: number
+    }
+    results: any[]
+    debug?: {
+        batchProcessing?: any
+        geocodingInteractions?: any
+    }
+}
+
+const viewBackgrounds: Record<AppView, string> = {
+    landing: 'bg-gradient-to-br from-orange-50 via-amber-50 to-yellow-50',
+    registration: 'bg-gray-50',
+    pipeline: 'bg-gradient-to-br from-orange-50 via-amber-50 to-yellow-50',
+    dashboard: 'bg-gradient-to-br from-orange-50 via-amber-50 to-yellow-50',
+    'data-history': 'bg-gradient-to-br from-orange-50 via-amber-50 to-yellow-50',
+    'location-collection': 'bg-gray-50',
+    documentation: 'bg-gray-50',
+    'api-keys': 'bg-gray-50'
+}
+
+const mainClassMap: Partial<Record<AppView, string>> = {
+    landing: 'flex-1',
+    pipeline: 'flex-1',
+    documentation: 'flex-1',
+    registration: 'flex-1',
+    dashboard: 'flex-1',
+    'data-history': 'flex-1',
+    'location-collection': 'flex-1',
+    'api-keys': 'flex-1'
 }
 
 function App() {
-  const [currentView, setCurrentView] = useState<AppState>(() => {
-    // Check URL path for different views
-    const path = window.location.pathname
-    const params = new URLSearchParams(window.location.search)
+    const [currentView, setCurrentView] = useState<AppView>(() => {
+        const path = window.location.pathname
+        const params = new URLSearchParams(window.location.search)
 
-    if (path === '/location' || params.has('orderID') || params.has('token')) {
-      return 'location-collection'
+        if (path === '/location' || params.has('orderID') || params.has('token')) {
+            return 'location-collection'
+        }
+        if (path === '/documentation' || path === '/docs') {
+            return 'documentation'
+        }
+        if (path === '/api-keys' || path === '/dashboard') {
+            return 'api-keys'
+        }
+
+        return 'landing'
+    })
+
+    const { currentUser, loading } = useAuth()
+
+    const [userId] = useState(() => {
+        let id = localStorage.getItem('geonorm-user-id')
+        if (!id) {
+            id = `user-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+            localStorage.setItem('geonorm-user-id', id)
+        }
+        return id
+    })
+
+    const [processingResult, setProcessingResult] = useState<ProcessingResult | null>(null)
+
+    const publicViews = useMemo<AppView[]>(() => ['landing', 'registration', 'location-collection'], [])
+
+    useEffect(() => {
+        if (loading) return
+
+        const isPublic = publicViews.includes(currentView)
+
+        if (!currentUser && !isPublic) {
+            setCurrentView('landing')
+            return
+        }
+
+        if (currentUser && currentView === 'registration') {
+            setCurrentView('pipeline')
+        }
+    }, [currentUser, currentView, loading, publicViews])
+
+    const handleNavigate = (view: AppView) => {
+        const isPublic = publicViews.includes(view)
+
+        if (view === 'registration' && currentUser) {
+            setCurrentView('pipeline')
+            return
+        }
+
+        if (!currentUser && !isPublic) {
+            setCurrentView('landing')
+            return
+        }
+
+        if (view === 'dashboard' && !processingResult) {
+            setCurrentView(currentUser ? 'pipeline' : 'landing')
+            return
+        }
+
+        setCurrentView(view)
     }
-    if (path === '/documentation' || path === '/docs') {
-      return 'documentation'
+
+    const handleGetStarted = () => {
+        if (currentUser) {
+            setCurrentView('pipeline')
+        } else {
+            setCurrentView('registration')
+        }
     }
-    if (path === '/api-keys' || path === '/dashboard') {
-      return 'api-keys'
+
+    const resolvedView: AppView = useMemo(() => {
+        if (!loading && !currentUser && !publicViews.includes(currentView)) {
+            return 'landing'
+        }
+
+        if (currentUser && currentView === 'registration') {
+            return 'pipeline'
+        }
+
+        if (currentView === 'dashboard' && !processingResult && !currentUser) {
+            return 'landing'
+        }
+
+        if (currentView === 'dashboard' && !processingResult && currentUser) {
+            return 'pipeline'
+        }
+
+        return currentView
+    }, [currentView, currentUser, loading, processingResult, publicViews])
+
+    const renderContent = () => {
+        switch (resolvedView) {
+            case 'landing':
+                return (
+                    <LandingPage
+                        onGetStarted={handleGetStarted}
+                    />
+                )
+
+            case 'registration':
+                return (
+                    <RegistrationPage
+                        onRegistrationComplete={() => setCurrentView('pipeline')}
+                        onBackToHome={() => setCurrentView('landing')}
+                    />
+                )
+
+            case 'location-collection': {
+                const params = new URLSearchParams(window.location.search)
+                const orderID = params.get('orderID') || undefined
+                const token = params.get('token') || undefined
+                return <LocationCollection orderID={orderID} token={token} />
+            }
+
+            case 'documentation':
+                return <Documentation />
+
+            case 'api-keys':
+                return (
+                    <div className="mx-auto w-full max-w-7xl px-4 py-8 sm:px-6 lg:px-8">
+                        <ApiKeyDashboard userId={userId} />
+                    </div>
+                )
+
+            case 'data-history':
+                return (
+                    <div className="mx-auto w-full max-w-7xl px-4 py-8 sm:px-6 lg:px-8">
+                        <DataHistory
+                            onSelectDataset={(dataset, addresses) => {
+                                const convertedResults = addresses.map(addr => ({
+                                    recordId: addr.id,
+                                    locationLinkToken: addr.locationLinkToken || undefined,
+                                    locationLinkStatus: addr.locationLinkStatus || undefined,
+                                    locationLinkExpiresAt: addr.locationLinkExpiresAt?.toDate?.()?.toISOString(),
+                                    lastLocationUpdate: addr.lastLocationUpdate?.toDate?.()?.toISOString(),
+                                    rowIndex: addr.rowIndex,
+                                    original: {
+                                        address: addr.originalAddress,
+                                        city: addr.originalCity || '',
+                                        state: addr.originalState || '',
+                                        phone: addr.originalPhone || ''
+                                    },
+                                    cleaned: {
+                                        address: addr.cleanedAddress,
+                                        city: addr.cleanedCity,
+                                        state: addr.cleanedState,
+                                        phone: addr.cleanedPhone || '',
+                                        email: addr.cleanedEmail || ''
+                                    },
+                                    geocoding: {
+                                        latitude: addr.coordinates?.lat || null,
+                                        longitude: addr.coordinates?.lng || null,
+                                        formattedAddress: addr.formattedAddress || '',
+                                        confidence: addr.geocodingConfidence === 'high' ? 0.9 :
+                                            addr.geocodingConfidence === 'medium' ? 0.7 : 0.4,
+                                        confidenceDescription: `Confidence: ${addr.geocodingConfidence}`,
+                                        locationType: addr.locationType || 'N/A',
+                                        staticMapUrl: null
+                                    },
+                                    status: addr.geocodingConfidence === 'high' ? 'high_confidence' :
+                                        addr.geocodingConfidence === 'medium' ? 'medium_confidence' : 'low_confidence'
+                                }))
+
+                                const statistics = {
+                                    highConfidence: dataset.highConfidenceAddresses,
+                                    mediumConfidence: dataset.mediumConfidenceAddresses,
+                                    lowConfidence: dataset.lowConfidenceAddresses,
+                                    totalRows: dataset.processedRows
+                                }
+
+                                setProcessingResult({
+                                    success: true,
+                                    totalProcessed: dataset.processedRows,
+                                    statistics,
+                                    results: convertedResults
+                                })
+                                setCurrentView('dashboard')
+                            }}
+                            onBack={() => setCurrentView('pipeline')}
+                        />
+                    </div>
+                )
+
+            case 'dashboard':
+                if (!processingResult) {
+                    return (
+                        <div className="flex h-full items-center justify-center px-4 py-16 sm:px-6 lg:px-8">
+                            <div className="max-w-md rounded-3xl bg-white/80 p-8 text-center shadow-xl backdrop-blur">
+                                <p className="text-lg font-semibold text-gray-700">
+                                    Genera un procesamiento para ver el dashboard.
+                                </p>
+                                <button
+                                    onClick={() => setCurrentView(currentUser ? 'pipeline' : 'landing')}
+                                    className="mt-6 inline-flex items-center justify-center rounded-full bg-gradient-to-r from-orange-500 via-amber-500 to-yellow-500 px-6 py-2 text-sm font-semibold text-white shadow-lg shadow-orange-200/70 transition-transform duration-200 hover:scale-105"
+                                >
+                                    Ir al pipeline
+                                </button>
+                            </div>
+                        </div>
+                    )
+                }
+
+                return (
+                    <div className="mx-auto w-full max-w-7xl px-4 py-8 sm:px-6 lg:px-8">
+                        <DataDashboard
+                            data={processingResult.results}
+                            statistics={processingResult.statistics}
+                            debug={processingResult.debug}
+                            onBack={() => setCurrentView('pipeline')}
+                        />
+                    </div>
+                )
+
+            case 'pipeline':
+            default:
+                return (
+                    <>
+                        <section className="px-4 py-12 sm:px-6 lg:px-8">
+                            <div className="mx-auto max-w-4xl text-center">
+                                <h2 className="text-4xl font-black text-gray-900 md:text-5xl">
+                                    Transforma Direcciones En
+                                    <span className="bg-gradient-to-r from-orange-600 via-amber-600 to-yellow-600 bg-clip-text text-transparent"> Coordenadas Precisas</span>
+                                </h2>
+                                <p className="mt-6 text-lg text-gray-700 md:text-xl">
+                                    Potenciado por OpenAI y Google Maps para geocodificación precisa y normalización inteligente de direcciones.
+                                </p>
+                            </div>
+                        </section>
+
+                        <section className="px-4 pb-16 sm:px-6 lg:px-8">
+                            <div className="mx-auto max-w-6xl rounded-3xl border border-orange-100 bg-white/70 p-8 shadow-2xl backdrop-blur-sm">
+                                <div className="mb-8 flex items-center">
+                                    <div className="mr-4 flex h-12 w-12 items-center justify-center rounded-xl bg-gradient-to-r from-orange-500 to-amber-500 text-white shadow-lg">
+                                        <svg className="h-6 w-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19.428 15.428a2 2 0 00-1.022-.547l-2.387-.477a6 6 0 00-3.86.517l-.318.158a6 6 0 01-3.86.517L6.05 15.21a2 2 0 00-1.806.547M8 4h8l-1 1v5.172a2 2 0 00.586 1.414l5 5c1.26 1.26.367 3.414-1.415 3.414H4.828c-1.782 0-2.674-2.154-1.414-3.414l5-5A2 2 0 009 10.172V5L8 4z" />
+                                        </svg>
+                                    </div>
+                                    <div>
+                                        <h3 className="text-2xl font-bold text-gray-900">Pipeline de Procesamiento de Direcciones</h3>
+                                        <p className="text-gray-600">Extraer desde CSV → Limpiar con IA → Geocodificar con Precisión</p>
+                                    </div>
+                                </div>
+
+                                <UnifiedProcessor
+                                    onProcessingComplete={(result) => {
+                                        setProcessingResult(result)
+                                        setCurrentView('dashboard')
+                                    }}
+                                />
+                            </div>
+                        </section>
+
+                        <footer className="border-t border-orange-100 bg-white/60">
+                            <div className="mx-auto flex max-w-7xl items-center justify-between px-4 py-8 sm:px-6 lg:px-8">
+                                <div className="flex items-center space-x-3">
+                                    <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-gradient-to-r from-orange-500 to-amber-500 text-xs font-bold text-white">
+                                        GN
+                                    </div>
+                                    <span className="text-sm text-gray-600">Powered by OpenAI & Google Maps</span>
+                                </div>
+                                <p className="text-sm text-gray-500">
+                                    Construido para el futuro de la inteligencia de direcciones
+                                </p>
+                            </div>
+                        </footer>
+                    </>
+                )
+        }
     }
 
-    return 'landing'
-  })
-  const [userId] = useState(() => {
-    // Get or generate user ID
-    let id = localStorage.getItem('geonorm-user-id')
-    if (!id) {
-      id = `user-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
-      localStorage.setItem('geonorm-user-id', id)
-    }
-    return id
-  })
-  const [processingResult, setProcessingResult] = useState<ProcessingResult | null>(null)
+    const backgroundClass = viewBackgrounds[resolvedView] ?? 'bg-gray-50'
+    const mainClass = mainClassMap[resolvedView] ?? 'flex-1'
 
-  if (currentView === 'landing') {
     return (
-      <LandingPage
-        onGetStarted={() => setCurrentView('registration')}
-        onNavigate={(view) => setCurrentView(view)}
-      />
-    )
-  }
-
-  if (currentView === 'registration') {
-    return (
-      <RegistrationPage
-        onRegistrationComplete={() => setCurrentView('pipeline')}
-        onBackToHome={() => setCurrentView('landing')}
-      />
-    )
-  }
-
-  if (currentView === 'location-collection') {
-    const params = new URLSearchParams(window.location.search)
-    const orderID = params.get('orderID') || undefined
-    const token = params.get('token') || undefined
-    return <LocationCollection orderID={orderID} token={token} />
-  }
-
-  if (currentView === 'documentation') {
-    return <Documentation />
-  }
-
-  if (currentView === 'api-keys') {
-    return (
-      <div className="min-h-screen bg-gray-50">
-        {/* Header */}
-        <header className="bg-white border-b">
-          <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center space-x-3">
-                <div className="w-10 h-10 bg-gradient-to-r from-orange-500 to-amber-500 rounded-xl flex items-center justify-center shadow-lg">
-                  <svg className="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z" />
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 11a3 3 0 11-6 0 3 3 0 016 0z" />
-                  </svg>
-                </div>
-                <div>
-                  <h1 className="text-2xl font-bold text-gray-900">GeoNorm API Dashboard</h1>
-                  <p className="text-sm text-gray-600">Manage your API keys and monitor usage</p>
-                </div>
-              </div>
-              <div className="flex items-center space-x-4">
-                <button
-                  onClick={() => setCurrentView('documentation')}
-                  className="text-gray-600 hover:text-blue-600 transition-colors duration-200 text-sm font-medium"
-                >
-                  📚 Documentation
-                </button>
-                <button
-                  onClick={() => setCurrentView('pipeline')}
-                  className="text-gray-600 hover:text-orange-600 transition-colors duration-200 text-sm font-medium"
-                >
-                  🧪 Try Pipeline
-                </button>
-                <button
-                  onClick={() => setCurrentView('landing')}
-                  className="text-gray-600 hover:text-orange-600 transition-colors duration-200 text-sm font-medium"
-                >
-                  ← Home
-                </button>
-              </div>
+        <div className={`min-h-screen w-full ${backgroundClass}`}>
+            <div className="flex min-h-screen flex-col">
+                <AppHeader activeView={resolvedView} onNavigate={handleNavigate} onGetStarted={handleGetStarted} />
+                <main className={mainClass}>
+                    {renderContent()}
+                </main>
             </div>
-          </div>
-        </header>
-
-        {/* Main Content */}
-        <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-          <ApiKeyDashboard userId={userId} />
-        </main>
-      </div>
-    )
-  }
-
-
-  if (currentView === 'data-history') {
-    return (
-      <div className="min-h-screen bg-gradient-to-br from-orange-50 via-amber-50 to-yellow-50">
-        {/* Header */}
-        <header className="bg-white/90 backdrop-blur-md border-b border-orange-100 sticky top-0 z-50">
-          <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center space-x-3">
-                <div className="w-10 h-10 bg-gradient-to-r from-orange-500 to-amber-500 rounded-xl flex items-center justify-center shadow-lg">
-                  <svg className="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z" />
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 11a3 3 0 11-6 0 3 3 0 016 0z" />
-                  </svg>
-                </div>
-                <div>
-                  <h1 className="text-2xl md:text-3xl font-bold tracking-tight bg-gradient-to-r from-orange-600 to-amber-600 bg-clip-text text-transparent">GeoNorm</h1>
-                  <p className="text-sm text-gray-600">Historial de Datos</p>
-                </div>
-              </div>
-            </div>
-          </div>
-        </header>
-
-        {/* Main Content */}
-        <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-          <DataHistory
-            onSelectDataset={(dataset, addresses) => {
-              // Convert Firebase data to the format expected by DataDashboard
-              const convertedResults = addresses.map(addr => ({
-                recordId: addr.id,
-                locationLinkToken: addr.locationLinkToken || undefined,
-                locationLinkStatus: addr.locationLinkStatus || undefined,
-                locationLinkExpiresAt: addr.locationLinkExpiresAt?.toDate?.()?.toISOString(),
-                lastLocationUpdate: addr.lastLocationUpdate?.toDate?.()?.toISOString(),
-                rowIndex: addr.rowIndex,
-                original: {
-                  address: addr.originalAddress,
-                  city: addr.originalCity || '',
-                  state: addr.originalState || '',
-                  phone: addr.originalPhone || ''
-                },
-                cleaned: {
-                  address: addr.cleanedAddress,
-                  city: addr.cleanedCity,
-                  state: addr.cleanedState,
-                  phone: addr.cleanedPhone || '',
-                  email: addr.cleanedEmail || ''
-                },
-                geocoding: {
-                  latitude: addr.coordinates?.lat || null,
-                  longitude: addr.coordinates?.lng || null,
-                  formattedAddress: addr.formattedAddress || '',
-                  confidence: addr.geocodingConfidence === 'high' ? 0.9 :
-                    addr.geocodingConfidence === 'medium' ? 0.7 : 0.4,
-                  confidenceDescription: `Confidence: ${addr.geocodingConfidence}`,
-                  locationType: addr.locationType || 'N/A',
-                  staticMapUrl: null
-                },
-                status: addr.geocodingConfidence === 'high' ? 'high_confidence' :
-                  addr.geocodingConfidence === 'medium' ? 'medium_confidence' : 'low_confidence'
-              }))
-
-              const statistics = {
-                highConfidence: dataset.highConfidenceAddresses,
-                mediumConfidence: dataset.mediumConfidenceAddresses,
-                lowConfidence: dataset.lowConfidenceAddresses,
-                totalRows: dataset.processedRows
-              }
-
-              setProcessingResult({
-                success: true,
-                totalProcessed: dataset.processedRows,
-                statistics,
-                results: convertedResults
-              })
-              setCurrentView('dashboard')
-            }}
-            onBack={() => setCurrentView('pipeline')}
-          />
-        </main>
-      </div>
-    )
-  }
-
-
-  if (currentView === 'dashboard' && processingResult) {
-    return (
-      <div className="min-h-screen bg-gradient-to-br from-orange-50 via-amber-50 to-yellow-50">
-        {/* Header */}
-        <header className="bg-white/90 backdrop-blur-md border-b border-orange-100 sticky top-0 z-50">
-          <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center space-x-3">
-                <div className="w-10 h-10 bg-gradient-to-r from-orange-500 to-amber-500 rounded-xl flex items-center justify-center shadow-lg">
-                  <svg className="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z" />
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 11a3 3 0 11-6 0 3 3 0 016 0z" />
-                  </svg>
-                </div>
-                <div>
-                  <h1 className="text-2xl md:text-3xl font-bold tracking-tight bg-gradient-to-r from-orange-600 to-amber-600 bg-clip-text text-transparent">GeoNorm</h1>
-                  <p className="text-sm text-gray-600">Dashboard de Resultados</p>
-                </div>
-              </div>
-            </div>
-          </div>
-        </header>
-
-        {/* Main Content */}
-        <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-          <DataDashboard
-            data={processingResult.results}
-            statistics={processingResult.statistics}
-            debug={processingResult.debug}
-            onBack={() => setCurrentView('pipeline')}
-          />
-        </main>
-      </div>
-    )
-  }
-
-  return (
-    <div className="min-h-screen bg-gradient-to-br from-orange-50 via-amber-50 to-yellow-50">
-      {/* Header */}
-      <header className="bg-white/90 backdrop-blur-md border-b border-orange-100 sticky top-0 z-50">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center space-x-3">
-              <div className="w-10 h-10 bg-gradient-to-r from-orange-500 to-amber-500 rounded-xl flex items-center justify-center shadow-lg">
-                <svg className="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z" />
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 11a3 3 0 11-6 0 3 3 0 016 0z" />
-                </svg>
-              </div>
-              <div>
-                <h1 className="text-2xl md:text-3xl font-bold tracking-tight bg-gradient-to-r from-orange-600 to-amber-600 bg-clip-text text-transparent">GeoNorm</h1>
-                <p className="text-sm text-gray-600">Inteligencia de Direcciones con IA</p>
-              </div>
-            </div>
-            <div className="flex items-center space-x-4">
-              <button
-                onClick={() => setCurrentView('documentation')}
-                className="text-gray-600 hover:text-blue-600 transition-colors duration-200 text-sm font-medium"
-              >
-                📚 API Docs
-              </button>
-              <button
-                onClick={() => setCurrentView('api-keys')}
-                className="text-gray-600 hover:text-purple-600 transition-colors duration-200 text-sm font-medium"
-              >
-                🔑 API Keys
-              </button>
-              <button
-                onClick={() => setCurrentView('data-history')}
-                className="text-gray-600 hover:text-orange-600 transition-colors duration-200 text-sm font-medium"
-              >
-                📊 Ver Datos Anteriores
-              </button>
-              <button
-                onClick={() => setCurrentView('landing')}
-                className="text-gray-600 hover:text-orange-600 transition-colors duration-200 text-sm font-medium"
-              >
-                ← Volver al Inicio
-              </button>
-            </div>
-          </div>
         </div>
-      </header>
-
-      {/* Hero Section */}
-      <section className="py-12 px-4 sm:px-6 lg:px-8">
-        <div className="max-w-4xl mx-auto text-center">
-          <h2 className="text-4xl md:text-5xl font-black text-gray-900 mb-6">
-            Transforma Direcciones En
-            <span className="bg-gradient-to-r from-orange-600 via-amber-600 to-yellow-600 bg-clip-text text-transparent"> Coordenadas Precisas</span>
-          </h2>
-          <p className="text-xl text-gray-700 mb-8 max-w-2xl mx-auto">
-            Potenciado por OpenAI y Google Maps para geocodificación precisa y normalización inteligente de direcciones
-          </p>
-        </div>
-      </section>
-
-      {/* Main Content */}
-      <main className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 pb-16">
-        <div className="bg-white/70 backdrop-blur-sm rounded-3xl shadow-2xl border border-orange-100">
-          <div className="p-8">
-            <div>
-              <div className="flex items-center mb-6">
-                <div className="w-12 h-12 bg-gradient-to-r from-orange-500 to-amber-500 rounded-xl flex items-center justify-center shadow-lg mr-4">
-                  <svg className="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19.428 15.428a2 2 0 00-1.022-.547l-2.387-.477a6 6 0 00-3.86.517l-.318.158a6 6 0 01-3.86.517L6.05 15.21a2 2 0 00-1.806.547M8 4h8l-1 1v5.172a2 2 0 00.586 1.414l5 5c1.26 1.26.367 3.414-1.415 3.414H4.828c-1.782 0-2.674-2.154-1.414-3.414l5-5A2 2 0 009 10.172V5L8 4z" />
-                  </svg>
-                </div>
-                <div>
-                  <h3 className="text-2xl font-bold text-gray-900">Pipeline de Procesamiento de Direcciones</h3>
-                  <p className="text-gray-600">Extraer desde CSV → Limpiar con IA → Geocodificar con Precisión</p>
-                </div>
-              </div>
-              <UnifiedProcessor
-                onProcessingComplete={(result) => {
-                  setProcessingResult(result)
-                  setCurrentView('dashboard')
-                }}
-              />
-            </div>
-          </div>
-        </div>
-      </main>
-
-      {/* Footer */}
-      <footer className="bg-white/60 backdrop-blur-sm border-t border-orange-100">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center space-x-3">
-              <div className="w-8 h-8 bg-gradient-to-r from-orange-500 to-amber-500 rounded-lg flex items-center justify-center">
-                <span className="text-xs font-bold text-white">GN</span>
-              </div>
-              <span className="text-gray-600">Powered by OpenAI & Google Maps</span>
-            </div>
-            <div className="text-sm text-gray-500">
-              Construido para el futuro de la inteligencia de direcciones
-            </div>
-          </div>
-        </div>
-      </footer>
-    </div>
-  )
+    )
 }
 
 export default App

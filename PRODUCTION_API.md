@@ -2,13 +2,7 @@
 
 ## Overview
 
-The GeoNorm Production API provides a single endpoint for complete address processing and geocoding. It handles the entire pipeline automatically:
-
-1. **Extract** - AI-powered field extraction from CSV
-2. **Clean** - AI-powered address normalization  
-3. **Geocode** - Google Maps geocoding with coordinates
-4. **Save** - Automatic database storage
-5. **Notify** - SMS/Email notifications (optional)
+The GeoNorm Production API lets you send a single address string and receive the cleaned address, GPS coordinates, and Paraguayan zip code metadata. The endpoint performs Google Maps geocoding and zip code lookup so you only need to provide the raw address text.
 
 ## Base URL
 
@@ -17,140 +11,89 @@ The GeoNorm Production API provides a single endpoint for complete address proce
 
 ## Authentication
 
-All requests require an API key in the `X-API-Key` header.
+Include your API key in the `X-API-Key` header for every request.
 
-## Endpoints
-
-### 1. Process Addresses
-
-**Endpoint**: `POST /api/process`
-
-**Description**: Complete address processing pipeline
-
-**Headers**:
 ```
-Content-Type: application/json
 X-API-Key: your-api-key
+Content-Type: application/json
 ```
 
-**Request Body**:
+## Endpoint
+
+### `POST /api/process`
+
+Submit a raw address string and receive the normalized result.
+
+#### Request Body
+
 ```json
 {
-  "csvData": "Name,Address,City\nJohn,123 Main St,Asuncion",
-  "userId": "user-123",
-  "options": {
-    "sendNotifications": true,
-    "includeZipCodes": true
-  }
+  "address": "Av. España 123, Asunción"
 }
 ```
 
-**Response**:
+You may also send the address as a plain string payload; the API will interpret either format.
+
+#### Response
+
 ```json
 {
   "success": true,
-  "totalProcessed": 1,
-  "statistics": {
-    "highConfidence": 1,
-    "mediumConfidence": 0,
-    "lowConfidence": 0,
-    "totalRows": 1
+  "userId": "user-123",
+  "originalAddress": "Av. España 123, Asunción",
+  "cleanedAddress": "Av. España 123, Asunción, Paraguay",
+  "coordinates": {
+    "latitude": -25.282362,
+    "longitude": -57.635981
   },
-  "notifications": {
-    "sms": { "sent": 0, "failed": 0 },
-    "email": { "sent": 1, "failed": 0 }
+  "zipCode": "1000",
+  "zipCodeDetails": {
+    "zipCode": "1000",
+    "department": "Capital",
+    "district": "Asunción",
+    "neighborhood": "San Roque",
+    "confidence": "high"
   },
-  "results": [
-    {
-      "rowIndex": 0,
-      "original": {
-        "address": "123 Main St",
-        "city": "Asuncion",
-        "state": "",
-        "phone": ""
-      },
-      "cleaned": {
-        "address": "123 Main St",
-        "city": "Asunción",
-        "state": "Asunción",
-        "phone": "",
-        "email": ""
-      },
-      "geocoding": {
-        "latitude": -25.2637,
-        "longitude": -57.5759,
-        "formattedAddress": "123 Main St, Asunción, Paraguay",
-        "confidence": 0.9,
-        "confidenceDescription": "Most precise - exact address match",
-        "locationType": "ROOFTOP",
-        "googleMapsLink": "https://www.google.com/maps?q=-25.2637,-57.5759"
-      },
-      "zipCode": {
-        "zipCode": "1000",
-        "department": "Asunción",
-        "district": "Asunción",
-        "neighborhood": "Centro",
-        "confidence": "high"
-      },
-      "status": "high_confidence"
-    }
-  ],
-  "timestamp": "2024-01-15T10:30:00.000Z"
+  "confidence": 0.95,
+  "confidenceDescription": "Most precise - exact address match",
+  "locationType": "ROOFTOP",
+  "timestamp": "2024-04-10T15:23:45.123Z"
 }
 ```
 
-### 2. Health Check
+When no precise result can be found the API returns an error with HTTP status `404` and `error: "Unable to find a matching location"`.
 
-**Endpoint**: `GET /api/health`
+## Additional Endpoints
 
-**Description**: Check API health and status
+### `GET /api/health`
 
-**Response**:
-```json
-{
-  "status": "OK",
-  "message": "GeoNorm API Server is running",
-  "timestamp": "2024-01-15T10:30:00.000Z",
-  "environment": {
-    "nodeEnv": "production",
-    "allEnvVarsPresent": true
-  }
-}
-```
+Returns API status, environment, and timestamp for monitoring.
 
-### 3. Static Map
+### `GET /api/staticmap`
 
-**Endpoint**: `GET /api/staticmap`
+Generate a static PNG map for any coordinate pair.
 
-**Description**: Generate static map images
-
-**Parameters**:
 - `lat` (required): Latitude
-- `lng` (required): Longitude  
-- `zoom` (optional): Zoom level (default: 14)
-- `size` (optional): Image size (default: 600x300)
+- `lng` (required): Longitude
+- `zoom` (optional): 14 by default
+- `size` (optional): 600x300 by default
 
-**Example**: `/api/staticmap?lat=-25.2637&lng=-57.5759&zoom=14&size=600x300`
-
-**Response**: PNG image or JSON error
+Example: `/api/staticmap?lat=-25.2637&lng=-57.5759&zoom=14&size=600x300`
 
 ## Usage Examples
 
-### JavaScript/Node.js
+### JavaScript / Node.js
 
 ```javascript
 import { createGeoNormAPI } from './lib/production-api'
 
 const api = createGeoNormAPI('your-api-key')
 
-// Process addresses
-const result = await api.processAddresses(csvData, userId, {
-  sendNotifications: true,
-  includeZipCodes: true
-})
+const result = await api.processAddress('Av. España 123, Asunción')
 
-console.log(`Processed ${result.totalProcessed} addresses`)
-console.log(`High confidence: ${result.statistics.highConfidence}`)
+console.log(result.cleanedAddress)
+console.log(result.coordinates)
+console.log(result.zipCode)
 ```
 
 ### cURL
@@ -160,8 +103,7 @@ curl -X POST https://your-app.vercel.app/api/process \
   -H "Content-Type: application/json" \
   -H "X-API-Key: your-api-key" \
   -d '{
-    "csvData": "Name,Address,City\nJohn,123 Main St,Asuncion",
-    "userId": "user-123"
+    "address": "Av. España 123, Asunción"
   }'
 ```
 
@@ -175,41 +117,21 @@ headers = {
     "Content-Type": "application/json",
     "X-API-Key": "your-api-key"
 }
-data = {
-    "csvData": "Name,Address,City\nJohn,123 Main St,Asuncion",
-    "userId": "user-123"
-}
 
-response = requests.post(url, json=data, headers=headers)
+payload = {"address": "Av. España 123, Asunción"}
+
+response = requests.post(url, json=payload, headers=headers)
 result = response.json()
+
+print(result["cleanedAddress"], result["coordinates"]) 
 ```
 
 ## Error Handling
 
-### Common Error Responses
-
-**401 Unauthorized**:
-```json
-{
-  "error": "API key required"
-}
-```
-
-**400 Bad Request**:
-```json
-{
-  "error": "CSV data is required"
-}
-```
-
-**500 Internal Server Error**:
-```json
-{
-  "success": false,
-  "error": "Processing failed",
-  "details": "OpenAI API key not configured"
-}
-```
+- **401 Unauthorized** – missing or invalid API key.
+- **400 Bad Request** – the address value is missing or empty.
+- **404 Not Found** – Google Maps could not find a matching location for the provided address.
+- **500 Internal Server Error** – unexpected failure while contacting Google Maps or loading zip code data.
 
 ## Rate Limits
 
@@ -217,25 +139,9 @@ result = response.json()
 - **Pro Tier**: 10,000 requests/day
 - **Enterprise**: 100,000 requests/day
 
-## Processing Limits
-
-- **Max CSV Size**: 10MB
-- **Max Rows per Request**: 1,000
-- **Processing Timeout**: 5 minutes
-- **Concurrent Requests**: 10 per user
-
 ## Support
 
 - **Documentation**: [API Docs](https://your-app.vercel.app/docs)
 - **Status**: [Status Page](https://status.your-app.com)
 - **Support**: support@your-app.com
 
-## Changelog
-
-### v1.0.0 (2024-01-15)
-- Initial release
-- Single endpoint processing pipeline
-- AI-powered field extraction and cleaning
-- Google Maps geocoding
-- Automatic notifications
-- Firebase integration

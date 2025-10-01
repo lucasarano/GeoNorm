@@ -5,63 +5,27 @@ export const PRODUCTION_API_CONFIG = {
         : 'https://geonorm-app.vercel.app'
 }
 
-export interface ProcessOptions {
-    sendNotifications?: boolean
-    batchSize?: number
-    includeZipCodes?: boolean
-}
-
-export interface ProcessResult {
+export interface AddressProcessingResult {
     success: boolean
-    totalProcessed: number
-    statistics: {
-        highConfidence: number
-        mediumConfidence: number
-        lowConfidence: number
-        totalRows: number
+    userId: string
+    originalAddress: string
+    cleanedAddress: string
+    coordinates: {
+        latitude: number
+        longitude: number
     }
-    notifications: {
-        sms: { sent: number, failed: number }
-        email: { sent: number, failed: number }
-    }
-    results: ProcessedAddress[]
-    processingTime?: number
-    timestamp: string
-}
-
-export interface ProcessedAddress {
-    rowIndex: number
-    original: {
-        address: string
-        city: string
-        state: string
-        phone: string
-    }
-    cleaned: {
-        address: string
-        city: string
-        state: string
-        phone: string
-        email: string
-    }
-    geocoding: {
-        latitude: number | null
-        longitude: number | null
-        formattedAddress: string
-        confidence: number
-        confidenceDescription: string
-        locationType: string
-        googleMapsLink: string | null
-    }
-    zipCode?: {
+    zipCode: string | null
+    zipCodeDetails?: {
         zipCode: string | null
         department: string | null
         district: string | null
         neighborhood: string | null
         confidence: string
-    }
-    status: 'high_confidence' | 'medium_confidence' | 'low_confidence' | 'failed'
-    error?: string
+    } | null
+    confidence: number
+    confidenceDescription: string
+    locationType: string
+    timestamp: string
 }
 
 export class ProductionGeoNormAPI {
@@ -74,43 +38,25 @@ export class ProductionGeoNormAPI {
     }
 
     /**
-     * Process CSV data through the complete pipeline
-     * This is the main method - it does everything:
-     * 1. Extract fields using AI
-     * 2. Clean addresses using AI  
-     * 3. Geocode addresses using Google Maps
-     * 4. Save results to database
-     * 5. Send notifications (SMS/Email)
-     * 6. Return complete results
+     * Normalize and geocode a single address.
+     * The server returns the cleaned address, coordinates, and zip code metadata.
      */
-    async processAddresses(
-        csvData: string,
-        userId: string,
-        options: ProcessOptions = {}
-    ): Promise<ProcessResult> {
+    async processAddress(address: string): Promise<AddressProcessingResult> {
         const response = await fetch(`${this.baseUrl}/api/process`, {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
                 'X-API-Key': this.apiKey
             },
-            body: JSON.stringify({
-                csvData,
-                userId,
-                options: {
-                    sendNotifications: true,
-                    includeZipCodes: true,
-                    ...options
-                }
-            })
+            body: JSON.stringify({ address })
         })
 
+        const data = await response.json()
         if (!response.ok) {
-            const errorData = await response.json()
-            throw new Error(errorData.error || `API error: ${response.status}`)
+            throw new Error(data?.error || `API error: ${response.status}`)
         }
 
-        return response.json()
+        return data as AddressProcessingResult
     }
 
     /**
@@ -156,12 +102,10 @@ export class ProductionGeoNormAPI {
                 {
                     path: '/api/process',
                     method: 'POST',
-                    description: 'Process CSV data through complete pipeline',
+                    description: 'Send one address string and receive cleaned address, coordinates, and zip code',
                     parameters: {
                         body: {
-                            csvData: 'string (required) - CSV data to process',
-                            userId: 'string (required) - User identifier',
-                            options: 'object (optional) - Processing options'
+                            address: 'string (required) - Address to process'
                         },
                         headers: {
                             'X-API-Key': 'string (required) - Your API key',
@@ -199,15 +143,12 @@ export function createGeoNormAPI(apiKey: string): ProductionGeoNormAPI {
 /*
 const api = createGeoNormAPI('your-api-key')
 
-// Process addresses
-const result = await api.processAddresses(csvData, userId, {
-  sendNotifications: true,
-  includeZipCodes: true
-})
+// Process a single address
+const result = await api.processAddress('Av. España 123, Asunción')
 
-console.log(`Processed ${result.totalProcessed} addresses`)
-console.log(`High confidence: ${result.statistics.highConfidence}`)
-console.log(`SMS sent: ${result.notifications.sms.sent}`)
+console.log('Cleaned address:', result.cleanedAddress)
+console.log('Coordinates:', result.coordinates)
+console.log('Zip code:', result.zipCode)
 
 // Check health
 const health = await api.checkHealth()

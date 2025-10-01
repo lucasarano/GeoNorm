@@ -3,10 +3,9 @@ import { Button } from './shared/ui/button'
 
 interface LandingPageProps {
     onGetStarted: () => void
-    onNavigate?: (view: 'documentation' | 'api-keys') => void
 }
 
-export default function LandingPage({ onGetStarted, onNavigate }: LandingPageProps) {
+export default function LandingPage({ onGetStarted }: LandingPageProps) {
     const [isVisible, setIsVisible] = useState(false)
 
     useEffect(() => {
@@ -21,84 +20,8 @@ export default function LandingPage({ onGetStarted, onNavigate }: LandingPagePro
                 <div className="absolute -bottom-32 -left-40 w-96 h-96 bg-gradient-to-tr from-orange-300/20 to-yellow-200/30 rounded-full blur-3xl"></div>
             </div>
 
-            {/* Modern Header */}
-            <header className="relative z-20 bg-white/95 backdrop-blur-xl border-b border-orange-100/50 shadow-sm">
-                <div className="max-w-7xl mx-auto px-6 lg:px-8 py-5">
-                    <div className="flex items-center justify-between">
-                        {/* Logo & Brand - Left Side */}
-                        <div className="flex items-center space-x-4 group cursor-pointer">
-                            <div className="relative">
-                                <div className="w-12 h-12 bg-gradient-to-br from-orange-500 via-amber-500 to-yellow-500 rounded-2xl flex items-center justify-center shadow-xl group-hover:shadow-orange-200/50 transition-all duration-300 group-hover:scale-105">
-                                    <svg className="w-7 h-7 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z" />
-                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M15 11a3 3 0 11-6 0 3 3 0 016 0z" />
-                                    </svg>
-                                </div>
-                                <div className="absolute -top-1 -right-1 w-4 h-4 bg-gradient-to-r from-emerald-400 to-teal-400 rounded-full border-2 border-white animate-pulse"></div>
-                            </div>
-                            <div>
-                                <h1 className="text-3xl font-black tracking-tight bg-gradient-to-r from-gray-900 via-gray-800 to-gray-900 bg-clip-text text-transparent group-hover:from-orange-600 group-hover:via-amber-600 group-hover:to-yellow-600 transition-all duration-300">
-                                    GeoNorm
-                                </h1>
-                                <p className="text-sm text-gray-600 font-medium tracking-wide">Inteligencia de Direcciones con IA</p>
-                            </div>
-                        </div>
-
-                        {/* Navigation & Actions - Right Side */}
-                        <div className="flex items-center space-x-6">
-                            {/* Navigation Links */}
-                            <nav className="hidden md:flex items-center space-x-8">
-                                <button
-                                    onClick={() => onNavigate?.('documentation')}
-                                    className="text-gray-600 hover:text-blue-600 transition-colors duration-200 font-medium text-sm"
-                                >
-                                    📚 API Documentation
-                                </button>
-                                <button
-                                    onClick={() => onNavigate?.('api-keys')}
-                                    className="text-gray-600 hover:text-purple-600 transition-colors duration-200 font-medium text-sm"
-                                >
-                                    🔑 API Dashboard
-                                </button>
-                                <a href="#como-funciona" className="text-gray-600 hover:text-orange-600 transition-colors duration-200 font-medium text-sm">
-                                    ¿Cómo funciona?
-                                </a>
-                                <a href="#integraciones" className="text-gray-600 hover:text-orange-600 transition-colors duration-200 font-medium text-sm">
-                                    Integraciones
-                                </a>
-                                <a href="#contacto" className="text-gray-600 hover:text-orange-600 transition-colors duration-200 font-medium text-sm">
-                                    Contacto
-                                </a>
-                            </nav>
-
-                            {/* CTA Button */}
-                            <Button
-                                onClick={onGetStarted}
-                                className="bg-gradient-to-r from-orange-500 to-amber-500 hover:from-orange-600 hover:to-amber-600 text-white font-semibold px-6 py-2.5 rounded-xl shadow-lg hover:shadow-xl transition-all duration-300 hover:scale-105 border-0"
-                            >
-                                <span className="flex items-center text-sm">
-                                    Probar Gratis
-                                    <svg className="w-4 h-4 ml-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 7l5 5m0 0l-5 5m5-5H6" />
-                                    </svg>
-                                </span>
-                            </Button>
-
-                            {/* Mobile Menu Button */}
-                            <div className="md:hidden">
-                                <button className="p-2 text-gray-600 hover:text-orange-600 transition-colors duration-200">
-                                    <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" />
-                                    </svg>
-                                </button>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            </header>
-
             {/* Main Content */}
-            <section className="relative z-10 py-16 px-4 sm:px-6 lg:px-8">
+            <section className="relative z-10 px-4 pb-16 pt-24 sm:px-6 lg:px-8">
                 <div className="max-w-4xl mx-auto">
                     {/* Hero Title */}
                     <div className={`text-center mb-16 transition-all duration-1000 ${isVisible ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-8'}`}>

@@ -111,7 +111,6 @@ const EndpointDoc: React.FC<EndpointDocProps> = ({
 
 const Documentation: React.FC = () => {
     const [activeTab, setActiveTab] = useState('overview')
-    const [apiKey, setApiKey] = useState('')
 
     const tabs = [
         { id: 'overview', label: 'Overview', icon: BookOpen },
@@ -125,12 +124,7 @@ const Documentation: React.FC = () => {
   -H "Content-Type: application/json" \\
   -H "X-API-Key: your-api-key-here" \\
   -d '{
-    "csvData": "address,city,state,phone\\n123 Main St,Asunción,Central,+595123456789",
-    "userId": "user-123",
-    "options": {
-      "includeZipCodes": true,
-      "sendNotifications": true
-    }
+    "address": "Av. España 123, Asunción"
   }'`
 
     const javascriptExample = `const response = await fetch('https://geonorm-app.vercel.app/api/process', {
@@ -140,84 +134,48 @@ const Documentation: React.FC = () => {
     'X-API-Key': 'your-api-key-here'
   },
   body: JSON.stringify({
-    csvData: 'address,city,state,phone\\n123 Main St,Asunción,Central,+595123456789',
-    userId: 'user-123',
-    options: {
-      includeZipCodes: true,
-      sendNotifications: true
-    }
+    address: 'Av. España 123, Asunción'
   })
 });
 
 const result = await response.json();
-console.log(result);`
+console.log(result.cleanedAddress);
+console.log(result.coordinates.latitude, result.coordinates.longitude);`
 
     const pythonExample = `import requests
-import json
 
 url = "https://geonorm-app.vercel.app/api/process"
 headers = {
     "Content-Type": "application/json",
     "X-API-Key": "your-api-key-here"
 }
-data = {
-    "csvData": "address,city,state,phone\\n123 Main St,Asunción,Central,+595123456789",
-    "userId": "user-123",
-    "options": {
-        "includeZipCodes": True,
-        "sendNotifications": True
-    }
-}
+data = {"address": "Av. España 123, Asunción"}
 
 response = requests.post(url, headers=headers, json=data)
 result = response.json()
-print(result)`
+print(result["cleanedAddress"], result["coordinates"]["latitude"], result["coordinates"]["longitude"])`
 
     const responseExample = {
         "success": true,
-        "totalProcessed": 1,
-        "statistics": {
-            "highConfidence": 1,
-            "mediumConfidence": 0,
-            "lowConfidence": 0,
-            "totalRows": 1
+        "userId": "user-123",
+        "originalAddress": "Av. España 123, Asunción",
+        "cleanedAddress": "Av. España 123, Asunción, Paraguay",
+        "coordinates": {
+            "latitude": -25.282362,
+            "longitude": -57.635981
         },
-        "results": [
-            {
-                "rowIndex": 0,
-                "original": {
-                    "address": "123 Main St",
-                    "city": "Asunción",
-                    "state": "Central",
-                    "phone": "+595123456789"
-                },
-                "cleaned": {
-                    "address": "123 Main Street",
-                    "city": "Asunción",
-                    "state": "Central",
-                    "phone": "+595123456789",
-                    "email": ""
-                },
-                "geocoding": {
-                    "latitude": -25.2637,
-                    "longitude": -57.5759,
-                    "formattedAddress": "123 Main Street, Asunción, Paraguay",
-                    "confidence": 0.95,
-                    "confidenceDescription": "Most precise - exact address match",
-                    "locationType": "ROOFTOP",
-                    "staticMapUrl": null
-                },
-                "zipCode": {
-                    "zipCode": "1000",
-                    "department": "Asunción",
-                    "district": "Asunción",
-                    "neighborhood": "Centro",
-                    "confidence": "high"
-                },
-                "status": "high_confidence",
-                "googleMapsLink": "https://www.google.com/maps?q=-25.2637,-57.5759"
-            }
-        ]
+        "zipCode": "1000",
+        "zipCodeDetails": {
+            "zipCode": "1000",
+            "department": "Capital",
+            "district": "Asunción",
+            "neighborhood": "San Roque",
+            "confidence": "high"
+        },
+        "confidence": 0.95,
+        "confidenceDescription": "Most precise - exact address match",
+        "locationType": "ROOFTOP",
+        "timestamp": "2024-04-10T15:23:45.123Z"
     }
 
     return (
@@ -233,8 +191,7 @@ print(result)`
                             <h1 className="text-3xl font-bold text-gray-900">GeoNorm API Documentation</h1>
                         </div>
                         <p className="text-lg text-gray-600 max-w-3xl">
-                            Complete address processing and geocoding service. Transform raw address data into
-                            clean, geocoded results with confidence scores and postal information.
+                            Send a single address string and instantly receive a cleaned address, coordinates, and zip code details for Paraguay.
                         </p>
                     </div>
                 </div>
@@ -272,7 +229,7 @@ print(result)`
                                     <CardHeader>
                                         <CardTitle>What is GeoNorm API?</CardTitle>
                                         <CardDescription>
-                                            A comprehensive address processing pipeline that cleans, validates, and geocodes address data.
+                                            A simple address normalization API that cleans, geocodes, and enriches any Paraguayan address string.
                                         </CardDescription>
                                     </CardHeader>
                                     <CardContent className="space-y-4">
@@ -280,10 +237,10 @@ print(result)`
                                             <div className="p-4 bg-blue-50 rounded-lg">
                                                 <div className="flex items-center gap-2 mb-2">
                                                     <Zap className="h-5 w-5 text-blue-600" />
-                                                    <h3 className="font-semibold text-blue-900">AI-Powered Cleaning</h3>
+                                                    <h3 className="font-semibold text-blue-900">Automatic Normalization</h3>
                                                 </div>
                                                 <p className="text-sm text-blue-700">
-                                                    Uses OpenAI to intelligently clean and standardize address data
+                                                    Returns the Google-formatted address for any raw string you send
                                                 </p>
                                             </div>
                                             <div className="p-4 bg-green-50 rounded-lg">
@@ -302,19 +259,19 @@ print(result)`
                                             <ul className="space-y-2 text-sm text-gray-600">
                                                 <li className="flex items-center gap-2">
                                                     <Check className="h-4 w-4 text-green-500" />
-                                                    Batch processing with concurrent execution
+                                                    Single call returns cleaned address, coordinates, and zip code metadata
                                                 </li>
                                                 <li className="flex items-center gap-2">
                                                     <Check className="h-4 w-4 text-green-500" />
-                                                    Confidence scoring for geocoding results
+                                                    Confidence scoring and location type direct from Google Maps
                                                 </li>
                                                 <li className="flex items-center gap-2">
                                                     <Check className="h-4 w-4 text-green-500" />
-                                                    Postal code and administrative division lookup
+                                                    Postal code enrichment with district and neighborhood details
                                                 </li>
                                                 <li className="flex items-center gap-2">
                                                     <Check className="h-4 w-4 text-green-500" />
-                                                    Real-time processing status and debugging info
+                                                    Lightweight JSON response ready for dashboards or automations
                                                 </li>
                                             </ul>
                                         </div>
@@ -340,15 +297,15 @@ print(result)`
                                             <div className="flex items-start gap-3">
                                                 <div className="w-6 h-6 bg-blue-600 text-white rounded-full flex items-center justify-center text-sm font-semibold">2</div>
                                                 <div>
-                                                    <h4 className="font-semibold">Prepare your data</h4>
-                                                    <p className="text-sm text-gray-600">Format your address data as CSV with address, city, state, and phone columns</p>
+                                                    <h4 className="font-semibold">Grab an address</h4>
+                                                    <p className="text-sm text-gray-600">Use the raw address string exactly as your users provide it</p>
                                                 </div>
                                             </div>
                                             <div className="flex items-start gap-3">
                                                 <div className="w-6 h-6 bg-blue-600 text-white rounded-full flex items-center justify-center text-sm font-semibold">3</div>
                                                 <div>
                                                     <h4 className="font-semibold">Make your first request</h4>
-                                                    <p className="text-sm text-gray-600">Send a POST request to /api/process with your data and API key</p>
+                                                    <p className="text-sm text-gray-600">Send a POST request to /api/process with the address string and your API key</p>
                                                 </div>
                                             </div>
                                         </div>
@@ -415,15 +372,15 @@ print(result)`
                                             <div className="grid md:grid-cols-2 gap-4">
                                                 <div className="p-4 bg-gray-50 rounded-lg">
                                                     <h4 className="font-semibold mb-1">Free Tier</h4>
-                                                    <p className="text-sm text-gray-600">100 requests/month</p>
+                                                    <p className="text-sm text-gray-600">100 requests per day</p>
                                                 </div>
                                                 <div className="p-4 bg-gray-50 rounded-lg">
                                                     <h4 className="font-semibold mb-1">Pro Tier</h4>
-                                                    <p className="text-sm text-gray-600">10,000 requests/month</p>
+                                                    <p className="text-sm text-gray-600">10,000 requests per day</p>
                                                 </div>
                                             </div>
                                             <p className="text-sm text-gray-600">
-                                                Rate limits are enforced per API key. Contact support for higher limits.
+                                                Need more? Enterprise plans support 100,000+ daily requests. Contact support for custom limits.
                                             </p>
                                         </div>
                                     </CardContent>
@@ -436,19 +393,14 @@ print(result)`
                                 <EndpointDoc
                                     method="POST"
                                     path="/api/process"
-                                    description="Process CSV data through the complete address cleaning and geocoding pipeline"
+                                    description="Send one address string and receive the cleaned address, coordinates, and zip code"
                                     parameters={{
                                         headers: {
                                             "X-API-Key": "string (required) - Your API key",
                                             "Content-Type": "application/json"
                                         },
                                         body: {
-                                            csvData: "string (required) - CSV data to process",
-                                            userId: "string (required) - User identifier",
-                                            options: {
-                                                includeZipCodes: "boolean (optional) - Include postal code lookup",
-                                                sendNotifications: "boolean (optional) - Send SMS/email notifications"
-                                            }
+                                            address: "string (required) - Address to normalize and geocode"
                                         }
                                     }}
                                     response={responseExample}
