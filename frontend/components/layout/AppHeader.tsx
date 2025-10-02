@@ -6,6 +6,7 @@ import {
     KeyRound,
     Menu,
     Sparkles,
+    Webhook,
     Workflow,
     X
 } from 'lucide-react'
@@ -24,6 +25,7 @@ const navItems: Array<{
 }> = [
     { label: 'Inicio', view: 'landing', icon: Sparkles },
     { label: 'Documentación', view: 'documentation', icon: BookOpen },
+    { label: 'Webhook API', view: 'geonorm-api', icon: Webhook },
     { label: 'API Keys', view: 'api-keys', icon: KeyRound },
     { label: 'Pipeline', view: 'pipeline', icon: Workflow },
     { label: 'Historial', view: 'data-history', icon: Clock }

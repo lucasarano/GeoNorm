@@ -15,6 +15,7 @@ import {
     AlertCircle,
     TrendingUp,
 } from 'lucide-react'
+import { useAuth } from '../contexts/AuthContext'
 
 interface ApiKey {
     id: string
@@ -36,7 +37,8 @@ interface UsageStats {
     usageByDay: Array<{ date: string; count: number }>
 }
 
-const ApiKeyDashboard: React.FC<{ userId: string }> = ({ userId }) => {
+const ApiKeyDashboard: React.FC = () => {
+    const { currentUser } = useAuth()
     const [apiKeys, setApiKeys] = useState<ApiKey[]>([])
     const [loading, setLoading] = useState(false)
     const [creating, setCreating] = useState(false)
@@ -48,19 +50,33 @@ const ApiKeyDashboard: React.FC<{ userId: string }> = ({ userId }) => {
     const [copied, setCopied] = useState<{ [key: string]: boolean }>({})
 
     const loadApiKeys = useCallback(async () => {
+        if (!currentUser) {
+            setApiKeys([])
+            return
+        }
+
         setLoading(true)
         try {
-            const response = await fetch(`/api/apikeys?userId=${userId}`)
+            const token = await currentUser.getIdToken()
+            const response = await fetch('/api/apikeys', {
+                headers: {
+                    Authorization: `Bearer ${token}`
+                }
+            })
             const data = await response.json()
             if (response.ok) {
                 setApiKeys(data.apiKeys)
+            } else if (response.status === 401) {
+                setApiKeys([])
+            } else {
+                console.error('Failed to load API keys:', data)
             }
         } catch (error) {
             console.error('Failed to load API keys:', error)
         } finally {
             setLoading(false)
         }
-    }, [userId])
+    }, [currentUser])
 
     useEffect(() => {
         loadApiKeys()
@@ -68,14 +84,21 @@ const ApiKeyDashboard: React.FC<{ userId: string }> = ({ userId }) => {
 
     const createApiKey = async () => {
         if (!newKeyName.trim()) return
+        if (!currentUser) {
+            alert('You must be signed in to create API keys')
+            return
+        }
 
         setCreating(true)
         try {
+            const token = await currentUser.getIdToken()
             const response = await fetch('/api/apikeys', {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: {
+                    'Content-Type': 'application/json',
+                    Authorization: `Bearer ${token}`
+                },
                 body: JSON.stringify({
-                    userId,
                     name: newKeyName,
                     tier: newKeyTier
                 })
@@ -102,9 +125,18 @@ const ApiKeyDashboard: React.FC<{ userId: string }> = ({ userId }) => {
             return
         }
 
+        if (!currentUser) {
+            alert('You must be signed in to delete API keys')
+            return
+        }
+
         try {
+            const token = await currentUser.getIdToken()
             const response = await fetch(`/api/apikeys?apiKeyId=${apiKeyId}`, {
-                method: 'DELETE'
+                method: 'DELETE',
+                headers: {
+                    Authorization: `Bearer ${token}`
+                }
             })
 
             if (response.ok) {
@@ -120,8 +152,16 @@ const ApiKeyDashboard: React.FC<{ userId: string }> = ({ userId }) => {
     }
 
     const loadUsageStats = async (apiKeyId: string) => {
+        if (!currentUser) {
+            return
+        }
         try {
-            const response = await fetch(`/api/apikeys?userId=${userId}&apiKeyId=${apiKeyId}&stats=true`)
+            const token = await currentUser.getIdToken()
+            const response = await fetch(`/api/apikeys?apiKeyId=${apiKeyId}&stats=true`, {
+                headers: {
+                    Authorization: `Bearer ${token}`
+                }
+            })
             const stats = await response.json()
             if (response.ok) {
                 setSelectedKeyStats(prev => ({
@@ -159,6 +199,17 @@ const ApiKeyDashboard: React.FC<{ userId: string }> = ({ userId }) => {
         if (percentage >= 90) return 'bg-red-500'
         if (percentage >= 70) return 'bg-yellow-500'
         return 'bg-green-500'
+    }
+
+    if (!currentUser) {
+        return (
+            <Card className="border border-orange-200 bg-orange-50">
+                <CardHeader>
+                    <CardTitle>Autenticación requerida</CardTitle>
+                    <CardDescription>Inicia sesión para ver y administrar tus API Keys.</CardDescription>
+                </CardHeader>
+            </Card>
+        )
     }
 
     return (

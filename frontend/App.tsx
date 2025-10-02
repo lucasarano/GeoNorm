@@ -7,6 +7,7 @@ import DataHistory from './components/DataHistory'
 import LocationCollection from './components/LocationCollection'
 import Documentation from './components/Documentation'
 import ApiKeyDashboard from './components/ApiKeyDashboard'
+import GeonormWebhookDocs from './components/GeonormWebhookDocs'
 import AppHeader from './components/layout/AppHeader'
 import type { AppView } from './types/app-view'
 import { useAuth } from './contexts/AuthContext'
@@ -35,7 +36,8 @@ const viewBackgrounds: Record<AppView, string> = {
     'data-history': 'bg-gradient-to-br from-orange-50 via-amber-50 to-yellow-50',
     'location-collection': 'bg-gray-50',
     documentation: 'bg-gray-50',
-    'api-keys': 'bg-gray-50'
+    'api-keys': 'bg-gray-50',
+    'geonorm-api': 'bg-gradient-to-br from-blue-50 via-indigo-50 to-purple-50'
 }
 
 const mainClassMap: Partial<Record<AppView, string>> = {
@@ -46,7 +48,8 @@ const mainClassMap: Partial<Record<AppView, string>> = {
     dashboard: 'flex-1',
     'data-history': 'flex-1',
     'location-collection': 'flex-1',
-    'api-keys': 'flex-1'
+    'api-keys': 'flex-1',
+    'geonorm-api': 'flex-1'
 }
 
 function App() {
@@ -63,24 +66,18 @@ function App() {
         if (path === '/api-keys' || path === '/dashboard') {
             return 'api-keys'
         }
+        if (path === '/geonorm-api') {
+            return 'geonorm-api'
+        }
 
         return 'landing'
     })
 
     const { currentUser, loading } = useAuth()
 
-    const [userId] = useState(() => {
-        let id = localStorage.getItem('geonorm-user-id')
-        if (!id) {
-            id = `user-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
-            localStorage.setItem('geonorm-user-id', id)
-        }
-        return id
-    })
-
     const [processingResult, setProcessingResult] = useState<ProcessingResult | null>(null)
 
-    const publicViews = useMemo<AppView[]>(() => ['landing', 'registration', 'location-collection'], [])
+    const publicViews = useMemo<AppView[]>(() => ['landing', 'registration', 'location-collection', 'geonorm-api'], [])
 
     useEffect(() => {
         if (loading) return
@@ -175,10 +172,13 @@ function App() {
             case 'documentation':
                 return <Documentation />
 
+            case 'geonorm-api':
+                return <GeonormWebhookDocs />
+
             case 'api-keys':
                 return (
                     <div className="mx-auto w-full max-w-7xl px-4 py-8 sm:px-6 lg:px-8">
-                        <ApiKeyDashboard userId={userId} />
+                        <ApiKeyDashboard />
                     </div>
                 )
 

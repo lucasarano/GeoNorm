@@ -1,6 +1,7 @@
 import { VercelRequest, VercelResponse } from '@vercel/node'
 import dotenv from 'dotenv'
 import zipCodeService from '../backend/services/zipCodeService.js'
+import { requireAuth } from '../lib/server/auth.js'
 
 // Load environment variables
 dotenv.config()
@@ -825,7 +826,7 @@ export async function runUnifiedProcessingPipeline(
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   res.setHeader('Access-Control-Allow-Origin', '*')
   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS')
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-GeoNorm-Batch-Index, X-GeoNorm-Batch-Start, X-GeoNorm-Batch-End, X-GeoNorm-Batch-TotalRows')
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-GeoNorm-Batch-Index, X-GeoNorm-Batch-Start, X-GeoNorm-Batch-End, X-GeoNorm-Batch-TotalRows')
   res.setHeader('Access-Control-Max-Age', '86400')
 
   if (req.method === 'OPTIONS') {
@@ -851,6 +852,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       batchTotal: req.headers['x-geonorm-batch-totalrows'],
       pipelineId
     }
+
+    const authUser = await requireAuth(req, res)
+    if (!authUser) {
+      console.warn(`[UNIFIED_PROCESS][${pipelineId}] Unauthorized request blocked`)
+      return
+    }
+
+    console.log(`[UNIFIED_PROCESS][${pipelineId}] Authenticated request for uid=${authUser.uid}`)
 
     if (metadata.batchIndex !== undefined) {
       console.log('[BATCH][META]', metadata)

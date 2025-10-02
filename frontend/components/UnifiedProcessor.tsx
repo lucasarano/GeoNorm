@@ -133,6 +133,11 @@ export default function UnifiedProcessor({ onProcessingComplete }: UnifiedProces
     const processCSV = async () => {
         if (!file) return
 
+        if (!currentUser) {
+            alert('Debes iniciar sesión para procesar direcciones.')
+            return
+        }
+
         clearApiMonitor()
         setIsProcessing(true)
         setProgress(0)

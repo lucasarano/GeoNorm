@@ -201,6 +201,25 @@ export class ApiKeyService {
         }
     }
 
+    async getApiKeyById(apiKeyId: string): Promise<ApiKey | null> {
+        try {
+            const apiKeyRef = doc(db, this.collection, apiKeyId)
+            const snapshot = await getDoc(apiKeyRef)
+
+            if (!snapshot.exists()) {
+                return null
+            }
+
+            return {
+                id: snapshot.id,
+                ...snapshot.data()
+            } as ApiKey
+        } catch (error) {
+            console.error('Error getting API key by id:', error)
+            return null
+        }
+    }
+
     /**
      * Get API key usage statistics
      */

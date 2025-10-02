@@ -1,5 +1,6 @@
 import { VercelRequest, VercelResponse } from '@vercel/node'
 import { apiKeyService } from '../lib/services/apiKeyService.js'
+import { requireAuth } from '../lib/server/auth.js'
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
     // CORS headers
@@ -13,15 +14,22 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }
 
     try {
+        const authUser = await requireAuth(req, res)
+        if (!authUser) {
+            return
+        }
+
+        const userId = authUser.uid
+
         switch (req.method) {
             case 'GET':
-                return await handleGetApiKeys(req, res)
+                return await handleGetApiKeys(req, res, userId)
             case 'POST':
-                return await handleCreateApiKey(req, res)
+                return await handleCreateApiKey(req, res, userId)
             case 'PUT':
-                return await handleUpdateApiKey(req, res)
+                return await handleUpdateApiKey(req, res, userId)
             case 'DELETE':
-                return await handleDeleteApiKey(req, res)
+                return await handleDeleteApiKey(req, res, userId)
             default:
                 return res.status(405).json({ error: 'Method not allowed' })
         }
@@ -35,15 +43,15 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }
 }
 
-async function handleGetApiKeys(req: VercelRequest, res: VercelResponse) {
-    const { userId, apiKeyId, stats } = req.query
-
-    if (!userId) {
-        return res.status(400).json({ error: 'userId is required' })
-    }
+async function handleGetApiKeys(req: VercelRequest, res: VercelResponse, userId: string) {
+    const { apiKeyId, stats } = req.query
 
     if (apiKeyId && stats) {
-        // Get usage statistics for specific API key
+        const apiKey = await apiKeyService.getApiKeyById(apiKeyId as string)
+        if (!apiKey || apiKey.userId !== userId) {
+            return res.status(404).json({ error: 'API key not found' })
+        }
+
         const days = parseInt(req.query.days as string) || 30
         const usageStats = await apiKeyService.getUsageStats(apiKeyId as string, days)
         return res.json(usageStats)
@@ -55,15 +63,15 @@ async function handleGetApiKeys(req: VercelRequest, res: VercelResponse) {
     }
 
     // Get all API keys for user
-    const apiKeys = await apiKeyService.getUserApiKeys(userId as string)
+    const apiKeys = await apiKeyService.getUserApiKeys(userId)
     return res.json({ apiKeys })
 }
 
-async function handleCreateApiKey(req: VercelRequest, res: VercelResponse) {
-    const { userId, name, tier = 'free' } = req.body
+async function handleCreateApiKey(req: VercelRequest, res: VercelResponse, userId: string) {
+    const { name, tier = 'free' } = req.body || {}
 
-    if (!userId || !name) {
-        return res.status(400).json({ error: 'userId and name are required' })
+    if (!name) {
+        return res.status(400).json({ error: 'name is required' })
     }
 
     if (!['free', 'pro', 'enterprise'].includes(tier)) {
@@ -85,11 +93,16 @@ async function handleCreateApiKey(req: VercelRequest, res: VercelResponse) {
     }
 }
 
-async function handleUpdateApiKey(req: VercelRequest, res: VercelResponse) {
-    const { apiKeyId, tier, action } = req.body
+async function handleUpdateApiKey(req: VercelRequest, res: VercelResponse, userId: string) {
+    const { apiKeyId, tier, action } = req.body || {}
 
     if (!apiKeyId) {
         return res.status(400).json({ error: 'apiKeyId is required' })
+    }
+
+    const apiKey = await apiKeyService.getApiKeyById(apiKeyId)
+    if (!apiKey || apiKey.userId !== userId) {
+        return res.status(404).json({ error: 'API key not found' })
     }
 
     try {
@@ -110,7 +123,7 @@ async function handleUpdateApiKey(req: VercelRequest, res: VercelResponse) {
     }
 }
 
-async function handleDeleteApiKey(req: VercelRequest, res: VercelResponse) {
+async function handleDeleteApiKey(req: VercelRequest, res: VercelResponse, userId: string) {
     const { apiKeyId } = req.query
 
     if (!apiKeyId) {
@@ -118,6 +131,11 @@ async function handleDeleteApiKey(req: VercelRequest, res: VercelResponse) {
     }
 
     try {
+        const apiKey = await apiKeyService.getApiKeyById(apiKeyId as string)
+        if (!apiKey || apiKey.userId !== userId) {
+            return res.status(404).json({ error: 'API key not found' })
+        }
+
         await apiKeyService.deleteApiKey(apiKeyId as string)
         return res.json({ message: 'API key deleted successfully' })
     } catch (error: unknown) {

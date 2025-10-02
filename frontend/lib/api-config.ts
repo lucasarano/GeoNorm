@@ -9,6 +9,29 @@ const getDevBaseUrl = () => {
     return 'http://localhost:3000'
 }
 
+type TokenProvider = () => Promise<string | null>
+
+let authTokenProvider: TokenProvider | null = null
+
+export function setAuthTokenProvider(provider: TokenProvider | null) {
+    authTokenProvider = provider
+}
+
+async function applyAuthHeader(headers: Headers) {
+    if (!authTokenProvider) {
+        return
+    }
+
+    try {
+        const token = await authTokenProvider()
+        if (token) {
+            headers.set('Authorization', `Bearer ${token}`)
+        }
+    } catch (error) {
+        console.error('[API] Failed to resolve auth token for request', error)
+    }
+}
+
 export const API_CONFIG = {
     // Base URLs for different environments
     vercel: {
@@ -122,6 +145,8 @@ export class GeoNormAPI {
                 }
             })
         }
+
+        await applyAuthHeader(headers)
 
         console.debug('[API] processComplete -> dispatching request', {
             csvLength: csvData.length,

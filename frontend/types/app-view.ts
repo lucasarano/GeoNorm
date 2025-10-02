@@ -7,4 +7,5 @@ export type AppView =
     | 'location-collection'
     | 'documentation'
     | 'api-keys'
+    | 'geonorm-api'
 

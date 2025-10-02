@@ -9,6 +9,7 @@ import {
 } from 'firebase/auth'
 import { doc, setDoc, getDoc } from 'firebase/firestore'
 import { auth, googleProvider, db } from '../lib/firebase'
+import { setAuthTokenProvider } from '../lib/api-config'
 
 // Use the User type from the auth instance
 type User = import('firebase/auth').User
@@ -94,6 +95,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
     return unsubscribe
   }, [])
+
+  useEffect(() => {
+    if (currentUser) {
+      setAuthTokenProvider(() => currentUser.getIdToken())
+    } else {
+      setAuthTokenProvider(null)
+    }
+  }, [currentUser])
 
   const value = {
     currentUser,
